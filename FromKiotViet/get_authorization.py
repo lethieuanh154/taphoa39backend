@@ -16,14 +16,16 @@ def get_authen():
         "IsManageSide": "true",
         "FingerPrintKey": "211d1f5bb8cc08a94863d2291f1c866d_Chrome_Desktop_Máy tính Windows"
     }
-    params = {  "quan-ly": "true"}
+    params = {"quan-ly": "true"}
     headers = {
-    "retailer": retailer
+        "retailer": retailer
     }
-    response = requests.post(auth_url, json=body,headers=headers, params=params)
+    response = requests.post(auth_url, json=body, headers=headers, params=params)
     if response.status_code == 200:
         data = response.json().get("token", "")
         return "Bearer " + data
     else:
-        return None  
+        return None
+
+
 auth_token = get_authen()

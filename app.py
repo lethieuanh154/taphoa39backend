@@ -1,15 +1,21 @@
-from flask import Flask, jsonify,send_from_directory
+from flask import Flask, jsonify, request,send_from_directory
 import os
 import json
 from unidecode import unidecode  # Thêm thư viện unidecode để loại bỏ dấu tiếng Việt
 from flask_cors import CORS
+from FromKiotViet.get_entire_product import get_all
 from Utility.get_env import  LatestBranchId, retailer
 from FromKiotViet.get_all_product_by_category import get_items_category
 from FromKiotViet.get_category import get_category
 from FromKiotViet.get_one_product import get_item
 from FromKiotViet.get_authorization import auth_token
+
+from firebase.firebase_service.cache import Cache
+from firebase.firebase_service.firestore_product_service import FirestoreProductService
+
 app = Flask(__name__)
 CORS(app) 
+firebase_service = FirestoreProductService(Cache())
 
 @app.route("/")
 def serve_index():
@@ -50,14 +56,10 @@ def get_item_by_term(term):
     
 @app.route('/api/items/all', methods=['GET'])
 def get_all_items():
-
-    category_id_list = get_category()
     all_items = []
     try:
         # Duyệt qua tất cả các file JSON trong thư mục
-        for category_id in category_id_list:
-            id = category_id["Id"]
-            all_items.extend(get_items_category(id))
+        all_items=get_all()
         return jsonify(all_items)
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
@@ -98,6 +100,32 @@ def get_items_by_category(category):
     except Exception as e:
         app.logger.error(f"Lỗi khi lấy sản phẩm theo danh mục {category}: {str(e)}")
         return jsonify({"status": "error", "message": str(e)}), 500
+
+# firebase
+@app.route("/firebase/products", methods=["GET"])
+def get_all_products():
+    return jsonify(firebase_service.read_all_products())
+
+@app.route("/firebase/products/<product_id>", methods=["GET"])
+def get_product(product_id):
+    product = firebase_service.read_product(product_id)
+    if product:
+        return jsonify(product)
+    return jsonify({"error": "Not found"}), 404
+
+@app.route("/firebase/products", methods=["POST"])
+def add_product():
+    product = request.json
+    return jsonify(firebase_service.add_product(product))
+
+@app.route("/firebase/products/<product_id>", methods=["PUT"])
+def update_product(product_id):
+    updates = request.json
+    return jsonify(firebase_service.update_product(product_id, updates))
+
+@app.route("/firebase/products/<product_id>", methods=["DELETE"])
+def delete_product(product_id):
+    return jsonify(firebase_service.delete_product(product_id))
 
 if __name__ == "__main__":
     env = os.getenv("e", "prod")

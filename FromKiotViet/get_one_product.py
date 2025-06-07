@@ -6,7 +6,7 @@ import os
 import json
 
 def get_item(tearm):
-    url = f"https://api-man1.kiotviet.vn/api/products/suggest?tearm={tearm}&IncludeCombo=true&ShowAllItem=false&IsShowOnHand=true&ExcludeProductIds=&IsGetTotalOnhand=false"
+    url = f"https://api-man1.kiotviet.vn/api/products/suggest?tearm={tearm}&IncludeCombo=true&ShowAllItem=true&IsShowOnHand=true&ExcludeProductIds=&IsGetTotalOnhand=false"
 
     # Headers
     header = {

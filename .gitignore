@@ -2,10 +2,11 @@
 __pycache__
 *.pyc
 *.pyo
-
+banhang-service-account.json
+hoadon-service-account.json
 # Ignore environment files
 .env
-run.sh
+/*.sh
 env.js
 # Ignore virtual environments
 venv/
