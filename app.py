@@ -8,6 +8,7 @@ from Utility.get_env import  LatestBranchId, retailer
 from FromKiotViet.get_all_product_by_category import get_items_category
 from FromKiotViet.get_category import get_category
 from FromKiotViet.get_one_product import get_item
+from FromKiotViet.get_all_customer import get_entire_customer
 from FromKiotViet.get_authorization import auth_token
 
 from firebase.firebase_service.cache import Cache
@@ -99,6 +100,14 @@ def get_items_by_category(category):
 
     except Exception as e:
         app.logger.error(f"Lỗi khi lấy sản phẩm theo danh mục {category}: {str(e)}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+    
+@app.route("/api/customers", methods=["GET"])
+def get_all_customer():
+    try:
+        customers = get_entire_customer()  # Hàm từ get_category.py
+        return jsonify(customers)
+    except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
 # firebase
