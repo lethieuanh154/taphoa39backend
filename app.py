@@ -12,7 +12,7 @@ from FromKiotViet.get_all_customer import get_entire_customer
 from FromKiotViet.get_authorization import auth_token
 
 from firebase.firebase_service.cache import Cache
-from firebase.firebase_service.firestore_product_service import FirestoreProductService
+from firebase.firebase_service.get_product_service import FirestoreProductService
 
 app = Flask(__name__)
 CORS(app) 
