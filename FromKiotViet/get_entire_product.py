@@ -8,7 +8,7 @@ from Utility.get_env import LatestBranchId, retailer
 
 
 def get_all():
-    url = f"https://api-kvsync1.kiotviet.vn/api/resource/fetch?clientId=WebAppWN-3e31c9b0-cd4a-43e6-be25-a5d1330372fd-500111210-878979&resourceName=Products&pageSize=10000"
+    url = f"https://api-kvsync1.kiotviet.vn/api/resource/fetch"
 
     # Headers
     header = {
@@ -16,8 +16,12 @@ def get_all():
         "retailer": retailer,
         "branchid": LatestBranchId
     }
-
-    response = requests.get(url, headers=header)
+    param = {
+        "clientId":"WebAppWN-3e31c9b0-cd4a-43e6-be25-a5d1330372fd-500111210-878979",
+        "resourceName":"Products",
+        "pageSize":20000
+    }
+    response = requests.get(url, headers=header, params=param)
     if response.status_code == 200:
         data = response.json()
         raw_items = data.get('Data', [])

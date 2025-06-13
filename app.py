@@ -13,6 +13,9 @@ from FromKiotViet.get_authorization import auth_token
 
 from firebase.firebase_service.cache import Cache
 from firebase.firebase_service.get_product_service import FirestoreProductService
+from firebase.firebase_khachhang.import_to_firestore import update_customer_from_kiotviet_to_firestore
+from firebase.firebase_hanghoa.import_to_firestore import update_products_from_kiotviet_to_firestore
+from firebase.firebase_hoadon.import_to_firestore import update_invoices_from_banhang_app_to_firestore
 
 app = Flask(__name__)
 CORS(app) 
@@ -110,7 +113,7 @@ def get_all_customer():
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
-# firebase
+# firebase crud product
 @app.route("/firebase/products", methods=["GET"])
 def get_all_products():
     return jsonify(firebase_service.read_all_products())
@@ -135,6 +138,21 @@ def update_product(product_id):
 @app.route("/firebase/products/<product_id>", methods=["DELETE"])
 def delete_product(product_id):
     return jsonify(firebase_service.delete_product(product_id))
+
+#kiotviet
+@app.route("/kiotviet/firebase/customers", methods=["PUT"])
+def update_customer_from_kiotviet():
+    return jsonify(update_customer_from_kiotviet_to_firestore())
+
+@app.route("/kiotviet/firebase/products", methods=["PUT"])
+def update_products_from_kiotviet():
+    return jsonify(update_products_from_kiotviet_to_firestore())
+
+#banhang app
+@app.route("/api/firebase/invoices", methods=["POST"])
+def update_invoices_to_firebase():
+    invoices = request.json
+    return jsonify(update_invoices_from_banhang_app_to_firestore(invoices))
 
 if __name__ == "__main__":
     env = os.getenv("e", "prod")
