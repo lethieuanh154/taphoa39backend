@@ -51,23 +51,13 @@ def get_invoices_by_date(start_date, end_date):
     except Exception as e:
         raise Exception(f"Error getting invoices by date: {str(e)}")
 
-def get_invoices_by_status(status):
-    """
-    Get invoices by status
-    """
-    try:
-        query = invoices_ref.where('status', '==', status)
-        invoices = query.stream()
-        return [invoice.to_dict() for invoice in invoices]
-    except Exception as e:
-        raise Exception(f"Error getting invoices by status: {str(e)}")
 
-def get_invoices_by_customer(customer_id):
+def get_invoices_by_customer(customer_name:str):
     """
     Get invoices by customer ID
     """
     try:
-        query = invoices_ref.where('customerId', '==', customer_id)
+        query = invoices_ref.where('customer.Name', '==', customer_name)
         invoices = query.stream()
         return [invoice.to_dict() for invoice in invoices]
     except Exception as e:

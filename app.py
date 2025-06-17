@@ -193,22 +193,13 @@ def get_invoices_by_date():
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
-# Get invoices by status
-@app.route("/api/firebase/invoices/status/<status>", methods=["GET"])
-def get_invoices_by_status(status):
-    try:
-        from firebase.firebase_hoadon.get_hoadon_from_firestore import get_invoices_by_status
-        invoices = get_invoices_by_status(status)
-        return jsonify(invoices)
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
 
 # Get invoices by customer
-@app.route("/api/firebase/invoices/customer/<customer_id>", methods=["GET"])
-def get_invoices_by_customer(customer_id):
+@app.route("/api/firebase/invoices/customer/<customer_name>", methods=["GET"])
+def get_invoices_by_customer(customer_name):
     try:
         from firebase.firebase_hoadon.get_hoadon_from_firestore import get_invoices_by_customer
-        invoices = get_invoices_by_customer(customer_id)
+        invoices = get_invoices_by_customer(customer_name)
         return jsonify(invoices)
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
