@@ -2,6 +2,7 @@ import json
 import firebase_admin
 import requests
 from firebase_admin import credentials, firestore
+from FromKiotViet.get_all_customer import get_entire_customer
 from FromKiotViet.get_authorization import auth_token
 from Utility.get_env import LatestBranchId, retailer
 import requests
@@ -13,7 +14,7 @@ from firebase.init_firebase import init_firestore
 
 load_dotenv()
 
-API_URL = f"http://127.0.0.1:5000/api/customers"
+# API_URL = f"http://127.0.0.1:5000/api/customers"
 
 COLLECTION_NAME = "customers"
 
@@ -46,10 +47,11 @@ def fetch_firestore_customers():
 
 
 def fetch_api_customers():
-    print("Đang gọi API /api/all...")
-    response = requests.get(API_URL)  # Sửa lại URL phù hợp
-    response.raise_for_status()
-    items = response.json()
+    print("Đang gọi API /api/customers...")
+    items=get_entire_customer()
+    # response = requests.get(API_URL)  # Sửa lại URL phù hợp
+    # response.raise_for_status()
+    # items = response.json()
     print(f"Đã nhận {len(items)} khách hàng từ API.")
     return items
 

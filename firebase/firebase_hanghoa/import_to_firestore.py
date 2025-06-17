@@ -8,6 +8,7 @@ import requests
 import hashlib
 import os
 from dotenv import load_dotenv
+from firebase.firebase_hanghoa.product_class import Product
 from firebase.init_firebase import init_firestore
 
 load_dotenv()
@@ -63,7 +64,8 @@ def fetch_api_items():
     response.raise_for_status()
     items = response.json().get("Data", [])
     print(f"Đã nhận {len(items)} sản phẩm từ API.")
-    return items
+    products = [Product.from_dict(item) for item in items]
+    return products
 
 
 def update_changed_items(api_items, firestore_items):

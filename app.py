@@ -154,6 +154,65 @@ def update_invoices_to_firebase():
     invoices = request.json
     return jsonify(update_invoices_from_banhang_app_to_firestore(invoices))
 
+# Get all invoices
+@app.route("/api/firebase/invoices", methods=["GET"])
+def get_all_invoices():
+    try:
+        from firebase.firebase_hoadon.get_hoadon_from_firestore import get_all_invoices
+        invoices = get_all_invoices()
+        return jsonify(invoices)
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+# Get invoice by ID
+@app.route("/api/firebase/invoices/<invoice_id>", methods=["GET"])
+def get_invoice_by_id(invoice_id):
+    try:
+        from firebase.firebase_hoadon.get_hoadon_from_firestore import get_invoice_by_id
+        invoice = get_invoice_by_id(invoice_id)
+        if invoice:
+            return jsonify(invoice)
+        return jsonify({"status": "error", "message": "Invoice not found"}), 404
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+# Get invoices by date range
+@app.route("/api/firebase/invoices/date", methods=["GET"])
+def get_invoices_by_date():
+    try:
+        start_date = request.args.get('startDate')
+        end_date = request.args.get('endDate')
+       
+        if not start_date or not end_date:
+            return jsonify({"status": "error", "message": "startDate and endDate are required"}), 400
+        
+        from firebase.firebase_hoadon.get_hoadon_from_firestore import get_invoices_by_date
+        invoices = get_invoices_by_date(start_date, end_date)
+        
+        return jsonify(invoices)
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+# Get invoices by status
+@app.route("/api/firebase/invoices/status/<status>", methods=["GET"])
+def get_invoices_by_status(status):
+    try:
+        from firebase.firebase_hoadon.get_hoadon_from_firestore import get_invoices_by_status
+        invoices = get_invoices_by_status(status)
+        return jsonify(invoices)
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+# Get invoices by customer
+@app.route("/api/firebase/invoices/customer/<customer_id>", methods=["GET"])
+def get_invoices_by_customer(customer_id):
+    try:
+        from firebase.firebase_hoadon.get_hoadon_from_firestore import get_invoices_by_customer
+        invoices = get_invoices_by_customer(customer_id)
+        return jsonify(invoices)
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
 if __name__ == "__main__":
     env = os.getenv("e", "prod")
 
