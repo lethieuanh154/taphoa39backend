@@ -58,7 +58,7 @@ def get_item_by_term(term):
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
     
-@app.route('/api/items/all', methods=['GET'])
+@app.route('/api/kiotviet/items/all', methods=['GET'])
 def get_all_items():
     all_items = []
     try:
@@ -155,7 +155,7 @@ def update_invoices_to_firebase():
     return jsonify(update_invoices_from_banhang_app_to_firestore(invoices))
 
 # Get all invoices
-@app.route("/api/firebase/invoices", methods=["GET"])
+@app.route("/api/firebase/get_invoices", methods=["GET"])
 def get_all_invoices():
     try:
         from firebase.firebase_hoadon.get_hoadon_from_firestore import get_all_invoices
