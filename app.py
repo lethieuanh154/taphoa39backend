@@ -18,7 +18,7 @@ from firebase.firebase_hanghoa.import_to_firestore import update_products_from_b
 from firebase.firebase_hoadon.import_to_firestore import update_invoices_from_banhang_app_to_firestore
 
 app = Flask(__name__)
-CORS(app) 
+CORS(app,origins="*") 
 firebase_service = FirestoreProductService(Cache())
 
 @app.route("/")
