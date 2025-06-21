@@ -122,42 +122,42 @@ def get_all_customer():
 
 
 
-#---------------firebase-data----------start---------------------
-# firebase crud product
-@app.route("/firebase/products", methods=["GET"])
-def get_all_products():
-    return jsonify(firebase_service.read_all_products())
+# #---------------firebase-data----------start---------------------
+# # firebase crud product
+# @app.route("/firebase/products", methods=["GET"])
+# def get_all_products():
+#     return jsonify(firebase_service.read_all_products())
 
-@app.route("/firebase/products/<product_id>", methods=["GET"])
-def get_product(product_id):
-    product = firebase_service.read_product(product_id)
-    if product:
-        return jsonify(product)
-    return jsonify({"error": "Not found"}), 404
+# @app.route("/firebase/products/<product_id>", methods=["GET"])
+# def get_product(product_id):
+#     product = firebase_service.read_product(product_id)
+#     if product:
+#         return jsonify(product)
+#     return jsonify({"error": "Not found"}), 404
 
-@app.route("/firebase/products", methods=["POST"])
-def add_product():
-    product = request.json
-    return jsonify(firebase_service.add_product(product))
+# @app.route("/firebase/products", methods=["POST"])
+# def add_product():
+#     product = request.json
+#     return jsonify(firebase_service.add_product(product))
 
-@app.route("/firebase/products/<product_id>", methods=["PUT"])
-def update_product(product_id):
-    updates = request.json
-    return jsonify(firebase_service.update_product(product_id, updates))
+# @app.route("/firebase/products/<product_id>", methods=["PUT"])
+# def update_product(product_id):
+#     updates = request.json
+#     return jsonify(firebase_service.update_product(product_id, updates))
 
-@app.route("/firebase/products/<product_id>", methods=["DELETE"])
-def delete_product(product_id):
-    return jsonify(firebase_service.delete_product(product_id))
+# @app.route("/firebase/products/<product_id>", methods=["DELETE"])
+# def delete_product(product_id):
+#     return jsonify(firebase_service.delete_product(product_id))
 
-#kiotviet
-@app.route("/kiotviet/firebase/customers", methods=["PUT"])
-def update_customer_from_kiotviet():
-    return jsonify(update_customer_from_kiotviet_to_firestore())
+# #kiotviet
+# @app.route("/kiotviet/firebase/customers", methods=["PUT"])
+# def update_customer_from_kiotviet():
+#     return jsonify(update_customer_from_kiotviet_to_firestore())
 
-@app.route("/kiotviet/firebase/products", methods=["PUT"])
-def update_products_from_kiotviet():
-    return jsonify(update_products_from_kiotviet_to_firestore())
-#---------------firebase-data----------end---------------------
+# @app.route("/kiotviet/firebase/products", methods=["PUT"])
+# def update_products_from_kiotviet():
+#     return jsonify(update_products_from_kiotviet_to_firestore())
+# #---------------firebase-data----------end---------------------
 
 
 
