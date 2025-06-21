@@ -34,11 +34,13 @@ COLLECTION_NAME = "products"
 # db = firestore.client()
 db= init_firestore("FIREBASE_SERVICE_ACCOUNT_HANGHOA")
 
-# Hàm băm item để so sánh nhanh
 def hash_item(item):
-    # Đảm bảo thứ tự khóa và bỏ qua các trường không cần so sánh
+    def default_serializer(obj):
+        if hasattr(obj, "isoformat"):
+            return obj.isoformat()
+        raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
     item_copy = dict(item)
-    return hashlib.md5(json.dumps(item_copy, sort_keys=True).encode()).hexdigest()
+    return hashlib.md5(json.dumps(item_copy, sort_keys=True, default=default_serializer).encode()).hexdigest()
 
 
 def fetch_firestore_items():
@@ -73,19 +75,21 @@ def update_changed_items(api_items, firestore_items):
     deleted_items = []
 
     for item in api_items:
-        item_id = item.get('Id')
+        item_id = item.Id
         if not item_id:
             continue
 
-        if item.get('isDeleted', False):
+        if getattr(item, 'isDeleted', False):
             deleted_items.append(item_id)
             continue
 
-        new_hash = hash_item(item)
+        # Convert Product object to dict for hashing and saving
+        item_dict = item.__dict__
+        new_hash = hash_item(item_dict)
         old_hash = firestore_items.get(item_id, {}).get('hash')
 
         if new_hash != old_hash:
-            changed_items.append(item)
+            changed_items.append(item_dict)
 
     print(f"Phát hiện {len(changed_items)} sản phẩm thay đổi. Đang cập nhật...")
     print(f"Phát hiện {len(deleted_items)} sản phẩm cần xóa khỏi Firestore.")
@@ -118,4 +122,34 @@ def update_products_from_kiotviet_to_firestore():
     update_changed_items(api_items, firestore_items)
     return {"message": "All products have already been updated from kiotviet to firestore"}
 
-
+def update_products_from_banhang_app_to_firestore(invoice_obj):
+    # invoice_obj: {"id":1, "name":"Hóa đơn 1", "cartItems":[{product, quantity, ...}, ...]}
+    try:
+        cart_items = invoice_obj.get("cartItems", [])
+        updated_products = []
+        for item in cart_items:
+            product_data = item.get("product")
+            quantity = item.get("quantity", 0)
+            if not product_data or "Id" not in product_data:
+                continue
+            product_id = product_data["Id"]
+            doc_ref = db.collection(COLLECTION_NAME).document(str(product_id))
+            doc = doc_ref.get()
+            if doc.exists:
+                product_doc = doc.to_dict()
+                print(product_doc)
+                # Trừ số lượng OnHand
+                old_onhand = product_doc.get("OnHand", 0)
+                new_onhand = old_onhand - quantity
+                doc_ref.update({"OnHand": new_onhand})
+                updated_products.append({"Id": product_id, "old_OnHand": old_onhand, "new_OnHand": new_onhand})
+            else:
+                # Nếu sản phẩm chưa có trên Firestore, có thể tạo mới hoặc bỏ qua
+                continue
+        return {
+            "message": f"Đã cập nhật số lượng {len(updated_products)} sản phẩm từ hóa đơn {invoice_obj.get('id')}",
+            "updated_products": updated_products
+        }
+    except Exception as e:
+        print(f"Lỗi khi cập nhật sản phẩm từ hóa đơn: {e}")
+        return {"error": str(e)}

@@ -27,29 +27,29 @@ class Product:
     NormalizedName: str
     NormalizedCode: str
     
-@staticmethod
-def from_dict(data: dict) -> "Product":
-   return Product(
-       Id=data["Id"],
-       Code=data["Code"],
-       Name=data["Name"],
-       FullName=data["FullName"],
-       CategoryId=data["CategoryId"],
-       isActive=data["isActive"],
-       isDeleted=data["isDeleted"],
-       Cost=float(data["Cost"]),
-       BasePrice=float(data["BasePrice"]),
-       OnHand=float(data["OnHand"]),
-       Unit=data["Unit"],
-       MasterUnitId=data["MasterUnitId"],
-       MasterProductId=data["MasterProductId"],
-       ConversionValue=float(data["ConversionValue"]),
-       Description=data["Description"],
-       IsRewardPoint=data["IsRewardPoint"],
-       ModifiedDate=datetime.fromisoformat(data["ModifiedDate"]),
-       Image=data["Image"],
-       CreatedDate=datetime.fromisoformat(data["CreatedDate"]),
-       ProductAttributes=data.get("ProductAttributes", []),
-       NormalizedName=data["NormalizedName"],
-       NormalizedCode=data["NormalizedCode"],
-   )
+    @staticmethod
+    def from_dict(data: dict) -> "Product":
+       return Product(
+           Id=data["Id"],
+           Code=data["Code"],
+           Name=data["Name"],
+           FullName=data["FullName"],
+           CategoryId=data["CategoryId"],
+           isActive=data["isActive"],
+           isDeleted=data["isDeleted"],
+           Cost=float(data["Cost"]),
+           BasePrice=float(data["BasePrice"]),
+           OnHand=float(data["OnHand"]),
+           Unit=data["Unit"],
+           MasterUnitId=data["MasterUnitId"],
+           MasterProductId=data["MasterProductId"],
+           ConversionValue=float(data["ConversionValue"]),
+           Description=data["Description"],
+           IsRewardPoint=data["IsRewardPoint"],
+           ModifiedDate=datetime.fromisoformat(data["ModifiedDate"]),
+           Image=data["Image"],
+           CreatedDate=datetime.fromisoformat(data["CreatedDate"]),
+           ProductAttributes=data.get("ProductAttributes", []),
+           NormalizedName=data["NormalizedName"],
+           NormalizedCode=data["NormalizedCode"],
+       )

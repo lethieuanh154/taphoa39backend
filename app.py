@@ -14,7 +14,7 @@ from FromKiotViet.get_authorization import auth_token
 from firebase.firebase_service.cache import Cache
 from firebase.firebase_service.get_product_service import FirestoreProductService
 from firebase.firebase_khachhang.import_to_firestore import update_customer_from_kiotviet_to_firestore
-from firebase.firebase_hanghoa.import_to_firestore import update_products_from_kiotviet_to_firestore
+from firebase.firebase_hanghoa.import_to_firestore import update_products_from_banhang_app_to_firestore, update_products_from_kiotviet_to_firestore
 from firebase.firebase_hoadon.import_to_firestore import update_invoices_from_banhang_app_to_firestore
 
 app = Flask(__name__)
@@ -32,6 +32,8 @@ def serve_static_files(path):
     else:
         return send_from_directory(app.static_folder, "index.html")
     
+    
+    #---------------kiot viet-------start------------------------
 @app.route('/api/authentication', methods=['POST'])
 def get_authen():
     try:
@@ -113,6 +115,14 @@ def get_all_customer():
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
+#---------------kiot viet----------end---------------------
+
+
+
+
+
+
+#---------------firebase-data----------start---------------------
 # firebase crud product
 @app.route("/firebase/products", methods=["GET"])
 def get_all_products():
@@ -147,12 +157,27 @@ def update_customer_from_kiotviet():
 @app.route("/kiotviet/firebase/products", methods=["PUT"])
 def update_products_from_kiotviet():
     return jsonify(update_products_from_kiotviet_to_firestore())
+#---------------firebase-data----------end---------------------
+
+
+
+
+
+
+
+
+
 
 #banhang app
 @app.route("/api/firebase/invoices", methods=["POST"])
 def update_invoices_to_firebase():
     invoices = request.json
-    return jsonify(update_invoices_from_banhang_app_to_firestore(invoices))
+    invoices_result = update_invoices_from_banhang_app_to_firestore(invoices)
+    products_result = update_products_from_banhang_app_to_firestore(invoices)
+    return jsonify({
+        "invoices_result": invoices_result,
+        "products_result": products_result
+    })
 
 # Get all invoices
 @app.route("/api/firebase/get_invoices", methods=["GET"])
@@ -203,6 +228,18 @@ def get_invoices_by_customer(customer_name):
         return jsonify(invoices)
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
+
+
+
+
+
+
+
+
+
+
+
+
 
 if __name__ == "__main__":
     env = os.getenv("e", "prod")
