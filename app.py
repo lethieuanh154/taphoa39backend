@@ -173,10 +173,10 @@ def get_all_customer():
 def update_invoices_to_firebase():
     invoices = request.json
     invoices_result = update_invoices_from_banhang_app_to_firestore(invoices)
-    products_result = update_products_from_banhang_app_to_firestore(invoices)
+    # products_result = update_products_from_banhang_app_to_firestore(invoices)
     return jsonify({
-        "invoices_result": invoices_result,
-        "products_result": products_result
+        "invoices_result": invoices_result
+        # "products_result": products_result
     })
 
 # Get all invoices
