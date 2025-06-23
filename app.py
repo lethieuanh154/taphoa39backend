@@ -12,14 +12,16 @@ from FromKiotViet.get_all_customer import get_entire_customer
 from FromKiotViet.get_authorization import auth_token
 
 from firebase.firebase_service.cache import Cache
-from firebase.firebase_service.get_product_service import FirestoreProductService
+from firebase.firebase_service.product_service import FirestoreProductService
+from firebase.firebase_service.invoice_service import FirestoreInvoiceservice
 from firebase.firebase_khachhang.import_to_firestore import update_customer_from_kiotviet_to_firestore
 from firebase.firebase_hanghoa.import_to_firestore import update_products_from_banhang_app_to_firestore, update_products_from_kiotviet_to_firestore
 from firebase.firebase_hoadon.import_to_firestore import update_invoices_from_banhang_app_to_firestore
 
 app = Flask(__name__)
 CORS(app,origins="*") 
-firebase_service = FirestoreProductService(Cache())
+firebase_service_product = FirestoreProductService(Cache())
+firebase_service_invoice = FirestoreInvoiceservice(Cache())
 
 @app.route("/")
 def serve_index():
@@ -149,15 +151,42 @@ def get_all_customer():
 # def delete_product(product_id):
 #     return jsonify(firebase_service.delete_product(product_id))
 
-# #kiotviet
-# @app.route("/kiotviet/firebase/customers", methods=["PUT"])
-# def update_customer_from_kiotviet():
-#     return jsonify(update_customer_from_kiotviet_to_firestore())
+# firebase crud invoices
 
-# @app.route("/kiotviet/firebase/products", methods=["PUT"])
-# def update_products_from_kiotviet():
-#     return jsonify(update_products_from_kiotviet_to_firestore())
-# #---------------firebase-data----------end---------------------
+@app.route("/firebase/invoices", methods=["GET"])
+def get_all_invoices_from_firestore():   
+    return jsonify(firebase_service_invoice.read_all_invoices())
+
+@app.route("/firebase/invoices/<invoice_id>", methods=["GET"])
+def get_invoice_from_firestore(invoice_id):
+    invoice = firebase_service_invoice.read_invoice(invoice_id)
+    if invoice:
+        return jsonify(invoice)
+    return jsonify({"error": "Not found"}), 404
+
+@app.route("/firebase/invoices", methods=["POST"])
+def add_invoice_to_firestore():
+    invoice = request.json
+    return jsonify(firebase_service_invoice.add_invoice(invoice))
+
+@app.route("/firebase/invoices/<invoice_id>", methods=["PUT"])
+def update_invoice_in_firestore(invoice_id):
+    updates = request.json
+    return jsonify(firebase_service_invoice.update_invoice(invoice_id, updates))
+
+@app.route("/firebase/invoices/<invoice_id>", methods=["DELETE"])
+def delete_invoice_from_firestore(invoice_id):
+    return jsonify(firebase_service_invoice.delete_invoice(invoice_id))
+
+#kiotviet
+@app.route("/kiotviet/firebase/customers", methods=["PUT"])
+def update_customer_from_kiotviet():
+    return jsonify(update_customer_from_kiotviet_to_firestore())
+
+@app.route("/kiotviet/firebase/products", methods=["PUT"])
+def update_products_from_kiotviet():
+    return jsonify(update_products_from_kiotviet_to_firestore())
+#---------------firebase-data----------end---------------------
 
 
 
@@ -180,7 +209,7 @@ def update_invoices_to_firebase():
     })
 
 # Get all invoices
-@app.route("/api/firebase/get_invoices", methods=["GET"])
+@app.route("/api/firebase/all_invoices", methods=["GET"])
 def get_all_invoices():
     try:
         from firebase.firebase_hoadon.get_hoadon_from_firestore import get_all_invoices
