@@ -14,7 +14,7 @@ invoices_ref = db.collection(COLLECTION_NAME)
 
 
 
-class FirestoreInvoiceservice:
+class FirestoreInvoiceService:
     def __init__(self, cache):
         self.cache = cache
         self.invoices_ref = db.collection("invoices")
@@ -40,8 +40,50 @@ class FirestoreInvoiceservice:
             return invoice
         return None
 
+    def get_invoices_by_date(self, date):
+        """
+        Get invoices for a specific date (full day)
+        Expected date format: YYYY-MM-DD (e.g., "2025-06-17")
+        """
+        try:
+            # Create string for comparison in ISO format for start and end of day
+            start_str = f"{date}T00:00:00.000Z"
+            end_str = f"{date}T23:59:59.999Z"
+
+            # Query Firestore with string
+            query = self.invoices_ref \
+                .where('createdDate', '>=', start_str) \
+                .where('createdDate', '<=', end_str)
+            invoices = query.stream()
+            return [invoice.to_dict() for invoice in invoices]
+        except Exception as e:
+            raise Exception(f"Error getting invoices by date: {str(e)}")
+
+    def get_invoices_by_status(self, status: str):
+        """
+        Get invoices by status
+        """
+        try:
+            query = self.invoices_ref.where('status', '==', status)
+            invoices = query.stream()
+            return [invoice.to_dict() for invoice in invoices]
+        except Exception as e:
+            raise Exception(f"Error getting invoices by status: {str(e)}")
+
+    def get_invoices_by_customer(self, customer_id: str):
+        """
+        Get invoices by customer ID
+        """
+        try:
+            # Assuming customerId is stored in 'customerId' field
+            query = self.invoices_ref.where('customerId', '==', customer_id)
+            invoices = query.stream()
+            return [invoice.to_dict() for invoice in invoices]
+        except Exception as e:
+            raise Exception(f"Error getting invoices by customer: {str(e)}")
+
     def add_invoice(self, invoice):
-        doc_ref = self.invoices_ref.document(str(invoice["Id"]))
+        doc_ref = self.invoices_ref.document(str(invoice["id"]))
         doc_ref.set(invoice)
         self.cache.invalidate("all_invoices")
         return {"message": "invoice added"}
@@ -58,3 +100,95 @@ class FirestoreInvoiceservice:
         self.cache.invalidate(invoice_id)
         self.cache.invalidate("all_invoices")
         return {"message": "invoice deleted"}
+
+    def calculate_daily_summary(self, date):
+        """
+        Tính revenue, cost, profit cho 1 ngày, lưu vào collection DailySummary
+        """
+        invoices = self.get_invoices_by_date(date)
+        revenue = 0
+        cost = 0
+        for invoice in invoices:
+            cart_items = invoice.get('cartItems', [])
+            for item in cart_items:
+                product = item.get('product', {})
+                quantity = item.get('quantity', 0)
+                price = item.get('price', product.get('BasePrice', 0))
+                cost_price = product.get('Cost', 0)
+                revenue += price * quantity
+                cost += cost_price * quantity
+        profit = revenue - cost
+        # Lưu vào collection DailySummary
+        summary_ref = db.collection('DailySummary').document(date)
+        summary_ref.set({
+            'date': date,
+            'revenue': revenue,
+            'cost': cost,
+            'profit': profit
+        })
+        return {'date': date, 'revenue': revenue, 'cost': cost, 'profit': profit}
+
+    def get_daily_summary(self, date):
+        doc = db.collection('DailySummary').document(date).get()
+        if doc.exists:
+            return doc.to_dict()
+        return self.calculate_daily_summary(date)
+
+    def calculate_monthly_summary(self, year, month):
+        """
+        Tính revenue, cost, profit cho 1 tháng, lưu vào collection MonthlySummary
+        """
+        from calendar import monthrange
+        days_in_month = monthrange(int(year), int(month))[1]
+        revenue = 0
+        cost = 0
+        for day in range(1, days_in_month + 1):
+            date_str = f"{year}-{str(month).zfill(2)}-{str(day).zfill(2)}"
+            daily = self.calculate_daily_summary(date_str)
+            revenue += daily['revenue']
+            cost += daily['cost']
+        profit = revenue - cost
+        doc_id = f"{year}-{str(month).zfill(2)}"
+        summary_ref = db.collection('MonthlySummary').document(doc_id)
+        summary_ref.set({
+            'month': doc_id,
+            'revenue': revenue,
+            'cost': cost,
+            'profit': profit
+        })
+        return {'month': doc_id, 'revenue': revenue, 'cost': cost, 'profit': profit}
+
+    def get_monthly_summary(self, year, month):
+        doc_id = f"{year}-{str(month).zfill(2)}"
+        doc = db.collection('MonthlySummary').document(doc_id).get()
+        if doc.exists:
+            return doc.to_dict()
+        return self.calculate_monthly_summary(year, month)
+
+    def calculate_yearly_summary(self, year):
+        """
+        Tính revenue, cost, profit cho 1 năm, lưu vào collection YearlySummary
+        """
+        revenue = 0
+        cost = 0
+        for month in range(1, 13):
+            monthly = self.calculate_monthly_summary(year, month)
+            revenue += monthly['revenue']
+            cost += monthly['cost']
+        profit = revenue - cost
+        doc_id = str(year)
+        summary_ref = db.collection('YearlySummary').document(doc_id)
+        summary_ref.set({
+            'year': doc_id,
+            'revenue': revenue,
+            'cost': cost,
+            'profit': profit
+        })
+        return {'year': doc_id, 'revenue': revenue, 'cost': cost, 'profit': profit}
+
+    def get_yearly_summary(self, year):
+        doc_id = str(year)
+        doc = db.collection('YearlySummary').document(doc_id).get()
+        if doc.exists:
+            return doc.to_dict()
+        return self.calculate_yearly_summary(year)
