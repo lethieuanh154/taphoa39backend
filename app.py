@@ -229,8 +229,21 @@ def get_daily_summary():
     if not date:
         return jsonify({"status": "error", "message": "date is required (YYYY-MM-DD)"}), 400
     try:
-        summary = firebase_service_invoice.get_daily_summary(date)
-        return jsonify(summary)
+        # Lấy hóa đơn trong ngày
+        invoices = firebase_service_invoice.get_invoices_by_date(date)
+        revenue = 0
+        cost = 0
+        for invoice in invoices:
+            cart_items = invoice.get('cartItems', [])
+            for item in cart_items:
+                product = item.get('product', {})
+                quantity = item.get('quantity', 0)
+                price = item.get('price', product.get('BasePrice', 0))
+                cost_price = product.get('Cost', 0)
+                revenue += price * quantity
+                cost += cost_price * quantity
+        profit = revenue - cost
+        return jsonify({'date': date, 'revenue': revenue, 'cost': cost, 'profit': profit})
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
@@ -241,8 +254,24 @@ def get_monthly_summary():
     if not year or not month:
         return jsonify({"status": "error", "message": "year and month are required"}), 400
     try:
-        summary = firebase_service_invoice.get_monthly_summary(year, month)
-        return jsonify(summary)
+        from calendar import monthrange
+        days_in_month = monthrange(int(year), int(month))[1]
+        revenue = 0
+        cost = 0
+        for day in range(1, days_in_month + 1):
+            date_str = f"{year}-{str(month).zfill(2)}-{str(day).zfill(2)}"
+            invoices = firebase_service_invoice.get_invoices_by_date(date_str)
+            for invoice in invoices:
+                cart_items = invoice.get('cartItems', [])
+                for item in cart_items:
+                    product = item.get('product', {})
+                    quantity = item.get('quantity', 0)
+                    price = item.get('price', product.get('BasePrice', 0))
+                    cost_price = product.get('Cost', 0)
+                    revenue += price * quantity
+                    cost += cost_price * quantity
+        profit = revenue - cost
+        return jsonify({'month': f"{year}-{str(month).zfill(2)}", 'revenue': revenue, 'cost': cost, 'profit': profit})
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
@@ -252,8 +281,25 @@ def get_yearly_summary():
     if not year:
         return jsonify({"status": "error", "message": "year is required"}), 400
     try:
-        summary = firebase_service_invoice.get_yearly_summary(year)
-        return jsonify(summary)
+        revenue = 0
+        cost = 0
+        from calendar import monthrange
+        for m in range(1, 13):
+            days_in_month = monthrange(int(year), m)[1]
+            for day in range(1, days_in_month + 1):
+                date_str = f"{year}-{str(m).zfill(2)}-{str(day).zfill(2)}"
+                invoices = firebase_service_invoice.get_invoices_by_date(date_str)
+                for invoice in invoices:
+                    cart_items = invoice.get('cartItems', [])
+                    for item in cart_items:
+                        product = item.get('product', {})
+                        quantity = item.get('quantity', 0)
+                        price = item.get('price', product.get('BasePrice', 0))
+                        cost_price = product.get('Cost', 0)
+                        revenue += price * quantity
+                        cost += cost_price * quantity
+        profit = revenue - cost
+        return jsonify({'year': year, 'revenue': revenue, 'cost': cost, 'profit': profit})
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
@@ -289,7 +335,7 @@ def get_top_products():
             for item in cart_items:
                 product = item.get('product', {})
                 product_id = product.get('Id')
-                product_name = product.get('Name', 'Unknown')
+                product_name = product.get('FullName', 'Unknown')
                 price = item.get('price', product.get('BasePrice', 0))
                 quantity = item.get('quantity', 0)
                 total_price = price * quantity
