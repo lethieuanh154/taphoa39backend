@@ -26,8 +26,8 @@ def get_all():
         data = response.json()
         raw_items = data.get('Data', [])
 
-        # Lọc bỏ các object có isDeleted = true
-        filtered_items = [item for item in raw_items if not item.get('isDeleted', False)]
+        # Lọc bỏ các object có isDeleted = true hoặc isActive = false
+        filtered_items = [item for item in raw_items if not item.get('isDeleted', False) and item.get('isActive', True)]
 
         return filtered_items
     else:
