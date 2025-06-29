@@ -2,6 +2,7 @@ from flask import Flask, jsonify, request,send_from_directory
 import os
 from unidecode import unidecode
 from flask_cors import CORS
+from flask_socketio import SocketIO, emit
 
 # KiotViet Dependencies
 from FromKiotViet.get_entire_product import get_all as get_all_products_from_kiotviet
@@ -20,7 +21,7 @@ from firebase.firebase_service.customer_service import FirestoreCustomerService
 
 # Data Sync Dependencies
 from firebase.firebase_khachhang.import_to_firestore import update_customer_from_kiotviet_to_firestore
-from firebase.firebase_hanghoa.import_to_firestore import update_products_from_kiotviet_to_firestore
+from firebase.firebase_hanghoa.import_to_firestore import update_products_from_banhang_app_to_firestore, update_products_from_kiotviet_to_firestore
 from firebase.firebase_hoadon.import_to_firestore import update_invoices_from_banhang_app_to_firestore
 
 app = Flask(__name__)
@@ -31,6 +32,8 @@ firebase_service_product = FirestoreProductService(Cache())
 firebase_service_invoice = FirestoreInvoiceService(Cache())
 firebase_service_customer = FirestoreCustomerService(Cache())
 
+# Khởi tạo SocketIO
+socketio = SocketIO(app, cors_allowed_origins="*")
 
 # === Static Files and Index ===
 @app.route("/")
@@ -51,11 +54,50 @@ def serve_static_files(path):
 @app.route('/api/kiotviet/authentication', methods=['POST'])
 def get_authen():
     try:
-        if auth_token:
-            auth_data = {"retailer": retailer, "LatestBranchId": LatestBranchId, "access_token": auth_token}
-            return jsonify(auth_data), 200
+        # Get username and password from request body
+        data = request.get_json()
+        if not data or 'username' not in data or 'password' not in data:
+            return jsonify({"status": "error", "message": "Username and password are required"}), 400
+        
+        username = data['username']
+        password = data['password']
+        
+        # Import the authentication function
+        from FromKiotViet.get_authorization import get_authen as kiotviet_auth
+        
+        # Call the authentication function with provided credentials
+        auth_url = "https://api-man1.kiotviet.vn/api/account/login?quan-ly=true"
+        body = {
+            "model": {
+                "RememberMe": "true",
+                "ShowCaptcha": "false",
+                "UserName": username,
+                "Password": password,
+                "Language": "vi-VN",
+                "LatestBranchId": LatestBranchId
+            },
+            "IsManageSide": "true",
+            "FingerPrintKey": "211d1f5bb8cc08a94863d2291f1c866d_Chrome_Desktop_Máy tính Windows"
+        }
+        params = {"quan-ly": "true"}
+        headers = {
+            "retailer": retailer
+        }
+        
+        import requests
+        response = requests.post(auth_url, json=body, headers=headers, params=params)
+        
+        if response.status_code == 200:
+            token_data = response.json().get("token", "")
+            if token_data:
+                auth_token = "Bearer " + token_data
+                auth_data = {"retailer": retailer, "LatestBranchId": LatestBranchId, "access_token": auth_token}
+                return jsonify(auth_data), 200
+            else:
+                return jsonify({"status": "error", "message": "Invalid credentials"}), 401
         else:
-            return jsonify({"status": "error", "message": "Authentication token not found"}), 404
+            return jsonify({"status": "error", "message": "Authentication failed"}), 401
+            
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
@@ -110,6 +152,15 @@ def get_all_customers_from_kiotviet():
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
+@app.route("/api/firebase/products/update_onhand_batch", methods=["PUT"])
+def update_onhand_from_invoice():
+    invoice_obj = request.json
+    result = update_products_from_banhang_app_to_firestore(invoice_obj)
+    # Phát WebSocket cho client khác nếu muốn
+    for p in result.get('updated_products', []):
+        notify_product_onhand_updated(p['Id'], p['new_OnHand'])
+    return jsonify(result)
+
 # ============================
 # === Data Sync API Routes ===
 # ============================
@@ -127,28 +178,28 @@ def sync_products_from_kiotviet():
 # ============================
 
 # --- Product CRUD ---
-@app.route("/api/firebase/products", methods=["GET"])
+@app.route("/api/firebase/get/products", methods=["GET"])
 def get_all_products():
     return jsonify(firebase_service_product.read_all_products())
 
-@app.route("/api/firebase/products/<product_id>", methods=["GET"])
+@app.route("/api/firebase/get/products/<product_id>", methods=["GET"])
 def get_product(product_id):
     product = firebase_service_product.read_product(product_id)
     if product:
         return jsonify(product)
     return jsonify({"error": "Product not found"}), 404
 
-@app.route("/api/firebase/products", methods=["POST"])
+@app.route("/api/firebase/add/product", methods=["POST"])
 def add_product():
     product = request.json
     return jsonify(firebase_service_product.add_product(product))
 
-@app.route("/api/firebase/products/<product_id>", methods=["PUT"])
+@app.route("/api/firebase/update/products/<product_id>", methods=["PUT"])
 def update_product(product_id):
     updates = request.json
     return jsonify(firebase_service_product.update_product(product_id, updates))
 
-@app.route("/api/firebase/products/<product_id>", methods=["DELETE"])
+@app.route("/api/firebase/products/del/<product_id>", methods=["DELETE"])
 def delete_product(product_id):
     return jsonify(firebase_service_product.delete_product(product_id))
 
@@ -174,16 +225,26 @@ def get_invoice_by_id(invoice_id):
 @app.route("/api/firebase/add_invoice", methods=["POST"])
 def add_invoice():
     invoice = request.json
-    return jsonify(firebase_service_invoice.add_invoice(invoice))
+    result = firebase_service_invoice.add_invoice(invoice)
+    notify_invoice_created(invoice)  # Phát sự kiện cho client
+    return jsonify(result)
 
 @app.route("/api/firebase/invoices/<invoice_id>", methods=["PUT"])
 def update_invoice(invoice_id):
     updates = request.json
-    return jsonify(firebase_service_invoice.update_invoice(invoice_id, updates))
+    result = firebase_service_invoice.update_invoice(invoice_id, updates)
+    # Lấy lại hóa đơn đã cập nhật để gửi cho client
+    updated_invoice = firebase_service_invoice.read_invoice(invoice_id)
+    if updated_invoice:
+        notify_invoice_updated(updated_invoice)
+    return jsonify(result)
+
 
 @app.route("/api/firebase/invoices/<invoice_id>", methods=["DELETE"])
 def delete_invoice(invoice_id):
-    return jsonify(firebase_service_invoice.delete_invoice(invoice_id))
+    result = firebase_service_invoice.delete_invoice(invoice_id)
+    notify_invoice_deleted(invoice_id)
+    return jsonify(result)
 
 @app.route("/api/firebase/invoices/date", methods=["GET"])
 def get_invoices_by_date():
@@ -359,9 +420,34 @@ def get_top_products():
 # ===== App Entry Point ======
 # ============================
 
+# WebSocket endpoint cho invoices
+
+
+
+@socketio.on('connect', namespace='/api/websocket/invoices')
+def handle_connect():
+    print('Client connected to invoices websocket')
+    emit('message', {'data': 'Connected to invoices WebSocket'})
+
+@socketio.on('disconnect', namespace='/api/websocket/invoices')
+def handle_disconnect():
+    print('Client disconnected from invoices websocket')
+
+def notify_invoice_updated(invoice):
+    socketio.emit('invoice_updated', {'data': invoice}, namespace='/api/websocket/invoices')
+
+def notify_invoice_deleted(invoice_id):
+    socketio.emit('invoice_deleted', {'data': invoice_id}, namespace='/api/websocket/invoices')
+# Gửi dữ liệu hóa đơn mới cho tất cả client
+def notify_invoice_created(invoice):
+    socketio.emit('invoice_created', {'data': invoice}, namespace='/api/websocket/invoices')
+    
+def notify_product_onhand_updated(product_id, onHand):
+    socketio.emit('product_onhand_updated', {'productId': product_id, 'onHand': onHand}, namespace='/api/websocket/products')
+    
 if __name__ == "__main__":
     env = os.getenv("e", "prod")
     port = 8000 if env == "prod" else 5000
     print(f"Running in {env.upper()} mode on port {port}")
-    app.run(host="0.0.0.0", port=port)
+    socketio.run(app, host='0.0.0.0', port=port)
       

@@ -32,7 +32,11 @@ class FirestoreProductService:
             return self.cache.get("all_products")
 
         docs = self.products_ref.stream()
-        result = [doc.to_dict() | {"id": doc.id} for doc in docs]
+        result = [
+            doc.to_dict() | {"id": doc.id}
+            for doc in docs
+            if not doc.to_dict().get("isDeleted", False) and doc.to_dict().get("isActive", True)
+        ]
         self.cache.set("all_products", result, ttl=300)  # Cache 5 phút
         return result
 

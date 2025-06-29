@@ -118,38 +118,59 @@ def update_changed_items(api_items, firestore_items):
 
 def update_products_from_kiotviet_to_firestore():
     firestore_items = fetch_firestore_items()
+        # Xóa các sản phẩm trong Firestore có isDeleted: true hoặc isActive: false
+    to_delete = [
+        item_id for item_id, item in firestore_items.items()
+        if item['data'].get('isDeleted', False) or not item['data'].get('isActive', True)
+    ]
+    for item_id in to_delete:
+        doc_ref = db.collection(COLLECTION_NAME).document(str(item_id))
+        doc_ref.delete()
+    print(f"Đã xóa {len(to_delete)} sản phẩm isDeleted:true hoặc isActive:false khỏi Firestore.")
+
     api_items = fetch_api_items()
+    api_items = [item for item in api_items if not getattr(item, 'isDeleted', False) and getattr(item, 'isActive', True)]
     update_changed_items(api_items, firestore_items)
+
+  
     return {"message": "All products have already been updated from kiotviet to firestore"}
 
-def update_products_from_banhang_app_to_firestore(invoice_obj):
-    # invoice_obj: {"id":1, "name":"Hóa đơn 1", "cartItems":[{product, quantity, ...}, ...]}
+def update_products_from_banhang_app_to_firestore(update_payload):
+    # update_payload: list of {productId, minus}
     try:
-        cart_items = invoice_obj.get("cartItems", [])
         updated_products = []
-        for item in cart_items:
-            product_data = item.get("product")
-            quantity = item.get("quantity", 0)
-            if not product_data or "Id" not in product_data:
+        for item in update_payload:
+            product_id = item.get("productId")
+            minus = item.get("minus", 0)
+            if not product_id:
                 continue
-            product_id = product_data["Id"]
             doc_ref = db.collection(COLLECTION_NAME).document(str(product_id))
             doc = doc_ref.get()
             if doc.exists:
                 product_doc = doc.to_dict()
-                print(product_doc)
-                # Trừ số lượng OnHand
                 old_onhand = product_doc.get("OnHand", 0)
-                new_onhand = old_onhand - quantity
+                new_onhand = old_onhand - minus
                 doc_ref.update({"OnHand": new_onhand})
-                updated_products.append({"Id": product_id, "old_OnHand": old_onhand, "new_OnHand": new_onhand})
-            else:
-                # Nếu sản phẩm chưa có trên Firestore, có thể tạo mới hoặc bỏ qua
-                continue
+                updated_products.append({
+                    "Id": product_id,
+                    "old_OnHand": old_onhand,
+                    "new_OnHand": new_onhand
+                })
         return {
-            "message": f"Đã cập nhật số lượng {len(updated_products)} sản phẩm từ hóa đơn {invoice_obj.get('id')}",
+            "message": f"Đã cập nhật số lượng {len(updated_products)} sản phẩm",
             "updated_products": updated_products
         }
     except Exception as e:
         print(f"Lỗi khi cập nhật sản phẩm từ hóa đơn: {e}")
         return {"error": str(e)}
+
+def get_products_by_master_unit_id(master_unit_id):
+    # Hàm này cần implement để lấy tất cả sản phẩm có cùng MasterUnitId
+    # Từ Firestore collection
+    products = []
+    docs = db.collection(COLLECTION_NAME).where("MasterUnitId", "==", master_unit_id).stream()
+    for doc in docs:
+        product_data = doc.to_dict()
+        product_data["Id"] = doc.id
+        products.append(product_data)
+    return products
