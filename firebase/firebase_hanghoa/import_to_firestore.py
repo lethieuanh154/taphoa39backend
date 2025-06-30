@@ -139,23 +139,28 @@ def update_products_from_banhang_app_to_firestore(update_payload):
     # update_payload: list of {productId, minus}
     try:
         updated_products = []
-        for item in update_payload:
-            product_id = item.get("productId")
-            minus = item.get("minus", 0)
-            if not product_id:
-                continue
-            doc_ref = db.collection(COLLECTION_NAME).document(str(product_id))
-            doc = doc_ref.get()
-            if doc.exists:
-                product_doc = doc.to_dict()
-                old_onhand = product_doc.get("OnHand", 0)
-                new_onhand = old_onhand - minus
-                doc_ref.update({"OnHand": new_onhand})
-                updated_products.append({
-                    "Id": product_id,
-                    "old_OnHand": old_onhand,
-                    "new_OnHand": new_onhand
-                })
+        BATCH_SIZE = 500
+        for i in range(0, len(update_payload), BATCH_SIZE):
+            batch = db.batch()
+            batch_items = update_payload[i:i+BATCH_SIZE]
+            for item in batch_items:
+                product_id = item.get("productId")
+                minus = item.get("minus", 0)
+                if not product_id:
+                    continue
+                doc_ref = db.collection(COLLECTION_NAME).document(str(product_id))
+                doc = doc_ref.get()
+                if doc.exists:
+                    product_doc = doc.to_dict()
+                    old_onhand = product_doc.get("OnHand", 0)
+                    new_onhand = old_onhand - minus
+                    batch.update(doc_ref, {"OnHand": new_onhand})
+                    updated_products.append({
+                        "Id": product_id,
+                        "old_OnHand": old_onhand,
+                        "new_OnHand": new_onhand
+                    })
+            batch.commit()
         return {
             "message": f"Đã cập nhật số lượng {len(updated_products)} sản phẩm",
             "updated_products": updated_products

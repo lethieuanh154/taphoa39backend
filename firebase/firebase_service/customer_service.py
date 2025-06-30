@@ -22,3 +22,12 @@ class FirestoreCustomerService:
             doc_ref.set(customer)
         self.cache.invalidate("all_customers")
         return {"message": f"{len(customers)} customers added"}
+    
+    def read_all_customers(self):
+    # Nếu có cache thì dùng, không thì lấy từ Firestore
+        if self.cache.has("all_customers"):
+            return self.cache.get("all_customers")
+        docs = self.customers_ref.stream()
+        result = [doc.to_dict() | {"id": doc.id} for doc in docs]
+        self.cache.set("all_customers", result, ttl=300)  # Cache 5 phút
+        return result

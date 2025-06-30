@@ -152,14 +152,9 @@ def get_all_customers_from_kiotviet():
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
-@app.route("/api/firebase/products/update_onhand_batch", methods=["PUT"])
-def update_onhand_from_invoice():
-    invoice_obj = request.json
-    result = update_products_from_banhang_app_to_firestore(invoice_obj)
-    # Phát WebSocket cho client khác nếu muốn
-    for p in result.get('updated_products', []):
-        notify_product_onhand_updated(p['Id'], p['new_OnHand'])
-    return jsonify(result)
+@app.route("/api/firebase/get/customers", methods=["GET"])
+def get_all_customers():
+    return jsonify(firebase_service_customer.read_all_customers())
 
 # ============================
 # === Data Sync API Routes ===
@@ -178,6 +173,17 @@ def sync_products_from_kiotviet():
 # ============================
 
 # --- Product CRUD ---
+
+@app.route("/api/firebase/products/update_onhand_batch", methods=["PUT"])
+def update_onhand_from_invoice():
+    invoice_obj = request.json
+    result = update_products_from_banhang_app_to_firestore(invoice_obj)
+    # Phát WebSocket cho client khác nếu muốn
+    for p in result.get('updated_products', []):
+        notify_product_onhand_updated(p['Id'], p['new_OnHand'])
+    return jsonify(result)
+
+
 @app.route("/api/firebase/get/products", methods=["GET"])
 def get_all_products():
     return jsonify(firebase_service_product.read_all_products())
@@ -194,10 +200,16 @@ def add_product():
     product = request.json
     return jsonify(firebase_service_product.add_product(product))
 
-@app.route("/api/firebase/update/products/<product_id>", methods=["PUT"])
-def update_product(product_id):
-    updates = request.json
-    return jsonify(firebase_service_product.update_product(product_id, updates))
+@app.route("/api/firebase/update/products", methods=["PUT"])
+def update_product():
+    products = request.json  # [{Id:..., OnHand:...}, ...]
+    results = []
+    for prod in products:
+        product_id = str(prod["Id"])
+        updates = {"OnHand": prod["OnHand"]}
+        result = firebase_service_product.update_product(product_id, updates)
+        results.append({ "id": product_id, "result": result })
+    return jsonify({"message": f"Updated {len(products)} products", "results": results})
 
 @app.route("/api/firebase/products/del/<product_id>", methods=["DELETE"])
 def delete_product(product_id):
