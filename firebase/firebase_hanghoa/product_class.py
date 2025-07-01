@@ -26,7 +26,7 @@ class Product:
     ProductAttributes: List[Any]
     NormalizedName: str
     NormalizedCode: str
-    
+    OrderTemplate: str
     @staticmethod
     def from_dict(data: dict) -> "Product":
        return Product(
@@ -52,4 +52,5 @@ class Product:
            ProductAttributes=data.get("ProductAttributes", []),
            NormalizedName=data["NormalizedName"],
            NormalizedCode=data["NormalizedCode"],
+           OrderTemplate=data["OrderTemplate"],
        )
