@@ -90,4 +90,5 @@ class FirestoreProductService:
         self.cache.invalidate(product_id)
         self.cache.invalidate("all_products")
         return {"message": "Product deleted"}
+    
 
