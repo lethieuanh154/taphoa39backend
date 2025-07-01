@@ -215,6 +215,13 @@ def update_product():
 def delete_product(product_id):
     return jsonify(firebase_service_product.delete_product(product_id))
 
+@app.route("/api/firebase/update/products/batch", methods=["PUT"])
+def update_products_batch():
+    products_dict = request.json  # Nhận dict từ frontend
+    result = firebase_service_product.update_products(products_dict)
+    return jsonify(result)
+
+
 # --- Invoice CRUD & Queries ---
 @app.route("/api/firebase/all_invoices", methods=["GET"])
 def get_all_invoices():

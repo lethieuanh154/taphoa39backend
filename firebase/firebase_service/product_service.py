@@ -63,9 +63,31 @@ class FirestoreProductService:
         self.cache.invalidate(product_id)
         self.cache.invalidate("all_products")
         return {"message": "Product updated"}
+    
+    def update_products(self, products_dict):
+        updated = []
+        # Gộp tất cả sản phẩm từ các group lại thành 1 list
+        all_products = []
+        for group in products_dict.values():
+            if isinstance(group, list):
+                all_products.extend(group)
+        for prod in all_products:
+            if not isinstance(prod, dict):
+                continue
+            product_id = str(prod.get("Id") or prod.get("id"))
+            if not product_id:
+                continue
+            doc_ref = self.products_ref.document(product_id)
+            doc_ref.set(prod, merge=True)
+            updated.append(product_id)
+            self.cache.invalidate(product_id)
+        self.cache.invalidate("all_products")
+        return {"message": f"Updated {len(updated)} products", "updated": updated}
+
 
     def delete_product(self, product_id):
         self.products_ref.document(product_id).delete()
         self.cache.invalidate(product_id)
         self.cache.invalidate("all_products")
         return {"message": "Product deleted"}
+
