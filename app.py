@@ -18,7 +18,7 @@ from firebase.firebase_service.cache import Cache
 from firebase.firebase_service.product_service import FirestoreProductService
 from firebase.firebase_service.invoice_service import FirestoreInvoiceService
 from firebase.firebase_service.customer_service import FirestoreCustomerService
-
+from firebase.firebase_service.order_service import FirestoreorderService
 # Data Sync Dependencies
 from firebase.firebase_khachhang.import_to_firestore import update_customer_from_kiotviet_to_firestore
 from firebase.firebase_hanghoa.import_to_firestore import update_products_from_banhang_app_to_firestore, update_products_from_kiotviet_to_firestore
@@ -31,6 +31,7 @@ CORS(app, origins="*")
 firebase_service_product = FirestoreProductService(Cache())
 firebase_service_invoice = FirestoreInvoiceService(Cache())
 firebase_service_customer = FirestoreCustomerService(Cache())
+firebase_service_order = FirestoreorderService(Cache())
 
 # Khởi tạo SocketIO
 socketio = SocketIO(app, cors_allowed_origins="*")
@@ -479,17 +480,9 @@ def get_top_products():
 # ============================
 # ===== App Entry Point ======
 # ============================
-@app.route("/api/orders", methods=["POST"])
-def create_order():
-    order_data = request.json
-    # Lưu đơn hàng vào DB
-    # order_id = save_order_to_db(order_data)
-    
-    # Gửi realtime đến bên nhận đơn
-    socketio.emit('order_placed', order_data, namespace='/orders')
-    
-    return jsonify({"success": True, "order_id": order_id})
 
+def notify_product_onhand_updated(product_id, onHand):
+    socketio.emit('product_onhand_updated', {'productId': product_id, 'onHand': onHand}, namespace='/api/websocket/products')
 # WebSocket endpoint cho invoices
 
 
@@ -512,9 +505,79 @@ def notify_invoice_deleted(invoice_id):
 def notify_invoice_created(invoice):
     socketio.emit('invoice_created', {'data': invoice}, namespace='/api/websocket/invoices')
     
-def notify_product_onhand_updated(product_id, onHand):
-    socketio.emit('product_onhand_updated', {'productId': product_id, 'onHand': onHand}, namespace='/api/websocket/products')
     
+    
+    
+#-------------------------------order---------------------------------------
+@app.route("/api/firebase/orders", methods=["GET"])
+def get_all_orders():
+    try:
+        orders = firebase_service_order.read_all_orders()
+        return jsonify(orders)
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+@app.route("/api/firebase/orders/<order_id>", methods=["GET"])
+def get_order_by_id(order_id):
+    try:
+        order = firebase_service_order.read_order(order_id)
+        if order:
+            return jsonify(order)
+        return jsonify({"status": "error", "message": "Order not found"}), 404
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+@app.route("/api/firebase/add_order", methods=["POST"])
+def add_order():
+    order = request.json
+    result = firebase_service_order.add_order(order)
+    notify_order_created(order)  # Phát sự kiện cho client
+    return jsonify(result)
+
+@app.route("/api/firebase/orders/<order_id>", methods=["PUT"])
+def update_order(order_id):
+    updates = request.json
+    result = firebase_service_order.update_order(order_id, updates)
+    updated_order = firebase_service_order.read_order(order_id)
+    if updated_order:
+        notify_order_updated(updated_order)
+    return jsonify(result)
+
+@app.route("/api/firebase/orders/<order_id>", methods=["DELETE"])
+def delete_order(order_id):
+    result = firebase_service_order.delete_order(order_id)
+    notify_order_deleted(order_id)
+    return jsonify(result)
+
+@app.route("/api/firebase/orders/date", methods=["GET"])
+def get_orders_by_date():
+    try:
+        date = request.args.get('date')
+        if not date:
+            return jsonify({"status": "error", "message": "date is required"}), 400
+        orders = firebase_service_order.get_orders_by_date(date)
+        return jsonify(orders)
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+    
+@socketio.on('connect', namespace='/api/websocket/orders')
+def handle_order_connect():
+    print('Client connected to orders websocket')
+    emit('message', {'data': 'Connected to orders WebSocket'})
+
+@socketio.on('disconnect', namespace='/api/websocket/orders')
+def handle_order_disconnect():
+    print('Client disconnected from orders websocket')
+
+def notify_order_created(order):
+    socketio.emit('order_created', {'data': order}, namespace='/api/websocket/orders')
+
+def notify_order_updated(order):
+    socketio.emit('order_updated', {'data': order}, namespace='/api/websocket/orders')
+
+def notify_order_deleted(order_id):
+    socketio.emit('order_deleted', {'data': order_id}, namespace='/api/websocket/orders')
+
 if __name__ == "__main__":
     env = os.getenv("e", "prod")
     port = 8000 if env == "prod" else 5000

@@ -9,7 +9,6 @@ COLLECTION_NAME = "invoices"
 
 # Đặt tên app duy nhất cho mỗi service account
 db = init_firestore("FIREBASE_SERVICE_ACCOUNT_HOADON")
-invoices_ref = db.collection(COLLECTION_NAME)
 # Chuyển chuỗi JSON thành dict và tạo credential
 
 
@@ -17,7 +16,7 @@ invoices_ref = db.collection(COLLECTION_NAME)
 class FirestoreInvoiceService:
     def __init__(self, cache):
         self.cache = cache
-        self.invoices_ref = db.collection("invoices")
+        self.invoices_ref = db.collection(COLLECTION_NAME)
 
     def read_all_invoices(self):
         # Kiểm tra cache
