@@ -143,6 +143,7 @@ def get_items_out_of_stock():
                 "OnHand": item.get("OnHand")
             }
             for item in all_items
+            if item.get("OnHand", 0) <= 0
         ]
         return jsonify(out_of_stock_items)
     except Exception as e:
