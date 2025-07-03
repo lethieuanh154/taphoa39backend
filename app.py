@@ -478,6 +478,16 @@ def get_top_products():
 # ============================
 # ===== App Entry Point ======
 # ============================
+@app.route("/api/orders", methods=["POST"])
+def create_order():
+    order_data = request.json
+    # Lưu đơn hàng vào DB
+    # order_id = save_order_to_db(order_data)
+    
+    # Gửi realtime đến bên nhận đơn
+    socketio.emit('order_placed', order_data, namespace='/orders')
+    
+    return jsonify({"success": True, "order_id": order_id})
 
 # WebSocket endpoint cho invoices
 
