@@ -133,7 +133,7 @@ def get_categories_from_kiotviet():
 def get_items_out_of_stock():
     try:
         all_items = get_all_products_from_kiotviet()
-        # Lọc các sản phẩm hết hàng
+        # Lọc các sản phẩm master (MasterUnitId == None), OnHand < 10, không bị xóa và đang hoạt động
         out_of_stock_items = [
             {
                 "Code": item.get("Code"),
@@ -144,7 +144,12 @@ def get_items_out_of_stock():
                 "OnHand": item.get("OnHand")
             }
             for item in all_items
-            if item.get("OnHand", 0) <= 0
+            if (
+                (item.get("MasterUnitId") is None)
+                and (item.get("OnHand", 0) < 10)
+                and (not item.get("isDeleted", False))
+                and (item.get("isActive", True))
+            )
         ]
         return jsonify(out_of_stock_items)
     except Exception as e:
@@ -209,6 +214,11 @@ def update_onhand_from_invoice():
 @app.route("/api/firebase/get/products", methods=["GET"])
 def get_all_products():
     return jsonify(firebase_service_product.read_all_products())
+
+@app.route("/api/firebase/get/grouped_products", methods=["GET"])
+def get_grouped_products():
+    grouped = firebase_service_product.group_product()
+    return jsonify(grouped)
 
 @app.route("/api/firebase/get/products/<product_id>", methods=["GET"])
 def get_product(product_id):
@@ -534,7 +544,7 @@ def add_order():
     notify_order_created(order)  # Phát sự kiện cho client
     return jsonify(result)
 
-@app.route("/api/firebase/orders/<order_id>", methods=["PUT"])
+@app.route("/api/firebase/update_order/<order_id>", methods=["PUT"])
 def update_order(order_id):
     updates = request.json
     result = firebase_service_order.update_order(order_id, updates)

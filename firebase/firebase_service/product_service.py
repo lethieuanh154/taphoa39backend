@@ -91,4 +91,25 @@ class FirestoreProductService:
         self.cache.invalidate("all_products")
         return {"message": "Product deleted"}
     
+    def group_product(self):
+        """
+        Group products by Master Item (MasterUnitId=None) and their Child Items (MasterUnitId=Id of Master Item).
+        Returns a dict: {master_id: {"master": master_product, "children": [child_products]}}
+        """
+        all_products = self.read_all_products()
+        masters = {}
+        children = []
+        # Phân loại master và child
+        for prod in all_products:
+            if prod.get("MasterUnitId") is None:
+                masters[str(prod.get("Id") or prod.get("id"))] = {"master": prod, "children": []}
+            else:
+                children.append(prod)
+        # Gán child vào master tương ứng
+        for child in children:
+            master_id = str(child.get("MasterUnitId"))
+            if master_id in masters:
+                masters[master_id]["children"].append(child)
+        return masters
+
 
