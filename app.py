@@ -100,7 +100,9 @@ def get_authen():
             return jsonify({"status": "error", "message": "Authentication failed"}), 401
             
     except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
+        import traceback
+        print(traceback.format_exc())  # In ra lỗi chi tiết ở terminal
+        return jsonify({"status": "error", "message": str(e), "trace": traceback.format_exc()}), 500
 
 @app.route('/api/kiotviet/item/<term>', methods=['GET'])
 def get_item_by_term_from_kiotviet(term):
@@ -111,7 +113,9 @@ def get_item_by_term_from_kiotviet(term):
         else:
             return jsonify({"status": "error", "message": f"Product not found with term: {term}"}), 404
     except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
+        import traceback
+        print(traceback.format_exc())  # In ra lỗi chi tiết ở terminal
+        return jsonify({"status": "error", "message": str(e), "trace": traceback.format_exc()}), 500
 
 @app.route('/api/kiotviet/items/all', methods=['GET'])
 def get_all_items_from_kiotviet():
@@ -119,7 +123,9 @@ def get_all_items_from_kiotviet():
         all_items = get_all_products_from_kiotviet()
         return jsonify(all_items)
     except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
+        import traceback
+        print(traceback.format_exc())  # In ra lỗi chi tiết ở terminal
+        return jsonify({"status": "error", "message": str(e), "trace": traceback.format_exc()}), 500
 
 @app.route('/api/kiotviet/categories', methods=['GET'])
 def get_categories_from_kiotviet():
@@ -127,12 +133,14 @@ def get_categories_from_kiotviet():
         categories = get_category()
         return jsonify(categories)
     except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
+        import traceback
+        print(traceback.format_exc())  # In ra lỗi chi tiết ở terminal
+        return jsonify({"status": "error", "message": str(e), "trace": traceback.format_exc()}), 500
     
 @app.route('/api/kiotviet/items/out_of_stock', methods=['GET'])
 def get_items_out_of_stock():
     try:
-        all_items = get_all_products_from_kiotviet()
+        all_items = get_all_products_from_kiotviet() or []
         # Lọc các sản phẩm master (MasterUnitId == None), OnHand < 10, không bị xóa và đang hoạt động
         out_of_stock_items = [
             {
@@ -147,13 +155,22 @@ def get_items_out_of_stock():
             if (
                 (item.get("MasterUnitId") is None)
                 and (item.get("OnHand", 0) < 10)
-                and (not item.get("isDeleted", False))
-                and (item.get("isActive", True))
             )
         ]
-        return jsonify(out_of_stock_items)
+        # Sắp xếp theo OnHand tăng dần
+        out_of_stock_items.sort(key=lambda x: x.get("OnHand", 0))
+        # Lấy tham số phân trang
+       
+        total_items = len(out_of_stock_items)
+
+        return jsonify({
+            "items": out_of_stock_items,
+            "total_items": total_items,
+        })
     except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
+        import traceback
+        print(traceback.format_exc())  # In ra lỗi chi tiết ở terminal
+        return jsonify({"status": "error", "message": str(e), "trace": traceback.format_exc()}), 500
     
 @app.route('/api/kiotviet/items/category/<category_name>', methods=['GET'])
 def get_items_by_category_from_kiotviet(category_name):
@@ -169,7 +186,9 @@ def get_items_by_category_from_kiotviet(category_name):
         items = get_items_category(category_id)
         return jsonify(items), 200
     except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
+        import traceback
+        print(traceback.format_exc())  # In ra lỗi chi tiết ở terminal
+        return jsonify({"status": "error", "message": str(e), "trace": traceback.format_exc()}), 500
 
 @app.route("/api/kiotviet/customers", methods=["GET"])
 def get_all_customers_from_kiotviet():
@@ -177,7 +196,9 @@ def get_all_customers_from_kiotviet():
         customers = get_entire_customer()
         return jsonify(customers)
     except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
+        import traceback
+        print(traceback.format_exc())  # In ra lỗi chi tiết ở terminal
+        return jsonify({"status": "error", "message": str(e), "trace": traceback.format_exc()}), 500
 
 @app.route("/api/firebase/get/customers", methods=["GET"])
 def get_all_customers():
@@ -261,7 +282,9 @@ def get_all_invoices():
         invoices = firebase_service_invoice.read_all_invoices()
         return jsonify(invoices)
     except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
+        import traceback
+        print(traceback.format_exc())  # In ra lỗi chi tiết ở terminal
+        return jsonify({"status": "error", "message": str(e), "trace": traceback.format_exc()}), 500
 
 @app.route("/api/firebase/invoices/<invoice_id>", methods=["GET"])
 def get_invoice_by_id(invoice_id):
@@ -271,7 +294,9 @@ def get_invoice_by_id(invoice_id):
             return jsonify(invoice)
         return jsonify({"status": "error", "message": "Invoice not found"}), 404
     except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
+        import traceback
+        print(traceback.format_exc())  # In ra lỗi chi tiết ở terminal
+        return jsonify({"status": "error", "message": str(e), "trace": traceback.format_exc()}), 500
         
 @app.route("/api/firebase/add_invoice", methods=["POST"])
 def add_invoice():
@@ -307,7 +332,9 @@ def get_invoices_by_date():
         invoices = firebase_service_invoice.get_invoices_by_date(date)
         return jsonify(invoices)
     except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
+        import traceback
+        print(traceback.format_exc())  # In ra lỗi chi tiết ở terminal
+        return jsonify({"status": "error", "message": str(e), "trace": traceback.format_exc()}), 500
 
 @app.route("/api/firebase/invoices/status/<status>", methods=["GET"])
 def get_invoices_by_status(status):
@@ -315,7 +342,9 @@ def get_invoices_by_status(status):
         invoices = firebase_service_invoice.get_invoices_by_status(status)
         return jsonify(invoices)
     except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
+        import traceback
+        print(traceback.format_exc())  # In ra lỗi chi tiết ở terminal
+        return jsonify({"status": "error", "message": str(e), "trace": traceback.format_exc()}), 500
 
 @app.route("/api/firebase/invoices/customer/<customer_id>", methods=["GET"])
 def get_invoices_by_customer(customer_id):
@@ -323,7 +352,9 @@ def get_invoices_by_customer(customer_id):
         invoices = firebase_service_invoice.get_invoices_by_customer(customer_id)
         return jsonify(invoices)
     except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
+        import traceback
+        print(traceback.format_exc())  # In ra lỗi chi tiết ở terminal
+        return jsonify({"status": "error", "message": str(e), "trace": traceback.format_exc()}), 500
 
 @app.route("/api/firebase/add_customer", methods=["POST"])
 def add_customer():
@@ -362,7 +393,9 @@ def get_daily_summary():
             'profit': profit
         })
     except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
+        import traceback
+        print(traceback.format_exc())  # In ra lỗi chi tiết ở terminal
+        return jsonify({"status": "error", "message": str(e), "trace": traceback.format_exc()}), 500
 
 @app.route("/api/firebase/monthly_summary", methods=["GET"])
 def get_monthly_summary():
@@ -398,7 +431,9 @@ def get_monthly_summary():
             'profit': profit
         })
     except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
+        import traceback
+        print(traceback.format_exc())  # In ra lỗi chi tiết ở terminal
+        return jsonify({"status": "error", "message": str(e), "trace": traceback.format_exc()}), 500
 
 @app.route("/api/firebase/yearly_summary", methods=["GET"])
 def get_yearly_summary():
@@ -434,7 +469,9 @@ def get_yearly_summary():
             'profit': profit
         })
     except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
+        import traceback
+        print(traceback.format_exc())  # In ra lỗi chi tiết ở terminal
+        return jsonify({"status": "error", "message": str(e), "trace": traceback.format_exc()}), 500
 @app.route("/api/firebase/top_products", methods=["GET"])
 def get_top_products():
     try:
@@ -485,7 +522,9 @@ def get_top_products():
         top_products = sorted(product_sales.values(), key=lambda x: x['totalRevenue'], reverse=True)[:20]
         return jsonify(top_products)
     except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
+        import traceback
+        print(traceback.format_exc())  # In ra lỗi chi tiết ở terminal
+        return jsonify({"status": "error", "message": str(e), "trace": traceback.format_exc()}), 500
 
 # ============================
 # ===== App Entry Point ======
@@ -525,7 +564,9 @@ def get_all_orders():
         orders = firebase_service_order.read_all_orders()
         return jsonify(orders)
     except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
+        import traceback
+        print(traceback.format_exc())  # In ra lỗi chi tiết ở terminal
+        return jsonify({"status": "error", "message": str(e), "trace": traceback.format_exc()}), 500
 
 @app.route("/api/firebase/orders/<order_id>", methods=["GET"])
 def get_order_by_id(order_id):
@@ -535,7 +576,9 @@ def get_order_by_id(order_id):
             return jsonify(order)
         return jsonify({"status": "error", "message": "Order not found"}), 404
     except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
+        import traceback
+        print(traceback.format_exc())  # In ra lỗi chi tiết ở terminal
+        return jsonify({"status": "error", "message": str(e), "trace": traceback.format_exc()}), 500
 
 @app.route("/api/firebase/add_order", methods=["POST"])
 def add_order():
@@ -568,7 +611,9 @@ def get_orders_by_date():
         orders = firebase_service_order.get_orders_by_date(date)
         return jsonify(orders)
     except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
+        import traceback
+        print(traceback.format_exc())  # In ra lỗi chi tiết ở terminal
+        return jsonify({"status": "error", "message": str(e), "trace": traceback.format_exc()}), 500
     
 @socketio.on('connect', namespace='/api/websocket/orders')
 def handle_order_connect():
