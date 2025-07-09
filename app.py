@@ -366,35 +366,29 @@ def add_customers():
     customers = request.json  # Nhận 1 list các customer
     return jsonify(firebase_service_customer.add_customers(customers))
 
+def safe_float(val):
+    try:
+        return float(val)
+    except (TypeError, ValueError):
+        return 0.0
+
+def safe_int(val):
+    try:
+        return int(val)
+    except (TypeError, ValueError):
+        return 0
+
 @app.route("/api/firebase/daily_summary", methods=["GET"])
 def get_daily_summary():
     date = request.args.get('date')
     if not date:
         return jsonify({"status": "error", "message": "date is required (YYYY-MM-DD)"}), 400
     try:
-        invoices = firebase_service_invoice.get_invoices_by_date(date)
-        revenue = 0
-        cost = 0
-        for invoice in invoices:
-            cart_items = invoice.get('cartItems', [])
-            for item in cart_items:
-                product = item.get('product', {})
-                quantity = item.get('quantity', 0)
-                price = item.get('price', product.get('BasePrice', 0))
-                cost_price = product.get('Cost', 0)
-                revenue += price * quantity
-                cost += cost_price * quantity
-        profit = revenue - cost
-        return jsonify({
-            'buyer_quantity': len(invoices),
-            'date': date,
-            'revenue': revenue,
-            'cost': cost,
-            'profit': profit
-        })
+        summary = firebase_service_invoice.get_daily_summary(date)
+        return jsonify(summary)
     except Exception as e:
         import traceback
-        print(traceback.format_exc())  # In ra lỗi chi tiết ở terminal
+        print(traceback.format_exc())
         return jsonify({"status": "error", "message": str(e), "trace": traceback.format_exc()}), 500
 
 @app.route("/api/firebase/monthly_summary", methods=["GET"])
@@ -404,35 +398,11 @@ def get_monthly_summary():
     if not year or not month:
         return jsonify({"status": "error", "message": "year and month are required"}), 400
     try:
-        from calendar import monthrange
-        days_in_month = monthrange(int(year), int(month))[1]
-        revenue = 0
-        cost = 0
-        total_invoices = 0
-        for day in range(1, days_in_month + 1):
-            date_str = f"{year}-{str(month).zfill(2)}-{str(day).zfill(2)}"
-            invoices = firebase_service_invoice.get_invoices_by_date(date_str)
-            total_invoices += len(invoices)
-            for invoice in invoices:
-                cart_items = invoice.get('cartItems', [])
-                for item in cart_items:
-                    product = item.get('product', {})
-                    quantity = item.get('quantity', 0)
-                    price = item.get('price', product.get('BasePrice', 0))
-                    cost_price = product.get('Cost', 0)
-                    revenue += price * quantity
-                    cost += cost_price * quantity
-        profit = revenue - cost
-        return jsonify({
-            'buyer_quantity': total_invoices,
-            'month': f"{year}-{str(month).zfill(2)}",
-            'revenue': revenue,
-            'cost': cost,
-            'profit': profit
-        })
+        summary = firebase_service_invoice.get_monthly_summary(year, month)
+        return jsonify(summary)
     except Exception as e:
         import traceback
-        print(traceback.format_exc())  # In ra lỗi chi tiết ở terminal
+        print(traceback.format_exc())
         return jsonify({"status": "error", "message": str(e), "trace": traceback.format_exc()}), 500
 
 @app.route("/api/firebase/yearly_summary", methods=["GET"])
@@ -441,36 +411,11 @@ def get_yearly_summary():
     if not year:
         return jsonify({"status": "error", "message": "year is required"}), 400
     try:
-        revenue = 0
-        cost = 0
-        total_invoices = 0
-        from calendar import monthrange
-        for m in range(1, 13):
-            days_in_month = monthrange(int(year), m)[1]
-            for day in range(1, days_in_month + 1):
-                date_str = f"{year}-{str(m).zfill(2)}-{str(day).zfill(2)}"
-                invoices = firebase_service_invoice.get_invoices_by_date(date_str)
-                total_invoices += len(invoices)
-                for invoice in invoices:
-                    cart_items = invoice.get('cartItems', [])
-                    for item in cart_items:
-                        product = item.get('product', {})
-                        quantity = item.get('quantity', 0)
-                        price = item.get('price', product.get('BasePrice', 0))
-                        cost_price = product.get('Cost', 0)
-                        revenue += price * quantity
-                        cost += cost_price * quantity
-        profit = revenue - cost
-        return jsonify({
-            'buyer_quantity': total_invoices,
-            'year': year,
-            'revenue': revenue,
-            'cost': cost,
-            'profit': profit
-        })
+        summary = firebase_service_invoice.get_yearly_summary(year)
+        return jsonify(summary)
     except Exception as e:
         import traceback
-        print(traceback.format_exc())  # In ra lỗi chi tiết ở terminal
+        print(traceback.format_exc())
         return jsonify({"status": "error", "message": str(e), "trace": traceback.format_exc()}), 500
 @app.route("/api/firebase/top_products", methods=["GET"])
 def get_top_products():
@@ -505,8 +450,8 @@ def get_top_products():
                 product = item.get('product', {})
                 product_id = product.get('Id')
                 product_name = product.get('FullName', 'Unknown')
-                price = item.get('price', product.get('BasePrice', 0))
-                quantity = item.get('quantity', 0)
+                price = safe_float(item.get('price', product.get('BasePrice', 0)))
+                quantity = safe_int(item.get('quantity', 0))
                 total_price = price * quantity
                 if product_id is not None:
                     if product_id not in product_sales:

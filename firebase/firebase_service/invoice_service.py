@@ -100,10 +100,19 @@ class FirestoreInvoiceService:
         self.cache.invalidate("all_invoices")
         return {"message": "invoice deleted"}
 
+    def safe_float(self, val):
+        try:
+            return float(val)
+        except (TypeError, ValueError):
+            return 0.0
+
+    def safe_int(self, val):
+        try:
+            return int(val)
+        except (TypeError, ValueError):
+            return 0
+
     def calculate_daily_summary(self, date):
-        """
-        Tính revenue, cost, profit cho 1 ngày, lưu vào collection DailySummary
-        """
         invoices = self.get_invoices_by_date(date)
         revenue = 0
         cost = 0
@@ -111,13 +120,12 @@ class FirestoreInvoiceService:
             cart_items = invoice.get('cartItems', [])
             for item in cart_items:
                 product = item.get('product', {})
-                quantity = item.get('quantity', 0)
-                price = item.get('price', product.get('BasePrice', 0))
-                cost_price = product.get('Cost', 0)
+                quantity = self.safe_int(item.get('quantity', 0))
+                price = self.safe_float(item.get('price', product.get('BasePrice', 0)))
+                cost_price = self.safe_float(product.get('Cost', 0))
                 revenue += price * quantity
                 cost += cost_price * quantity
         profit = revenue - cost
-        # Lưu vào collection DailySummary
         summary_ref = db.collection('DailySummary').document(date)
         summary_ref.set({
             'date': date,
@@ -128,9 +136,6 @@ class FirestoreInvoiceService:
         return {'date': date, 'revenue': revenue, 'cost': cost, 'profit': profit}
 
     def get_daily_summary(self, date):
-        doc = db.collection('DailySummary').document(date).get()
-        if doc.exists:
-            return doc.to_dict()
         return self.calculate_daily_summary(date)
 
     def calculate_monthly_summary(self, year, month):
@@ -158,10 +163,6 @@ class FirestoreInvoiceService:
         return {'month': doc_id, 'revenue': revenue, 'cost': cost, 'profit': profit}
 
     def get_monthly_summary(self, year, month):
-        doc_id = f"{year}-{str(month).zfill(2)}"
-        doc = db.collection('MonthlySummary').document(doc_id).get()
-        if doc.exists:
-            return doc.to_dict()
         return self.calculate_monthly_summary(year, month)
 
     def calculate_yearly_summary(self, year):
@@ -186,8 +187,4 @@ class FirestoreInvoiceService:
         return {'year': doc_id, 'revenue': revenue, 'cost': cost, 'profit': profit}
 
     def get_yearly_summary(self, year):
-        doc_id = str(year)
-        doc = db.collection('YearlySummary').document(doc_id).get()
-        if doc.exists:
-            return doc.to_dict()
         return self.calculate_yearly_summary(year)
