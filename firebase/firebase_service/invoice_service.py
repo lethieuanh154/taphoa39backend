@@ -128,12 +128,13 @@ class FirestoreInvoiceService:
         profit = revenue - cost
         summary_ref = db.collection('DailySummary').document(date)
         summary_ref.set({
+            'buyer_quantity': len(invoices),
             'date': date,
             'revenue': revenue,
             'cost': cost,
             'profit': profit
         })
-        return {'date': date, 'revenue': revenue, 'cost': cost, 'profit': profit}
+        return { 'buyer_quantity': len(invoices),'date': date, 'revenue': revenue, 'cost': cost, 'profit': profit}
 
     def get_daily_summary(self, date):
         return self.calculate_daily_summary(date)
@@ -151,16 +152,18 @@ class FirestoreInvoiceService:
             daily = self.calculate_daily_summary(date_str)
             revenue += daily['revenue']
             cost += daily['cost']
+            buyer_quantity+=daily["buyer_quantity"]
         profit = revenue - cost
         doc_id = f"{year}-{str(month).zfill(2)}"
         summary_ref = db.collection('MonthlySummary').document(doc_id)
         summary_ref.set({
+            'buyer_quantity': buyer_quantity,
             'month': doc_id,
             'revenue': revenue,
             'cost': cost,
             'profit': profit
         })
-        return {'month': doc_id, 'revenue': revenue, 'cost': cost, 'profit': profit}
+        return { 'buyer_quantity': buyer_quantity,'month': doc_id, 'revenue': revenue, 'cost': cost, 'profit': profit}
 
     def get_monthly_summary(self, year, month):
         return self.calculate_monthly_summary(year, month)
@@ -175,16 +178,18 @@ class FirestoreInvoiceService:
             monthly = self.calculate_monthly_summary(year, month)
             revenue += monthly['revenue']
             cost += monthly['cost']
+            buyer_quantity+=monthly["buyer_quantity"]
         profit = revenue - cost
         doc_id = str(year)
         summary_ref = db.collection('YearlySummary').document(doc_id)
         summary_ref.set({
+            'buyer_quantity': buyer_quantity,
             'year': doc_id,
             'revenue': revenue,
             'cost': cost,
             'profit': profit
         })
-        return {'year': doc_id, 'revenue': revenue, 'cost': cost, 'profit': profit}
+        return {'buyer_quantity': buyer_quantity,'year': doc_id, 'revenue': revenue, 'cost': cost, 'profit': profit}
 
     def get_yearly_summary(self, year):
         return self.calculate_yearly_summary(year)

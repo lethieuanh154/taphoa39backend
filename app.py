@@ -214,7 +214,7 @@ def sync_customers_from_kiotviet():
 
 @app.route("/api/sync/kiotviet/firebase/products", methods=["PUT"])
 def sync_products_from_kiotviet():
-    return jsonify(update_products_from_kiotviet_to_firestore())
+    return jsonify(firebase_service_product.update_products_from_kiotviet_to_firestore())
 
 # ============================
 # ==== Firebase API Routes ===
