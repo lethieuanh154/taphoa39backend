@@ -147,12 +147,13 @@ class FirestoreInvoiceService:
         days_in_month = monthrange(int(year), int(month))[1]
         revenue = 0
         cost = 0
+        buyer_quantity = 0  # <-- Thêm dòng này
         for day in range(1, days_in_month + 1):
             date_str = f"{year}-{str(month).zfill(2)}-{str(day).zfill(2)}"
             daily = self.calculate_daily_summary(date_str)
             revenue += daily['revenue']
             cost += daily['cost']
-            buyer_quantity+=daily["buyer_quantity"]
+            buyer_quantity += daily["buyer_quantity"]
         profit = revenue - cost
         doc_id = f"{year}-{str(month).zfill(2)}"
         summary_ref = db.collection('MonthlySummary').document(doc_id)
@@ -174,11 +175,12 @@ class FirestoreInvoiceService:
         """
         revenue = 0
         cost = 0
+        buyer_quantity = 0  # <-- Thêm dòng này
         for month in range(1, 13):
             monthly = self.calculate_monthly_summary(year, month)
             revenue += monthly['revenue']
             cost += monthly['cost']
-            buyer_quantity+=monthly["buyer_quantity"]
+            buyer_quantity += monthly["buyer_quantity"]
         profit = revenue - cost
         doc_id = str(year)
         summary_ref = db.collection('YearlySummary').document(doc_id)
