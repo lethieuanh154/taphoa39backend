@@ -1,14 +1,16 @@
 FROM python:3.13-slim
 
-# Tạo biến môi trường
-ENV e=local
-
 WORKDIR /app
 
-COPY . /app
-
+COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . .
 
 EXPOSE 5000
 
-CMD ["python", "-m", "app"]
+ENV FLASK_APP=app.py
+ENV FLASK_RUN_HOST=0.0.0.0
+ENV FLASK_RUN_PORT=5000
+
+CMD ["gunicorn", "-k", "eventlet", "-w", "1", "app:app", "--bind", "0.0.0.0:5000"]
