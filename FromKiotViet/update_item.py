@@ -35,5 +35,3 @@ def set_data():
         print("Response:", response.json())
     except requests.exceptions.RequestException as e:
         print(f"Error fetching data: {e}")
-
-set_data()
