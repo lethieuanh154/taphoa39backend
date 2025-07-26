@@ -25,11 +25,7 @@ from firebase.firebase_hanghoa.import_to_firestore import update_products_from_b
 from firebase.firebase_hoadon.import_to_firestore import update_invoices_from_banhang_app_to_firestore
 
 app = Flask(__name__)
-CORS(app, 
-     resources={r"/*": {"origins": ["https://taphoa39banhang.onrender.com", "http://localhost:5000"]}},
-     supports_credentials=True,
-     methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-     allow_headers=["Content-Type", "Authorization"])
+CORS(app, resources={r"/*": {"origins": "*"}})
 # Initialize Firebase Services
 firebase_service_product = FirestoreProductService(Cache())
 firebase_service_invoice = FirestoreInvoiceService(Cache())
