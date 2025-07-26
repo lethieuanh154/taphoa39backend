@@ -1,19 +1,14 @@
-# FROM python:3.13-slim
+FROM python:3.13-slim
 
-# WORKDIR /app
+# Tạo biến môi trường
+ENV e=local
 
-# COPY requirements.txt ./
-# RUN pip install --no-cache-dir -r requirements.txt
+WORKDIR /app
 
-# COPY . .
+COPY . /app
 
-# # Set default environment
-# ENV e=prod
-# ENV FLASK_APP=app.py
-# ENV FLASK_RUN_HOST=0.0.0.0
+RUN pip install --no-cache-dir -r requirements.txt
 
-# # Use port 8000 for prod, 5000 for others
-# EXPOSE 8000
+EXPOSE 5000
 
-# # Dynamic port based on environment
-# CMD ["sh", "-c", "if [ \"$e\" = \"prod\" ]; then gunicorn -k eventlet -w 1 app:app --bind 0.0.0.0:8000; else gunicorn -k eventlet -w 1 app:app --bind 0.0.0.0:5000; fi"]
+CMD ["python", "-m", "app"]
