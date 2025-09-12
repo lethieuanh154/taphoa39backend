@@ -451,19 +451,20 @@ def get_top_products():
                 product_name = product.get('FullName', 'Unknown')
                 price = safe_float(item.get('price', product.get('BasePrice', 0)))
                 quantity = safe_int(item.get('quantity', 0))
-                total_price = price * quantity
+                cost = safe_float(product.get('Cost', 0))
+                total_profit = (price - cost) * quantity
                 if product_id is not None:
                     if product_id not in product_sales:
                         product_sales[product_id] = {
                             'productId': product_id,
                             'productName': product_name,
-                            'totalRevenue': 0,
+                            'totalProfit': 0,
                             'totalQuantity': 0
                         }
-                    product_sales[product_id]['totalRevenue'] += total_price
+                    product_sales[product_id]['totalProfit'] += total_profit
                     product_sales[product_id]['totalQuantity'] += quantity
-        # Sắp xếp theo doanh thu giảm dần và lấy top 20
-        top_products = sorted(product_sales.values(), key=lambda x: x['totalRevenue'], reverse=True)[:20]
+        # Sắp xếp theo lợi nhuận giảm dần và lấy top 20
+        top_products = sorted(product_sales.values(), key=lambda x: x['totalProfit'], reverse=True)[:20]
         return jsonify(top_products)
     except Exception as e:
         import traceback
@@ -582,4 +583,3 @@ if __name__ == "__main__":
     port = 8000 if env == "prod" else 5000
     print(f"Running in {env.upper()} mode on port {port}")
     socketio.run(app, host='0.0.0.0', port=port)
-      
