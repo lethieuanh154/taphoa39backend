@@ -141,19 +141,22 @@ class FirestoreInvoiceService:
 
     def calculate_monthly_summary(self, year, month):
         """
-        Tính revenue, cost, profit cho 1 tháng, lưu vào collection MonthlySummary
+        Tính revenue, cost, profit cho 1 tháng, sử dụng collection DailySummary thay vì gọi calculate_daily_summary
         """
         from calendar import monthrange
         days_in_month = monthrange(int(year), int(month))[1]
         revenue = 0
         cost = 0
-        buyer_quantity = 0  # <-- Thêm dòng này
+        buyer_quantity = 0
         for day in range(1, days_in_month + 1):
             date_str = f"{year}-{str(month).zfill(2)}-{str(day).zfill(2)}"
-            daily = self.calculate_daily_summary(date_str)
-            revenue += daily['revenue']
-            cost += daily['cost']
-            buyer_quantity += daily["buyer_quantity"]
+            # Lấy document từ collection DailySummary
+            daily_doc = db.collection('DailySummary').document(date_str).get()
+            if daily_doc.exists:
+                daily = daily_doc.to_dict()
+                revenue += daily.get('revenue', 0)
+                cost += daily.get('cost', 0)
+                buyer_quantity += daily.get('buyer_quantity', 0)
         profit = revenue - cost
         doc_id = f"{year}-{str(month).zfill(2)}"
         summary_ref = db.collection('MonthlySummary').document(doc_id)
@@ -164,34 +167,99 @@ class FirestoreInvoiceService:
             'cost': cost,
             'profit': profit
         })
-        return { 'buyer_quantity': buyer_quantity,'month': doc_id, 'revenue': revenue, 'cost': cost, 'profit': profit}
-
+        return { 'buyer_quantity': buyer_quantity,'month': doc_id, 'revenue': revenue, 'cost': cost, 'profit': profit }
     def get_monthly_summary(self, year, month):
         return self.calculate_monthly_summary(year, month)
 
     def calculate_yearly_summary(self, year):
         """
-        Tính revenue, cost, profit cho 1 năm, lưu vào collection YearlySummary
+        Tính revenue, cost, profit cho 1 năm, sử dụng collection MonthlySummary thay vì gọi calculate_monthly_summary
         """
         revenue = 0
         cost = 0
-        buyer_quantity = 0  # <-- Thêm dòng này
+        buyer_quantity = 0
         for month in range(1, 13):
-            monthly = self.calculate_monthly_summary(year, month)
-            revenue += monthly['revenue']
-            cost += monthly['cost']
-            buyer_quantity += monthly["buyer_quantity"]
+            doc_id = f"{year}-{str(month).zfill(2)}"
+            monthly_doc = db.collection('MonthlySummary').document(doc_id).get()
+            if monthly_doc.exists:
+                monthly = monthly_doc.to_dict()
+                revenue += monthly.get('revenue', 0)
+                cost += monthly.get('cost', 0)
+                buyer_quantity += monthly.get('buyer_quantity', 0)
         profit = revenue - cost
-        doc_id = str(year)
-        summary_ref = db.collection('YearlySummary').document(doc_id)
+        summary_ref = db.collection('YearlySummary').document(str(year))
         summary_ref.set({
             'buyer_quantity': buyer_quantity,
-            'year': doc_id,
+            'year': str(year),
             'revenue': revenue,
             'cost': cost,
             'profit': profit
         })
-        return {'buyer_quantity': buyer_quantity,'year': doc_id, 'revenue': revenue, 'cost': cost, 'profit': profit}
+        return {'buyer_quantity': buyer_quantity, 'year': str(year), 'revenue': revenue, 'cost': cost, 'profit': profit}
 
     def get_yearly_summary(self, year):
         return self.calculate_yearly_summary(year)
+    
+    def calculate_top_products_summary(self, date=None, year=None, month=None):
+        """
+        Tính top sản phẩm theo totalProfit, lưu vào Firestore collection TopProductsSummary.
+        Nếu truyền date, year, month thì lưu theo từng mốc thời gian.
+        """
+        from collections import defaultdict
+        product_sales = {}
+
+        # Lấy invoices theo thời gian
+        if date:
+            invoices = self.get_invoices_by_date(date)
+            doc_id = date
+        elif year and month:
+            from calendar import monthrange
+            days_in_month = monthrange(int(year), int(month))[1]
+            invoices = []
+            for day in range(1, days_in_month + 1):
+                date_str = f"{year}-{str(month).zfill(2)}-{str(day).zfill(2)}"
+                invoices.extend(self.get_invoices_by_date(date_str))
+            doc_id = f"{year}-{str(month).zfill(2)}"
+        elif year:
+            invoices = []
+            for m in range(1, 13):
+                from calendar import monthrange
+                days_in_month = monthrange(int(year), m)[1]
+                for day in range(1, days_in_month + 1):
+                    date_str = f"{year}-{str(m).zfill(2)}-{str(day).zfill(2)}"
+                    invoices.extend(self.get_invoices_by_date(date_str))
+            doc_id = str(year)
+        else:
+            invoices = self.read_all_invoices()
+            doc_id = "all"
+
+        for invoice in invoices:
+            cart_items = invoice.get('cartItems', [])
+            for item in cart_items:
+                product = item.get('product', {})
+                product_id = product.get('Id')
+                product_name = product.get('FullName', 'Unknown')
+                price = self.safe_float(item.get('price', product.get('BasePrice', 0)))
+                quantity = self.safe_int(item.get('quantity', 0))
+                cost = self.safe_float(product.get('Cost', 0))
+                total_profit = (price - cost) * quantity
+                if product_id is not None:
+                    if product_id not in product_sales:
+                        product_sales[product_id] = {
+                            'productId': product_id,
+                            'productName': product_name,
+                            'totalProfit': 0,
+                            'totalQuantity': 0
+                        }
+                    product_sales[product_id]['totalProfit'] += total_profit
+                    product_sales[product_id]['totalQuantity'] += quantity
+
+        # Sắp xếp theo lợi nhuận giảm dần và lấy top 20
+        top_products = sorted(product_sales.values(), key=lambda x: x['totalProfit'], reverse=True)[:20]
+
+        # Lưu vào Firestore
+        summary_ref = db.collection('TopProductsSummary').document(doc_id)
+        summary_ref.set({
+            'top_products': top_products
+        })
+        return top_products
