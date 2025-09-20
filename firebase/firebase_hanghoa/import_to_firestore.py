@@ -179,3 +179,23 @@ def get_products_by_master_unit_id(master_unit_id):
         product_data["Id"] = doc.id
         products.append(product_data)
     return products
+
+def sync_products_if_firestore_empty():
+    products_ref = db.collection(COLLECTION_NAME)
+    docs = list(products_ref.stream())
+    if len(docs) == 0:
+        print("Firestore chưa có dữ liệu, đang tải toàn bộ sản phẩm từ API...")
+        api_items = fetch_api_items()
+        BATCH_SIZE = 500
+        for i in range(0, len(api_items), BATCH_SIZE):
+            batch = db.batch()
+            for item in api_items[i:i+BATCH_SIZE]:
+                doc_ref = db.collection(COLLECTION_NAME).document(str(item.Id))
+                batch.set(doc_ref, item.__dict__)
+            batch.commit()
+        print(f"Đã lưu {len(api_items)} sản phẩm vào Firestore.")
+    else:
+        print(f"Firestore đã có {len(docs)} sản phẩm, không cần tải lại.")
+
+# Gọi hàm này khi khởi động hoặc khi cần đồng bộ
+sync_products_if_firestore_empty()
