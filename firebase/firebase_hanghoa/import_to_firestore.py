@@ -197,3 +197,5 @@ def sync_products_if_firestore_empty():
     else:
         print(f"Firestore đã có {len(docs)} sản phẩm, không cần tải lại.")
 
+# # Gọi hàm này khi khởi động hoặc khi cần đồng bộ
+# sync_products_if_firestore_empty()
