@@ -449,7 +449,7 @@ def get_top_products():
                 product = item.get('product', {})
                 product_id = product.get('Id')
                 product_name = product.get('FullName', 'Unknown')
-                price = safe_float(item.get('totalPrice', product.get('BasePrice', 0)))
+                price = safe_float(item.get('unitPrice'))
                 quantity = safe_int(item.get('quantity', 0))
                 cost = safe_float(product.get('Cost', 0))
                 total_profit = (price - cost) * quantity
