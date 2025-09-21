@@ -106,3 +106,5 @@ def update_customer_from_kiotviet_to_firestore():
     update_changed_customer(api_customers, firestore_customers)
     return {"message": "All customers have already been updated from kiotviet to firestore"}
 
+update_customer_from_kiotviet_to_firestore()
+
