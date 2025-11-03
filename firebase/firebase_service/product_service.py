@@ -125,54 +125,64 @@ class FirestoreProductService:
         return masters
     
     def update_products_from_kiotviet_to_firestore(self):
-        firestore_items = self.fetch_firestore_items()
-        api_items = self.fetch_api_items()
-        # Tạo map theo Code
-        firestore_by_code = {}
-        for item_id, item in firestore_items.items():
-            code = item['data'].get('Code')
-            if code:
-                if code not in firestore_by_code:
-                    firestore_by_code[code] = []
-                firestore_by_code[code].append({'id': item_id, 'data': item['data']})
-        api_by_code = {getattr(item, 'Code', None): item for item in api_items}
+        try:
+            print("Bắt đầu cập nhật sản phẩm từ KiotViet...")
+            firestore_items = self.fetch_firestore_items()
+            print("Đã lấy dữ liệu từ Firestore.")
+            api_items = self.fetch_api_items()  # Thêm timeout trong fetch_api_items
+            print("Đã lấy dữ liệu từ API KiotViet.")
+            # Tạo map theo Code
+            firestore_by_code = {}
+            for item_id, item in firestore_items.items():
+                code = item['data'].get('Code')
+                if code:
+                    if code not in firestore_by_code:
+                        firestore_by_code[code] = []
+                    firestore_by_code[code].append({'id': item_id, 'data': item['data']})
+            api_by_code = {getattr(item, 'Code', None): item for item in api_items}
 
-        to_delete = []
-        to_add = []
+            to_delete = []
+            to_add = []
 
-        for code, api_item in api_by_code.items():
-            api_id = getattr(api_item, 'Id', None)
-            api_mod = getattr(api_item, 'ModifiedDate', '')
-            # Nếu code đã tồn tại trong Firestore
-            if code in firestore_by_code:
-                # Xóa tất cả các bản ghi cũ có cùng code này (dù id nào)
-                for fs_item in firestore_by_code[code]:
-                    fs_id = fs_item['id']
-                    fs_mod = fs_item['data'].get('ModifiedDate', '')
-                    # Nếu Id khác hoặc bản API mới hơn, xóa bản cũ
-                    if api_id != fs_id or is_newer(api_mod, fs_mod):
-                        to_delete.append(fs_id)
-                # Sau khi xóa, sẽ thêm bản mới nhất từ API
-                to_add.append(api_item)
-            else:
-                # Code chỉ có ở API, thêm mới
-                to_add.append(api_item)
+            for code, api_item in api_by_code.items():
+                api_id = getattr(api_item, 'Id', None)
+                api_mod = getattr(api_item, 'ModifiedDate', '')
+                # Nếu code đã tồn tại trong Firestore
+                if code in firestore_by_code:
+                    # Xóa tất cả các bản ghi cũ có cùng code này (dù id nào)
+                    for fs_item in firestore_by_code[code]:
+                        fs_id = fs_item['id']
+                        fs_mod = fs_item['data'].get('ModifiedDate', '')
+                        # Nếu Id khác hoặc bản API mới hơn, xóa bản cũ
+                        if api_id != fs_id or is_newer(api_mod, fs_mod):
+                            to_delete.append(fs_id)
+                    # Sau khi xóa, sẽ thêm bản mới nhất từ API
+                    to_add.append(api_item)
+                else:
+                    # Code chỉ có ở API, thêm mới
+                    to_add.append(api_item)
 
-        # Xóa những sản phẩm trong Firestore mà không có trong API
-        for code, fs_items in firestore_by_code.items():
-            if code not in api_by_code:
-                for fs_item in fs_items:
-                    to_delete.append(fs_item['id'])
+            # Xóa những sản phẩm trong Firestore mà không có trong API
+            for code, fs_items in firestore_by_code.items():
+                if code not in api_by_code:
+                    for fs_item in fs_items:
+                        to_delete.append(fs_item['id'])
 
-        # Thực hiện xóa và thêm/cập nhật Firestore
-        for item_id in set(to_delete):
-            doc_ref = db.collection(COLLECTION_NAME).document(str(item_id))
-            doc_ref.delete()
-        for item in to_add:
-            doc_ref = db.collection(COLLECTION_NAME).document(str(getattr(item, 'Id')))
-            doc_ref.set(item.__dict__ if hasattr(item, '__dict__') else item)
+            # Thực hiện xóa và thêm/cập nhật Firestore
+            print("Đang xử lý cập nhật/xóa sản phẩm...")
+            for item_id in set(to_delete):
+                doc_ref = db.collection(COLLECTION_NAME).document(str(item_id))
+                doc_ref.delete()
+            for item in to_add:
+                doc_ref = db.collection(COLLECTION_NAME).document(str(getattr(item, 'Id')))
+                doc_ref.set(item.__dict__ if hasattr(item, '__dict__') else item)
 
-        print(f"Đã xóa {len(set(to_delete))} sản phẩm, thêm/cập nhật {len(to_add)} sản phẩm.")
+            print(f"Đã xóa {len(set(to_delete))} sản phẩm, thêm/cập nhật {len(to_add)} sản phẩm.")
+            print("Hoàn tất cập nhật/xóa sản phẩm.")
+        except Exception as e:
+            print("Lỗi khi cập nhật sản phẩm từ KiotViet:", e)
+            import traceback
+            print(traceback.format_exc())
 
     def fetch_firestore_items(self):
         print("Đang tải dữ liệu từ Firestore...")
@@ -192,12 +202,13 @@ class FirestoreProductService:
 
     def fetch_api_items(self):
         print("Đang gọi API /api/all...")
-        response = requests.get(API_URL, headers=API_HEADERS)  # Sửa lại URL phù hợp
+        response = requests.get(API_URL, headers=API_HEADERS, timeout=30)
         response.raise_for_status()
         items = response.json().get("Data", [])
         print(f"Đã nhận {len(items)} sản phẩm từ API.")
         products = [Product.from_dict(item) for item in items]
         return products
+    
     def update_changed_items(self,api_items, firestore_items):
        changed_items = []
        deleted_items = []

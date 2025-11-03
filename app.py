@@ -3,6 +3,7 @@ import os
 from unidecode import unidecode
 from flask_cors import CORS
 from flask_socketio import SocketIO, emit
+from flask import abort
 
 # KiotViet Dependencies
 from FromKiotViet.get_entire_product import get_all as get_all_products_from_kiotviet
@@ -11,7 +12,6 @@ from FromKiotViet.get_all_product_by_category import get_items_category, get_ite
 from FromKiotViet.get_category import get_category
 from FromKiotViet.get_one_product import get_item
 from FromKiotViet.get_all_customer import get_entire_customer
-from FromKiotViet.get_authorization import auth_token
 
 # Firebase Dependencies
 from firebase.firebase_service.cache import Cache
@@ -21,8 +21,7 @@ from firebase.firebase_service.customer_service import FirestoreCustomerService
 from firebase.firebase_service.order_service import FirestoreorderService
 # Data Sync Dependencies
 from firebase.firebase_khachhang.import_to_firestore import update_customer_from_kiotviet_to_firestore
-from firebase.firebase_hanghoa.import_to_firestore import update_products_from_banhang_app_to_firestore, update_products_from_kiotviet_to_firestore
-from firebase.firebase_hoadon.import_to_firestore import update_invoices_from_banhang_app_to_firestore
+from firebase.firebase_hanghoa.import_to_firestore import update_products_from_banhang_app_to_firestore
 
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
@@ -33,7 +32,160 @@ firebase_service_customer = FirestoreCustomerService(Cache())
 firebase_service_order = FirestoreorderService(Cache())
 
 # Khởi tạo SocketIO
-socketio = SocketIO(app, cors_allowed_origins="*")
+socketio = SocketIO(app, cors_allowed_origins="*", engineio_logger=False, logger=False, path='/api/websocket/socket.io')
+
+UPDATE_ID_KEYS = ("Id", "id", "productId", "ProductId")
+ONHAND_KEYS = ("OnHand", "onHand", "onhand")
+
+
+def _norm_id(data):
+    for key in UPDATE_ID_KEYS:
+        if key in data and data[key] is not None:
+            return data[key]
+    return None
+
+
+def _norm_onhand(data):
+    for key in ONHAND_KEYS:
+        if key in data:
+            return data.get(key)
+    return None
+
+
+def _is_valid_pid(pid: str) -> bool:
+    if pid is None:
+        return False
+    pid = str(pid).strip()
+    if pid in ("", "productId", "onHand", "OnHand", "Id", "id"):
+        return False
+    return pid.isdigit()
+
+
+def _to_number(value):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _normalize_product_updates(payload):
+    if isinstance(payload, list):
+        normalized = []
+        for item in payload:
+            if not isinstance(item, dict):
+                raise ValueError("Each list item must be an object")
+            pid = _norm_id(item)
+            normalized.append({
+                "Id": str(pid) if pid is not None else None,
+                "OnHand": _norm_onhand(item)
+            })
+        return normalized
+
+    if isinstance(payload, dict):
+        if any(key in payload for key in UPDATE_ID_KEYS):
+            pid = _norm_id(payload)
+            return [{
+                "Id": str(pid) if pid is not None else None,
+                "OnHand": _norm_onhand(payload)
+            }]
+
+        return [{"Id": str(key), "OnHand": value} for key, value in payload.items()]
+
+    raise ValueError("Unsupported JSON body type")
+
+
+def _apply_product_onhand_updates(normalized_items):
+    results = []
+    broadcast_updates = []
+
+    for item in normalized_items:
+        pid = item.get("Id")
+        raw_onhand = item.get("OnHand")
+
+        if not _is_valid_pid(pid):
+            results.append({"id": pid, "result": "invalid_id"})
+            continue
+
+        onhand = _to_number(raw_onhand)
+        if onhand is None:
+            results.append({"id": pid, "result": "invalid_onhand"})
+            continue
+
+        try:
+            update_result = firebase_service_product.update_product(pid, {"OnHand": onhand})
+            results.append({"id": pid, "result": update_result})
+            broadcast_updates.append({"Id": pid, "OnHand": onhand})
+        except Exception as exc:
+            import traceback
+            print(f"Error updating product {pid}: {exc}")
+            print(traceback.format_exc())
+            results.append({"id": pid, "result": f"error: {str(exc)}"})
+
+    return results, broadcast_updates
+
+
+def notify_product_onhand_updated(product_id, onHand):
+    socketio.emit(
+        'product_onhand_updated',
+        {'productId': str(product_id), 'onHand': onHand},
+        namespace='/api/websocket/products'
+    )
+
+
+def broadcast_products_onhand_updated(updates):
+    if not updates:
+        return
+
+    socketio.emit('products_onhand_updated', updates, namespace='/api/websocket/products')
+    for item in updates:
+        pid = item.get('Id') or item.get('productId')
+        onhand = item.get('OnHand')
+        if pid is None or onhand is None:
+            continue
+        notify_product_onhand_updated(pid, onhand)
+
+
+@socketio.on('connect', namespace='/api/websocket/products')
+def handle_products_connect():
+    print('Client connected to products websocket')
+
+
+@socketio.on('disconnect', namespace='/api/websocket/products')
+def handle_products_disconnect():
+    print('Client disconnected from products websocket')
+
+
+@socketio.on('products_onhand_update_request', namespace='/api/websocket/products')
+def handle_products_update(payload):
+    try:
+        items_payload = payload
+        if isinstance(payload, dict) and 'products' in payload:
+            items_payload = payload.get('products')
+
+        if items_payload is None:
+            emit('products_onhand_update_ack', {'ok': False, 'error': 'no items provided'})
+            return
+
+        normalized = _normalize_product_updates(items_payload)
+        results, broadcast_updates = _apply_product_onhand_updates(normalized)
+
+        if broadcast_updates:
+            broadcast_products_onhand_updated(broadcast_updates)
+
+        successes = [r for r in results if isinstance(r.get('result'), dict)]
+        failures = [r for r in results if r not in successes]
+
+        response = {'ok': bool(successes), 'count': len(successes)}
+        if failures:
+            response['errors'] = failures
+
+        emit('products_onhand_update_ack', response)
+    except ValueError as exc:
+        emit('products_onhand_update_ack', {'ok': False, 'error': str(exc)})
+    except Exception as exc:
+        import traceback
+        print(traceback.format_exc())
+        emit('products_onhand_update_ack', {'ok': False, 'error': str(exc)})
 
 # === Static Files and Index ===
 @app.route("/")
@@ -42,7 +194,12 @@ def serve_index():
 
 @app.route("/<path:path>")
 def serve_static_files(path):
-    if os.path.exists(os.path.join(app.static_folder, path)):
+    # Don't let SPA fallback intercept Socket.IO polling requests.
+    if 'socket.io' in path:
+        return abort(404)
+
+    full_path = os.path.join(app.static_folder, path)
+    if os.path.exists(full_path):
         return send_from_directory(app.static_folder, path)
     else:
         return send_from_directory(app.static_folder, "index.html")
@@ -225,9 +382,17 @@ def sync_products_from_kiotviet():
 def update_onhand_from_invoice():
     invoice_obj = request.json
     result = update_products_from_banhang_app_to_firestore(invoice_obj)
-    # Phát WebSocket cho client khác nếu muốn
-    for p in result.get('updated_products', []):
-        notify_product_onhand_updated(p['Id'], p['new_OnHand'])
+    updates_for_broadcast = []
+    for item in result.get('updated_products', []):
+        pid = item.get("Id")
+        new_onhand = item.get("new_OnHand")
+        converted_onhand = _to_number(new_onhand)
+        if not pid or converted_onhand is None:
+            continue
+        updates_for_broadcast.append({"Id": str(pid), "OnHand": converted_onhand})
+
+    if updates_for_broadcast:
+        broadcast_products_onhand_updated(updates_for_broadcast)
     return jsonify(result)
 
 
@@ -252,16 +417,28 @@ def add_product():
     product = request.json
     return jsonify(firebase_service_product.add_product(product))
 
+# ...existing code...
 @app.route("/api/firebase/update/products", methods=["PUT"])
 def update_product():
-    products = request.json  # [{Id:..., OnHand:...}, ...]
-    results = []
-    for prod in products:
-        product_id = str(prod["Id"])
-        updates = {"OnHand": prod["OnHand"]}
-        result = firebase_service_product.update_product(product_id, updates)
-        results.append({ "id": product_id, "result": result })
-    return jsonify({"message": f"Updated {len(products)} products", "results": results})
+    try:
+        payload = request.get_json(silent=True)
+        if payload is None:
+            return jsonify({"status": "error", "message": "No JSON body provided"}), 400
+        try:
+            normalized = _normalize_product_updates(payload)
+        except ValueError as exc:
+            return jsonify({"status": "error", "message": str(exc)}), 400
+
+        results, broadcast_updates = _apply_product_onhand_updates(normalized)
+
+        if broadcast_updates:
+            broadcast_products_onhand_updated(broadcast_updates)
+
+        return jsonify({"message": f"Processed {len(results)} items", "results": results})
+    except Exception as e:
+        import traceback
+        print(traceback.format_exc())
+        return jsonify({"status": "error", "message": str(e), "trace": traceback.format_exc()}), 500
 
 @app.route("/api/firebase/products/del/<product_id>", methods=["DELETE"])
 def delete_product(product_id):
@@ -416,6 +593,7 @@ def get_yearly_summary():
         import traceback
         print(traceback.format_exc())
         return jsonify({"status": "error", "message": str(e), "trace": traceback.format_exc()}), 500
+
 @app.route("/api/firebase/top_products", methods=["GET"])
 def get_top_products():
     try:
@@ -449,7 +627,7 @@ def get_top_products():
                 product = item.get('product', {})
                 product_id = product.get('Id')
                 product_name = product.get('FullName', 'Unknown')
-                price = safe_float(item.get('unitPrice'))
+                price = safe_float(product.get('BasePrice', 0))
                 quantity = safe_int(item.get('quantity', 0))
                 cost = safe_float(product.get('Cost', 0))
                 total_profit = (price - cost) * quantity
@@ -471,12 +649,6 @@ def get_top_products():
         print(traceback.format_exc())  # In ra lỗi chi tiết ở terminal
         return jsonify({"status": "error", "message": str(e), "trace": traceback.format_exc()}), 500
 
-# ============================
-# ===== App Entry Point ======
-# ============================
-
-def notify_product_onhand_updated(product_id, onHand):
-    socketio.emit('product_onhand_updated', {'productId': product_id, 'onHand': onHand}, namespace='/api/websocket/products')
 # WebSocket endpoint cho invoices
 
 
