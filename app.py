@@ -494,9 +494,58 @@ def update_invoice(invoice_id):
 
 @app.route("/api/firebase/invoices/<invoice_id>", methods=["DELETE"])
 def delete_invoice(invoice_id):
-    result = firebase_service_invoice.delete_invoice(invoice_id)
+    existing_invoice = firebase_service_invoice.read_invoice(invoice_id)
+    if not existing_invoice:
+        return jsonify({"status": "error", "message": "Invoice not found"}), 404
+
+    restocked_updates = []
+    restock_errors = []
+    cart_items = existing_invoice.get('cartItems', []) or []
+
+    for item in cart_items:
+        product_data = item.get('product') or {}
+        product_id = product_data.get('Id') or product_data.get('id') or item.get('productId')
+        quantity = safe_int(item.get('quantity', 0))
+
+        if quantity <= 0:
+            continue
+
+        pid_str = str(product_id) if product_id is not None else None
+        if not _is_valid_pid(pid_str):
+            continue
+
+        product_doc = firebase_service_product.read_product(pid_str)
+        if not product_doc:
+            continue
+
+        current_onhand = _to_number(product_doc.get('OnHand'))
+        if current_onhand is None:
+            continue
+
+        new_onhand = int(current_onhand) + quantity
+        try:
+            firebase_service_product.update_product(pid_str, {"OnHand": new_onhand})
+            restocked_updates.append({"Id": pid_str, "OnHand": new_onhand})
+        except Exception as exc:
+            import traceback
+            print(f"Error restocking product {pid_str}: {exc}")
+            print(traceback.format_exc())
+            restock_errors.append({"id": pid_str, "error": str(exc)})
+
+    delete_result = firebase_service_invoice.delete_invoice(invoice_id)
     notify_invoice_deleted(invoice_id)
-    return jsonify(result)
+
+    if restocked_updates:
+        broadcast_products_onhand_updated(restocked_updates)
+
+    response = {
+        "message": delete_result.get("message", "invoice deleted"),
+        "restocked_products": restocked_updates,
+    }
+    if restock_errors:
+        response["restock_errors"] = restock_errors
+
+    return jsonify(response)
 
 @app.route("/api/firebase/invoices/date", methods=["GET"])
 def get_invoices_by_date():
