@@ -63,7 +63,7 @@ def _is_valid_pid(pid: str) -> bool:
 
 def _to_number(value):
     try:
-        return float(value)
+        return int(float(value))
     except (TypeError, ValueError):
         return None
 
@@ -75,46 +75,91 @@ def _normalize_product_updates(payload):
             if not isinstance(item, dict):
                 raise ValueError("Each list item must be an object")
             pid = _norm_id(item)
+            fields = {
+                key: value
+                for key, value in item.items()
+                if key not in UPDATE_ID_KEYS
+            }
             normalized.append({
                 "Id": str(pid) if pid is not None else None,
-                "OnHand": _norm_onhand(item)
+                "fields": fields
             })
         return normalized
 
     if isinstance(payload, dict):
         if any(key in payload for key in UPDATE_ID_KEYS):
             pid = _norm_id(payload)
+            fields = {
+                key: value
+                for key, value in payload.items()
+                if key not in UPDATE_ID_KEYS
+            }
             return [{
                 "Id": str(pid) if pid is not None else None,
-                "OnHand": _norm_onhand(payload)
+                "fields": fields
             }]
 
-        return [{"Id": str(key), "OnHand": value} for key, value in payload.items()]
+        normalized = []
+        for key, value in payload.items():
+            if isinstance(value, dict):
+                fields = dict(value)
+            else:
+                fields = {"OnHand": value}
+            normalized.append({"Id": str(key), "fields": fields})
+        return normalized
 
     raise ValueError("Unsupported JSON body type")
 
 
-def _apply_product_onhand_updates(normalized_items):
+def _apply_product_updates(normalized_items):
     results = []
     broadcast_updates = []
 
     for item in normalized_items:
         pid = item.get("Id")
-        raw_onhand = item.get("OnHand")
 
         if not _is_valid_pid(pid):
             results.append({"id": pid, "result": "invalid_id"})
             continue
 
-        onhand = _to_number(raw_onhand)
-        if onhand is None:
-            results.append({"id": pid, "result": "invalid_onhand"})
+        raw_fields = item.get("fields") or {}
+        if not isinstance(raw_fields, dict) or len(raw_fields) == 0:
+            results.append({"id": pid, "result": "no_fields"})
+            continue
+
+        updates = {}
+        invalid_onhand = False
+        broadcast_fields = {}
+
+        for key, value in raw_fields.items():
+            if key in ONHAND_KEYS:
+                converted = _to_number(value)
+                if converted is None:
+                    invalid_onhand = True
+                    continue
+                updates["OnHand"] = converted
+                broadcast_fields["OnHand"] = converted
+            else:
+                updates[key] = value
+                broadcast_fields[key] = value
+
+        if not updates:
+            if invalid_onhand:
+                results.append({"id": pid, "result": "invalid_onhand"})
+            else:
+                results.append({"id": pid, "result": "no_updates"})
             continue
 
         try:
-            update_result = firebase_service_product.update_product(pid, {"OnHand": onhand})
-            results.append({"id": pid, "result": update_result})
-            broadcast_updates.append({"Id": pid, "OnHand": onhand})
+            update_result = firebase_service_product.update_product(pid, updates)
+            result_entry = {"id": pid, "result": update_result}
+            if invalid_onhand:
+                result_entry["warning"] = "invalid_onhand"
+            results.append(result_entry)
+            if broadcast_fields:
+                entry = {"Id": pid}
+                entry.update(broadcast_fields)
+                broadcast_updates.append(entry)
         except Exception as exc:
             import traceback
             print(f"Error updating product {pid}: {exc}")
@@ -124,12 +169,31 @@ def _apply_product_onhand_updates(normalized_items):
     return results, broadcast_updates
 
 
-def notify_product_onhand_updated(product_id, onHand):
-    socketio.emit(
-        'product_onhand_updated',
-        {'productId': str(product_id), 'onHand': onHand},
-        namespace='/api/websocket/products'
-    )
+def notify_product_onhand_updated(product_id, fields):
+    if not fields:
+        return
+
+    payload = {'productId': str(product_id)}
+
+    def _copy_field(src_key, dest_key=None):
+        if src_key in fields and fields[src_key] is not None:
+            payload[dest_key or src_key] = fields[src_key]
+
+    _copy_field('OnHand', 'onHand')
+    _copy_field('onHand', 'onHand')
+    _copy_field('BasePrice', 'basePrice')
+    _copy_field('basePrice', 'basePrice')
+    _copy_field('Cost', 'cost')
+    _copy_field('cost', 'cost')
+    _copy_field('Code', 'code')
+    _copy_field('code', 'code')
+    _copy_field('FullName', 'fullName')
+    _copy_field('fullName', 'fullName')
+    _copy_field('Name', 'name')
+    _copy_field('name', 'name')
+
+    if len(payload) > 1:
+        socketio.emit('product_onhand_updated', payload, namespace='/api/websocket/products')
 
 
 def broadcast_products_onhand_updated(updates):
@@ -139,10 +203,10 @@ def broadcast_products_onhand_updated(updates):
     socketio.emit('products_onhand_updated', updates, namespace='/api/websocket/products')
     for item in updates:
         pid = item.get('Id') or item.get('productId')
-        onhand = item.get('OnHand')
-        if pid is None or onhand is None:
+        if pid is None:
             continue
-        notify_product_onhand_updated(pid, onhand)
+        fields = {k: v for k, v in item.items() if k not in UPDATE_ID_KEYS}
+        notify_product_onhand_updated(pid, fields)
 
 
 @socketio.on('connect', namespace='/api/websocket/products')
@@ -167,7 +231,7 @@ def handle_products_update(payload):
             return
 
         normalized = _normalize_product_updates(items_payload)
-        results, broadcast_updates = _apply_product_onhand_updates(normalized)
+        results, broadcast_updates = _apply_product_updates(normalized)
 
         if broadcast_updates:
             broadcast_products_onhand_updated(broadcast_updates)
@@ -429,7 +493,7 @@ def update_product():
         except ValueError as exc:
             return jsonify({"status": "error", "message": str(exc)}), 400
 
-        results, broadcast_updates = _apply_product_onhand_updates(normalized)
+        results, broadcast_updates = _apply_product_updates(normalized)
 
         if broadcast_updates:
             broadcast_products_onhand_updated(broadcast_updates)
