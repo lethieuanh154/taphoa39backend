@@ -35,6 +35,66 @@ class FirestoreCustomerService:
         self.cache.invalidate("all_customers")
         return {"message": f"{len(customers)} customers added"}
     
+    def delete_customers(self, customer_ids) -> dict:
+        if not customer_ids:
+            return {
+                "message": "customer_ids is required",
+                "deleted": [],
+                "failed": {},
+                "deleted_count": 0,
+                "failed_count": 0,
+                "requested": 0,
+            }
+
+        normalized_ids = []
+        invalid_inputs = []
+        for raw_id in customer_ids:
+            if raw_id is None:
+                invalid_inputs.append(raw_id)
+                continue
+            doc_id = str(raw_id).strip()
+            if not doc_id:
+                invalid_inputs.append(raw_id)
+                continue
+            normalized_ids.append(doc_id)
+
+        unique_ids = list(dict.fromkeys(normalized_ids))
+        if not unique_ids:
+            return {
+                "message": "customer_ids is invalid",
+                "deleted": [],
+                "failed": {},
+                "deleted_count": 0,
+                "failed_count": 0,
+                "requested": 0,
+                "invalid": invalid_inputs,
+            }
+
+        deleted = []
+        failed = {}
+
+        for doc_id in unique_ids:
+            doc_ref = self.customers_ref.document(doc_id)
+            try:
+                doc_ref.delete()
+                deleted.append(doc_id)
+                self.cache.invalidate(doc_id)
+            except Exception as exc:
+                failed[doc_id] = str(exc)
+
+        if deleted:
+            self.cache.invalidate("all_customers")
+
+        return {
+            "message": f"deleted {len(deleted)} of {len(unique_ids)} customers",
+            "deleted": deleted,
+            "failed": failed,
+            "deleted_count": len(deleted),
+            "failed_count": len(failed),
+            "requested": len(unique_ids),
+            "invalid": invalid_inputs,
+        }
+
     def read_all_customers(self):
     # Nếu có cache thì dùng, không thì lấy từ Firestore
         if self.cache.has("all_customers"):

@@ -669,10 +669,43 @@ def add_customer():
     customer = request.json
     return jsonify(firebase_service_customer.add_customer(customer))
 
+
 @app.route("/api/firebase/add_customers", methods=["POST"])
 def add_customers():
     customers = request.json  # Nhận 1 list các customer
     return jsonify(firebase_service_customer.add_customers(customers))
+
+
+@app.route("/api/firebase/customers/batch_delete", methods=["POST"])
+def delete_customers():
+    try:
+        payload = request.get_json(silent=True)
+        if payload is None:
+            return jsonify({"status": "error", "message": "JSON body is required"}), 400
+
+        if isinstance(payload, dict):
+            customer_ids = payload.get("ids") or payload.get("customerIds")
+        elif isinstance(payload, list):
+            customer_ids = payload
+        else:
+            return jsonify({"status": "error", "message": "Body must be a list or an object with 'ids'"}), 400
+
+        if customer_ids is None:
+            return jsonify({"status": "error", "message": "customer_ids is required"}), 400
+
+        result = firebase_service_customer.delete_customers(customer_ids)
+
+        if result.get("requested", 0) == 0:
+            return jsonify(result), 400
+
+        status_code = 200 if result.get("deleted_count", 0) > 0 else 400
+        return jsonify(result), status_code
+    except ResourceExhausted as exc:
+        return jsonify({"status": "error", "message": "Firestore quota exceeded", "detail": str(exc)}), 429
+    except Exception as e:
+        import traceback
+        print(traceback.format_exc())
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 def safe_float(val):
     try:
