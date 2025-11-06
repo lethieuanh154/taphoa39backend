@@ -4,6 +4,7 @@ from unidecode import unidecode
 from flask_cors import CORS
 from flask_socketio import SocketIO, emit
 from flask import abort
+from google.api_core.exceptions import ResourceExhausted
 
 # KiotViet Dependencies
 from FromKiotViet.get_entire_product import get_all as get_all_products_from_kiotviet
@@ -423,6 +424,24 @@ def get_all_customers_from_kiotviet():
 @app.route("/api/firebase/get/customers", methods=["GET"])
 def get_all_customers():
     return jsonify(firebase_service_customer.read_all_customers())
+
+
+@app.route("/api/firebase/customers/invoices/<customer_id>", methods=["GET"])
+def get_invoices_for_customer(customer_id):
+    try:
+        if not customer_id:
+            return jsonify({"error": "Customer ID is required"}), 400
+
+        result = firebase_service_customer.get_invoices_by_customer_id(customer_id)
+        return jsonify(result)
+    except ResourceExhausted as exc:
+        import traceback
+        print(traceback.format_exc())
+        return jsonify({"status": "error", "message": "Firestore quota exceeded", "details": str(exc)}), 429
+    except Exception as e:
+        import traceback
+        print(traceback.format_exc())
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 # ============================
 # === Data Sync API Routes ===
