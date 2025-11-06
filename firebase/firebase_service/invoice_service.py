@@ -85,6 +85,7 @@ class FirestoreInvoiceService:
         doc_ref = self.invoices_ref.document(str(invoice["id"]))
         doc_ref.set(invoice)
         self.cache.invalidate("all_invoices")
+        self.cache.invalidate(str(invoice["id"]))
         return {"message": "invoice added"}
 
     def update_invoice(self, invoice_id, updates):

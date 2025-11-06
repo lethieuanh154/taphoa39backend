@@ -210,6 +210,26 @@ def broadcast_products_onhand_updated(updates):
         notify_product_onhand_updated(pid, fields)
 
 
+def broadcast_customer_updates(results):
+    if not results:
+        return
+
+    batch_payload = []
+    for result in results:
+        if not isinstance(result, dict) or not result.get('applied'):
+            continue
+
+        customer_data = result.get('customer')
+        if not customer_data:
+            continue
+
+        batch_payload.append(customer_data)
+        socketio.emit('customer_updated', customer_data, namespace='/api/websocket/customers')
+
+    if batch_payload:
+        socketio.emit('customers_updated', batch_payload, namespace='/api/websocket/customers')
+
+
 @socketio.on('connect', namespace='/api/websocket/products')
 def handle_products_connect():
     print('Client connected to products websocket')
@@ -251,6 +271,16 @@ def handle_products_update(payload):
         import traceback
         print(traceback.format_exc())
         emit('products_onhand_update_ack', {'ok': False, 'error': str(exc)})
+
+
+@socketio.on('connect', namespace='/api/websocket/customers')
+def handle_customers_connect():
+    print('Client connected to customers websocket')
+
+
+@socketio.on('disconnect', namespace='/api/websocket/customers')
+def handle_customers_disconnect():
+    print('Client disconnected from customers websocket')
 
 # === Static Files and Index ===
 @app.route("/")
@@ -423,7 +453,12 @@ def get_all_customers_from_kiotviet():
 
 @app.route("/api/firebase/get/customers", methods=["GET"])
 def get_all_customers():
-    return jsonify(firebase_service_customer.read_all_customers())
+    try:
+        return jsonify(firebase_service_customer.read_all_customers())
+    except Exception as e:
+        import traceback
+        print(traceback.format_exc())
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 
 @app.route("/api/firebase/customers/invoices/<customer_id>", methods=["GET"])
@@ -559,76 +594,127 @@ def get_invoice_by_id(invoice_id):
         
 @app.route("/api/firebase/add_invoice", methods=["POST"])
 def add_invoice():
-    invoice = request.json
-    result = firebase_service_invoice.add_invoice(invoice)
-    notify_invoice_created(invoice)  # Phát sự kiện cho client
-    return jsonify(result)
+    try:
+        invoice = request.get_json(silent=True) or {}
+        invoice_id = invoice.get("id") or invoice.get("Id")
+        if invoice_id is None:
+            return jsonify({"status": "error", "message": "invoice id is required"}), 400
+
+        normalized_invoice = dict(invoice)
+        normalized_invoice["id"] = str(invoice_id).strip()
+
+        existing_invoice = firebase_service_invoice.read_invoice(normalized_invoice["id"])
+
+        result = firebase_service_invoice.add_invoice(normalized_invoice)
+
+        delta_results = firebase_service_customer.apply_invoice_delta(existing_invoice, normalized_invoice)
+        broadcast_customer_updates(delta_results)
+
+        notify_invoice_created(normalized_invoice)
+        invalidate_invoice_cache(normalized_invoice)
+        return jsonify(result)
+    except ResourceExhausted as exc:
+        import traceback
+        print(traceback.format_exc())
+        return jsonify({"status": "error", "message": "Firestore quota exceeded", "details": str(exc)}), 429
+    except Exception as e:
+        import traceback
+        print(traceback.format_exc())
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 @app.route("/api/firebase/invoices/<invoice_id>", methods=["PUT"])
 def update_invoice(invoice_id):
-    updates = request.json
-    result = firebase_service_invoice.update_invoice(invoice_id, updates)
-    # Lấy lại hóa đơn đã cập nhật để gửi cho client
-    updated_invoice = firebase_service_invoice.read_invoice(invoice_id)
-    if updated_invoice:
-        notify_invoice_updated(updated_invoice)
-    return jsonify(result)
+    try:
+        updates = request.get_json(silent=True) or {}
+        existing_invoice = firebase_service_invoice.read_invoice(invoice_id)
+
+        result = firebase_service_invoice.update_invoice(invoice_id, updates)
+
+        updated_invoice = firebase_service_invoice.read_invoice(invoice_id)
+        delta_results = firebase_service_customer.apply_invoice_delta(existing_invoice, updated_invoice)
+        broadcast_customer_updates(delta_results)
+
+        if updated_invoice:
+            notify_invoice_updated(updated_invoice)
+            invalidate_invoice_cache(updated_invoice)
+        return jsonify(result)
+    except ResourceExhausted as exc:
+        import traceback
+        print(traceback.format_exc())
+        return jsonify({"status": "error", "message": "Firestore quota exceeded", "details": str(exc)}), 429
+    except Exception as e:
+        import traceback
+        print(traceback.format_exc())
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 
 @app.route("/api/firebase/invoices/<invoice_id>", methods=["DELETE"])
 def delete_invoice(invoice_id):
-    existing_invoice = firebase_service_invoice.read_invoice(invoice_id)
-    if not existing_invoice:
-        return jsonify({"status": "error", "message": "Invoice not found"}), 404
+    try:
+        existing_invoice = firebase_service_invoice.read_invoice(invoice_id)
+        if not existing_invoice:
+            return jsonify({"status": "error", "message": "Invoice not found"}), 404
 
-    restocked_updates = []
-    restock_errors = []
-    cart_items = existing_invoice.get('cartItems', []) or []
+        restocked_updates = []
+        restock_errors = []
+        cart_items = existing_invoice.get('cartItems', []) or []
 
-    for item in cart_items:
-        product_data = item.get('product') or {}
-        product_id = product_data.get('Id') or product_data.get('id') or item.get('productId')
-        quantity = safe_int(item.get('quantity', 0))
+        for item in cart_items:
+            product_data = item.get('product') or {}
+            product_id = product_data.get('Id') or product_data.get('id') or item.get('productId')
+            quantity = safe_int(item.get('quantity', 0))
 
-        if quantity <= 0:
-            continue
+            if quantity <= 0:
+                continue
 
-        pid_str = str(product_id) if product_id is not None else None
-        if not _is_valid_pid(pid_str):
-            continue
+            pid_str = str(product_id) if product_id is not None else None
+            if not _is_valid_pid(pid_str):
+                continue
 
-        product_doc = firebase_service_product.read_product(pid_str)
-        if not product_doc:
-            continue
+            product_doc = firebase_service_product.read_product(pid_str)
+            if not product_doc:
+                continue
 
-        current_onhand = _to_number(product_doc.get('OnHand'))
-        if current_onhand is None:
-            continue
+            current_onhand = _to_number(product_doc.get('OnHand'))
+            if current_onhand is None:
+                continue
 
-        new_onhand = int(current_onhand) + quantity
-        try:
-            firebase_service_product.update_product(pid_str, {"OnHand": new_onhand})
-            restocked_updates.append({"Id": pid_str, "OnHand": new_onhand})
-        except Exception as exc:
-            import traceback
-            print(f"Error restocking product {pid_str}: {exc}")
-            print(traceback.format_exc())
-            restock_errors.append({"id": pid_str, "error": str(exc)})
+            new_onhand = int(current_onhand) + quantity
+            try:
+                firebase_service_product.update_product(pid_str, {"OnHand": new_onhand})
+                restocked_updates.append({"Id": pid_str, "OnHand": new_onhand})
+            except Exception as exc:
+                import traceback
+                print(f"Error restocking product {pid_str}: {exc}")
+                print(traceback.format_exc())
+                restock_errors.append({"id": pid_str, "error": str(exc)})
 
-    delete_result = firebase_service_invoice.delete_invoice(invoice_id)
-    notify_invoice_deleted(invoice_id)
+        delete_result = firebase_service_invoice.delete_invoice(invoice_id)
+        delta_results = firebase_service_customer.apply_invoice_delta(existing_invoice, None)
+        broadcast_customer_updates(delta_results)
 
-    if restocked_updates:
-        broadcast_products_onhand_updated(restocked_updates)
+        notify_invoice_deleted(invoice_id)
+        invalidate_invoice_cache(existing_invoice)
 
-    response = {
-        "message": delete_result.get("message", "invoice deleted"),
-        "restocked_products": restocked_updates,
-    }
-    if restock_errors:
-        response["restock_errors"] = restock_errors
+        if restocked_updates:
+            broadcast_products_onhand_updated(restocked_updates)
 
-    return jsonify(response)
+        response = {
+            "message": delete_result.get("message", "invoice deleted"),
+            "restocked_products": restocked_updates,
+        }
+        if restock_errors:
+            response["restock_errors"] = restock_errors
+
+        return jsonify(response)
+    except ResourceExhausted as exc:
+        import traceback
+        print(traceback.format_exc())
+        return jsonify({"status": "error", "message": "Firestore quota exceeded", "details": str(exc)}), 429
+    except Exception as e:
+        import traceback
+        print(traceback.format_exc())
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 @app.route("/api/firebase/invoices/date", methods=["GET"])
 def get_invoices_by_date():
@@ -674,6 +760,33 @@ def add_customer():
 def add_customers():
     customers = request.json  # Nhận 1 list các customer
     return jsonify(firebase_service_customer.add_customers(customers))
+
+
+@app.route("/api/firebase/customers/<customer_id>", methods=["PUT"])
+def update_customer(customer_id):
+    try:
+        if not customer_id:
+            return jsonify({"status": "error", "message": "Customer ID is required"}), 400
+
+        payload = request.get_json(silent=True)
+        if payload is None:
+            return jsonify({"status": "error", "message": "JSON body is required"}), 400
+
+        if not isinstance(payload, dict):
+            return jsonify({"status": "error", "message": "Body must be a JSON object"}), 400
+
+        result = firebase_service_customer.update_customer(customer_id, payload)
+        if result.get("updated"):
+            return jsonify(result), 200
+
+        status_code = 404 if result.get("reason") == "not_found" else 400
+        return jsonify(result), status_code
+    except ResourceExhausted as exc:
+        return jsonify({"status": "error", "message": "Firestore quota exceeded", "detail": str(exc)}), 429
+    except Exception as e:
+        import traceback
+        print(traceback.format_exc())
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 
 @app.route("/api/firebase/customers/batch_delete", methods=["POST"])
@@ -835,9 +948,34 @@ def notify_invoice_deleted(invoice_id):
 # Gửi dữ liệu hóa đơn mới cho tất cả client
 def notify_invoice_created(invoice):
     socketio.emit('invoice_created', {'data': invoice}, namespace='/api/websocket/invoices')
-    
-    
-    
+
+
+def _collect_customer_ids_from_invoice(invoice):
+    customer_ids = set()
+    if not isinstance(invoice, dict):
+        return customer_ids
+
+    for key in ("customerId", "CustomerId", "customer_id"):
+        value = invoice.get(key)
+        if value is not None and str(value).strip():
+            customer_ids.add(value)
+
+    customer_info = invoice.get('customer')
+    if isinstance(customer_info, dict):
+        for key in ("Id", "id", "CustomerId"):
+            value = customer_info.get(key)
+            if value is not None and str(value).strip():
+                customer_ids.add(value)
+
+    return customer_ids
+
+
+def invalidate_invoice_cache(invoice):
+    customer_ids = _collect_customer_ids_from_invoice(invoice)
+    if customer_ids:
+        firebase_service_customer.invalidate_invoices_cache(customer_ids)
+
+
     
 #-------------------------------order---------------------------------------
 @app.route("/api/firebase/orders", methods=["GET"])

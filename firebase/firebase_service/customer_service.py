@@ -22,6 +22,58 @@ class FirestoreCustomerService:
         self.customers_ref = customers_ref
         self.invoices_ref = invoices_ref
 
+    @staticmethod
+    def _to_float(value):
+        if value is None:
+            return 0.0
+        if isinstance(value, (int, float)):
+            return float(value)
+        if isinstance(value, str):
+            try:
+                cleaned = value.replace(",", "").strip()
+                if cleaned == "":
+                    return 0.0
+                return float(cleaned)
+            except ValueError:
+                return 0.0
+        return 0.0
+
+    @staticmethod
+    def _to_int(value):
+        if value is None:
+            return 0
+        if isinstance(value, int):
+            return value
+        if isinstance(value, float):
+            return int(value)
+        if isinstance(value, str):
+            try:
+                cleaned = value.replace(",", "").strip()
+                if cleaned == "":
+                    return 0
+                return int(float(cleaned))
+            except ValueError:
+                return 0
+        return 0
+
+    @staticmethod
+    def _extract_customer_id(invoice):
+        if not isinstance(invoice, dict):
+            return None
+
+        for key in ("customerId", "CustomerId", "customer_id"):
+            value = invoice.get(key)
+            if value is not None and str(value).strip():
+                return str(value).strip()
+
+        customer_info = invoice.get("customer")
+        if isinstance(customer_info, dict):
+            for key in ("Id", "id", "CustomerId"):
+                value = customer_info.get(key)
+                if value is not None and str(value).strip():
+                    return str(value).strip()
+        return None
+
     def add_customer(self, customer):
         doc_ref = self.customers_ref.document(str(customer["id"]))
         doc_ref.set(customer)
@@ -34,7 +86,185 @@ class FirestoreCustomerService:
             doc_ref.set(customer)
         self.cache.invalidate("all_customers")
         return {"message": f"{len(customers)} customers added"}
+
+    def update_customer(self, customer_id: str, updates: dict) -> dict:
+        if customer_id is None:
+            return {"message": "customer_id is required", "updated": False}
+
+        doc_id = str(customer_id).strip()
+        if not doc_id:
+            return {"message": "customer_id is invalid", "updated": False}
+
+        if not isinstance(updates, dict) or len(updates) == 0:
+            return {"message": "updates must be a non-empty object", "updated": False, "id": doc_id}
+
+        sanitized_updates = {key: value for key, value in updates.items() if key not in (None, "")}
+        if not sanitized_updates:
+            return {"message": "no valid fields to update", "updated": False, "id": doc_id}
+
+        doc_ref = self.customers_ref.document(doc_id)
+        snapshot = doc_ref.get()
+        if not snapshot.exists:
+            return {"message": "customer not found", "updated": False, "id": doc_id, "reason": "not_found"}
+
+        try:
+            doc_ref.update(sanitized_updates)
+            self.cache.invalidate("all_customers")
+            self.cache.invalidate(doc_id)
+            return {
+                "message": "customer updated",
+                "updated": True,
+                "id": doc_id,
+                "changes": sanitized_updates,
+            }
+        except Exception as exc:
+            return {"message": str(exc), "updated": False, "id": doc_id}
     
+    def apply_invoice_delta(self, previous_invoice=None, new_invoice=None):
+        results = []
+
+        if previous_invoice:
+            results.append(self._apply_invoice(previous_invoice, direction=-1))
+        if new_invoice:
+            results.append(self._apply_invoice(new_invoice, direction=1))
+
+        return results
+
+    def _apply_invoice(self, invoice, direction):
+        if direction not in (1, -1):
+            raise ValueError("direction must be 1 or -1")
+
+        customer_id = self._extract_customer_id(invoice)
+        if not customer_id:
+            return {"applied": False, "reason": "no_customer"}
+
+        doc_ref = self.customers_ref.document(customer_id)
+        snapshot = doc_ref.get()
+        if not snapshot.exists:
+            return {"applied": False, "reason": "customer_not_found", "customer_id": customer_id}
+
+        invoice_debt = self._to_float(invoice.get("debt"))
+        invoice_total_price = self._to_float(invoice.get("totalPrice"))
+        invoice_cost = self._to_float(
+             invoice.get("totalCost")
+        )
+        invoice_profit = invoice_total_price - invoice_cost
+
+        data = snapshot.to_dict() or {}
+        current_debt = self._to_float(data.get("Debt"))
+        current_revenue = self._to_float(data.get("TotalRevenue"))
+        current_invoiced = self._to_int(data.get("TotalInvoiced"))
+        current_profit = self._to_float(data.get("TotalPoint"))
+
+        new_total_invoiced = max(current_invoiced + (direction * 1), 0)
+        new_total_debt = current_debt + (direction * invoice_debt)
+        new_total_revenue = current_revenue + (direction * invoice_total_price)
+        new_total_profit = current_profit + (direction * invoice_profit)
+
+        if new_total_debt < 0:
+            new_total_debt = 0.0
+        if new_total_revenue < 0:
+            new_total_revenue = 0.0
+        if new_total_profit < 0:
+            new_total_profit = 0.0
+
+        updates = {
+            "Debt": round(new_total_debt, 2),
+            "TotalRevenue": round(new_total_revenue, 2),
+            "TotalInvoiced": new_total_invoiced,
+            "TotalPoint": round(new_total_profit, 2),
+        }
+
+        try:
+            doc_ref.update(updates)
+            if self.cache:
+                self.cache.invalidate("all_customers")
+                self.cache.invalidate(customer_id)
+            self.invalidate_invoices_cache(customer_id)
+            updated_data = dict(data)
+            updated_data.update(updates)
+            updated_data["id"] = customer_id
+            return {
+                "applied": True,
+                "customer_id": customer_id,
+                "updates": updates,
+                "direction": direction,
+                "customer": updated_data,
+            }
+        except Exception as exc:
+            return {"applied": False, "reason": str(exc), "customer_id": customer_id}
+
+    def refresh_customer_aggregates(self):
+        def _to_number(value):
+            if value is None:
+                return 0.0
+            if isinstance(value, (int, float)):
+                return float(value)
+            if isinstance(value, str):
+                try:
+                    cleaned = value.replace(",", "").strip()
+                    if cleaned == "":
+                        return 0.0
+                    return float(cleaned)
+                except ValueError:
+                    return 0.0
+            return 0.0
+
+        updated_customers = []
+        failures = {}
+
+        try:
+            customer_docs = list(self.customers_ref.stream())
+        except Exception as exc:
+            raise exc
+
+        for doc in customer_docs:
+            customer_id = doc.id
+            data = doc.to_dict() or {}
+            try:
+                invoices = self.get_invoices_by_customer_id(customer_id)
+            except ResourceExhausted:
+                raise
+            except Exception as exc:
+                failures[customer_id] = f"invoice_lookup_failed: {exc}"
+                continue
+
+            total_invoiced = len(invoices)
+            total_revenue = 0.0
+            total_debt = 0.0
+
+            for invoice in invoices:
+                total_revenue += _to_number(invoice.get("totalPrice"))
+                total_debt += _to_number(invoice.get("debt"))
+
+            total_point = total_revenue / total_invoiced if total_invoiced else 0.0
+
+            updates = {
+                "Debt": total_debt,
+                "TotalInvoiced": total_invoiced,
+                "TotalRevenue": total_revenue,
+                "TotalPoint": total_point,
+            }
+
+            try:
+                doc.reference.update(updates)
+            except Exception as exc:
+                failures[customer_id] = f"update_failed: {exc}"
+                continue
+
+            data.update(updates)
+            data["id"] = customer_id
+            updated_customers.append(data)
+            if self.cache:
+                self.cache.invalidate(customer_id)
+
+        if self.cache:
+            self.cache.invalidate("all_customers")
+            if updated_customers:
+                self.cache.set("all_customers", updated_customers, ttl=300)
+
+        return updated_customers, failures
+
     def delete_customers(self, customer_ids) -> dict:
         if not customer_ids:
             return {
@@ -182,3 +412,22 @@ class FirestoreCustomerService:
         if self.cache:
             self.cache.set(cache_key, invoices, ttl=120)
         return invoices
+
+    def invalidate_invoices_cache(self, customer_ids):
+        if not self.cache:
+            return
+
+        if customer_ids is None:
+            return
+
+        if not isinstance(customer_ids, (list, tuple, set)):
+            customer_ids = [customer_ids]
+
+        for raw_id in customer_ids:
+            if raw_id is None:
+                continue
+            normalized = str(raw_id).strip()
+            if not normalized:
+                continue
+            cache_key = f"invoices_by_customer_id:{normalized}"
+            self.cache.invalidate(cache_key)
