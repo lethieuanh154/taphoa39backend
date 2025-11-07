@@ -23,7 +23,7 @@ from firebase.firebase_service.order_service import FirestoreorderService
 # Data Sync Dependencies
 from firebase.firebase_khachhang.import_to_firestore import update_customer_from_kiotviet_to_firestore
 from firebase.firebase_hanghoa.import_to_firestore import update_products_from_banhang_app_to_firestore
-
+from firebase.firebase_service.customer_service import FirestoreCustomerService
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
 # Initialize Firebase Services
@@ -454,13 +454,16 @@ def get_all_customers_from_kiotviet():
 @app.route("/api/firebase/get/customers", methods=["GET"])
 def get_all_customers():
     try:
-        force_refresh_param = request.args.get("forceRefresh")
-        force_refresh = False
-        if isinstance(force_refresh_param, str):
-            force_refresh = force_refresh_param.lower() in ("1", "true", "yes", "on")
-
-        customers = firebase_service_customer.read_all_customers(force_refresh=force_refresh)
+        customers = firebase_service_customer.read_all_customers()
         return jsonify(customers)
+    except ResourceExhausted as exc:
+        import traceback
+        print(traceback.format_exc())
+        return jsonify({
+            "status": "error",
+            "message": "Firestore quota exceeded during customer refresh",
+            "details": str(exc),
+        }), 429
     except Exception as e:
         import traceback
         print(traceback.format_exc())
@@ -609,15 +612,17 @@ def add_invoice():
         normalized_invoice = dict(invoice)
         normalized_invoice["id"] = str(invoice_id).strip()
 
-        existing_invoice = firebase_service_invoice.read_invoice(normalized_invoice["id"])
-
         result = firebase_service_invoice.add_invoice(normalized_invoice)
 
-        delta_results = firebase_service_customer.apply_invoice_delta(existing_invoice, normalized_invoice)
-        broadcast_customer_updates(delta_results)
+        invalidate_invoice_cache(normalized_invoice)
+
+        recalc_result = firebase_service_customer.recalculate_customer_from_invoice(normalized_invoice)
+        if recalc_result.get("updated") and recalc_result.get("customer"):
+            broadcast_customer_updates([
+                {"applied": True, "customer": recalc_result.get("customer")}
+            ])
 
         notify_invoice_created(normalized_invoice)
-        invalidate_invoice_cache(normalized_invoice)
         return jsonify(result)
     except ResourceExhausted as exc:
         import traceback
@@ -637,12 +642,34 @@ def update_invoice(invoice_id):
         result = firebase_service_invoice.update_invoice(invoice_id, updates)
 
         updated_invoice = firebase_service_invoice.read_invoice(invoice_id)
-        delta_results = firebase_service_customer.apply_invoice_delta(existing_invoice, updated_invoice)
-        broadcast_customer_updates(delta_results)
+
+        if existing_invoice:
+            invalidate_invoice_cache(existing_invoice)
+        if updated_invoice:
+            invalidate_invoice_cache(updated_invoice)
+
+        recalc_results = []
+        if existing_invoice:
+            prev_recalc = firebase_service_customer.recalculate_customer_from_invoice(existing_invoice)
+            if prev_recalc.get("updated") and prev_recalc.get("customer"):
+                recalc_results.append(prev_recalc)
+
+        if updated_invoice:
+            new_recalc = firebase_service_customer.recalculate_customer_from_invoice(updated_invoice)
+            if new_recalc.get("updated") and new_recalc.get("customer"):
+                if not any(r.get("customer_id") == new_recalc.get("customer_id") for r in recalc_results):
+                    recalc_results.append(new_recalc)
+
+        if recalc_results:
+            broadcast_customer_updates([
+                {"applied": True, "customer": recalc.get("customer")}
+                for recalc in recalc_results
+                if recalc.get("customer")
+            ])
 
         if updated_invoice:
             notify_invoice_updated(updated_invoice)
-            invalidate_invoice_cache(updated_invoice)
+        
         return jsonify(result)
     except ResourceExhausted as exc:
         import traceback
@@ -652,7 +679,7 @@ def update_invoice(invoice_id):
         import traceback
         print(traceback.format_exc())
         return jsonify({"status": "error", "message": str(e)}), 500
-
+    
 
 @app.route("/api/firebase/invoices/<invoice_id>", methods=["DELETE"])
 def delete_invoice(invoice_id):
@@ -696,11 +723,16 @@ def delete_invoice(invoice_id):
                 restock_errors.append({"id": pid_str, "error": str(exc)})
 
         delete_result = firebase_service_invoice.delete_invoice(invoice_id)
-        delta_results = firebase_service_customer.apply_invoice_delta(existing_invoice, None)
-        broadcast_customer_updates(delta_results)
+
+        invalidate_invoice_cache(existing_invoice)
+
+        recalc_result = firebase_service_customer.recalculate_customer_from_invoice(existing_invoice)
+        if recalc_result.get("updated") and recalc_result.get("customer"):
+            broadcast_customer_updates([
+                {"applied": True, "customer": recalc_result.get("customer")}
+            ])
 
         notify_invoice_deleted(invoice_id)
-        invalidate_invoice_cache(existing_invoice)
 
         if restocked_updates:
             broadcast_products_onhand_updated(restocked_updates)
@@ -789,6 +821,31 @@ def update_customer(customer_id):
         return jsonify(result), status_code
     except ResourceExhausted as exc:
         return jsonify({"status": "error", "message": "Firestore quota exceeded", "detail": str(exc)}), 429
+    except Exception as e:
+        import traceback
+        print(traceback.format_exc())
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route("/api/firebase/customers/<customer_id>/recalculate", methods=["POST"])
+def recalculate_customer(customer_id):
+    try:
+        if not customer_id:
+            return jsonify({"status": "error", "message": "Customer ID is required"}), 400
+
+        result = firebase_service_customer.recalculate_customer_totals(customer_id)
+        if result.get("updated"):
+            broadcast_customer_updates([
+                {"applied": True, "customer": result.get("customer")}
+            ])
+            return jsonify(result)
+
+        status_code = 404 if result.get("reason") == "not_found" else 400
+        return jsonify(result), status_code
+    except ResourceExhausted as exc:
+        import traceback
+        print(traceback.format_exc())
+        return jsonify({"status": "error", "message": "Firestore quota exceeded", "details": str(exc)}), 429
     except Exception as e:
         import traceback
         print(traceback.format_exc())

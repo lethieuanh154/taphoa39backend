@@ -282,6 +282,78 @@ class FirestoreCustomerService:
         except Exception as exc:
             return {"applied": False, "reason": str(exc), "customer_id": customer_id}
 
+    def recalculate_customer_totals(self, customer_id):
+        if customer_id is None:
+            return {"updated": False, "reason": "customer_id_required"}
+
+        normalized_id = str(customer_id).strip()
+        if not normalized_id:
+            return {"updated": False, "reason": "customer_id_invalid"}
+
+        doc_ref = self.customers_ref.document(normalized_id)
+        snapshot = doc_ref.get()
+        if not snapshot.exists:
+            return {"updated": False, "reason": "not_found", "customer_id": normalized_id}
+
+        try:
+            invoices = self.get_invoices_by_customer_id(normalized_id)
+        except ResourceExhausted:
+            raise
+        except Exception as exc:
+            return {
+                "updated": False,
+                "reason": f"invoice_lookup_failed: {exc}",
+                "customer_id": normalized_id,
+            }
+
+        total_invoiced = len(invoices)
+        total_revenue = 0.0
+        total_debt = 0.0
+
+        for invoice in invoices:
+            total_revenue += self._to_float(invoice.get("totalPrice"))
+            total_debt += self._resolve_invoice_debt(invoice)
+
+        total_point = total_revenue / total_invoiced if total_invoiced else 0.0
+
+        updates = {
+            "Debt": round(total_debt, 2),
+            "TotalInvoiced": total_invoiced,
+            "TotalRevenue": round(total_revenue, 2),
+            "TotalPoint": round(total_point, 2),
+        }
+
+        try:
+            doc_ref.update(updates)
+        except Exception as exc:
+            return {
+                "updated": False,
+                "reason": str(exc),
+                "customer_id": normalized_id,
+            }
+
+        data = snapshot.to_dict() or {}
+        data.update(updates)
+        data["id"] = normalized_id
+
+        if self.cache:
+            self.cache.invalidate("all_customers")
+            self.cache.invalidate(normalized_id)
+
+        return {
+            "updated": True,
+            "customer_id": normalized_id,
+            "updates": updates,
+            "customer": data,
+        }
+
+    def recalculate_customer_from_invoice(self, invoice):
+        customer_id = self._extract_customer_id(invoice)
+        if not customer_id:
+            return {"updated": False, "reason": "no_customer"}
+
+        return self.recalculate_customer_totals(customer_id)
+
     def refresh_customer_aggregates(self):
         def _to_number(value):
             if value is None:
@@ -300,6 +372,8 @@ class FirestoreCustomerService:
 
         updated_customers = []
         failures = {}
+
+        errors = {}
 
         try:
             customer_docs = list(self.customers_ref.stream())
@@ -346,12 +420,15 @@ class FirestoreCustomerService:
             if self.cache:
                 self.cache.invalidate(customer_id)
 
+        if failures:
+            errors["update_failures"] = failures
+
         if self.cache:
             self.cache.invalidate("all_customers")
             if updated_customers:
                 self.cache.set("all_customers", updated_customers, ttl=300)
 
-        return updated_customers, failures
+        return updated_customers, errors
 
     def delete_customers(self, customer_ids) -> dict:
         if not customer_ids:
@@ -413,25 +490,15 @@ class FirestoreCustomerService:
             "invalid": invalid_inputs,
         }
 
-    def read_all_customers(self, force_refresh: bool = False):
+    def read_all_customers(self):
         cache_key = "all_customers"
-        if not force_refresh and self.cache and self.cache.has(cache_key):
+        if self.cache and self.cache.has(cache_key):
             cached = self.cache.get(cache_key)
             if cached is not None:
                 return cached
 
         docs = self.customers_ref.stream()
         result = [doc.to_dict() | {"id": doc.id} for doc in docs]
-
-        if force_refresh:
-            try:
-                aggregated_customers, _ = self.refresh_customer_aggregates()
-                if aggregated_customers:
-                    result = aggregated_customers
-            except ResourceExhausted:
-                raise
-            except Exception:
-                pass
 
         if self.cache:
             self.cache.set(cache_key, result, ttl=300)
