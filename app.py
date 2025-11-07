@@ -454,7 +454,13 @@ def get_all_customers_from_kiotviet():
 @app.route("/api/firebase/get/customers", methods=["GET"])
 def get_all_customers():
     try:
-        return jsonify(firebase_service_customer.read_all_customers())
+        force_refresh_param = request.args.get("forceRefresh")
+        force_refresh = False
+        if isinstance(force_refresh_param, str):
+            force_refresh = force_refresh_param.lower() in ("1", "true", "yes", "on")
+
+        customers = firebase_service_customer.read_all_customers(force_refresh=force_refresh)
+        return jsonify(customers)
     except Exception as e:
         import traceback
         print(traceback.format_exc())

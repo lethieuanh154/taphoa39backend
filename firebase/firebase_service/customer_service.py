@@ -74,6 +74,96 @@ class FirestoreCustomerService:
                     return str(value).strip()
         return None
 
+    @staticmethod
+    def _get_nested_value(payload, path):
+        current = payload
+        for key in path:
+            if not isinstance(current, dict):
+                return None
+            current = current.get(key)
+        return current
+
+    @classmethod
+    def _resolve_invoice_debt(cls, invoice):
+        if not isinstance(invoice, dict):
+            return 0.0
+
+        candidate_paths = (
+            ("debt",),
+            ("Debt",),
+            ("customerDebt",),
+            ("CustomerDebt",),
+            ("remainAmount",),
+            ("RemainAmount",),
+            ("remainingAmount",),
+            ("remainingDebt",),
+            ("customer", "debt"),
+            ("customer", "Debt"),
+            ("payment", "debt"),
+            ("payment", "Debt"),
+            ("payment", "remaining"),
+            ("payment", "remainingAmount"),
+        )
+
+        for path in candidate_paths:
+            value = cls._get_nested_value(invoice, path)
+            if value is None:
+                continue
+            if isinstance(value, str) and value.strip() == "":
+                continue
+            amount = cls._to_float(value)
+            if amount != 0.0:
+                return abs(round(amount, 2))
+
+        total_price = None
+        for path in (("totalPrice",), ("TotalPrice",)):
+            value = cls._get_nested_value(invoice, path)
+            if value is None:
+                continue
+            total_price = cls._to_float(value)
+            break
+
+        if total_price is None:
+            total_price = 0.0
+
+        total_paid = 0.0
+        paid_paths = (
+            ("totalPaid",),
+            ("TotalPaid",),
+            ("paid",),
+            ("Paid",),
+            ("customerPaid",),
+            ("CustomerPaid",),
+            ("payment", "totalPaid"),
+            ("payment", "TotalPaid"),
+            ("payment", "paid"),
+            ("payment", "Paid"),
+            ("payment", "received"),
+            ("payment", "receivedAmount"),
+        )
+
+        for path in paid_paths:
+            value = cls._get_nested_value(invoice, path)
+            if value is None:
+                continue
+            amount = cls._to_float(value)
+            if amount > total_paid:
+                total_paid = amount
+
+        payments = cls._get_nested_value(invoice, ("payments",))
+        if isinstance(payments, list):
+            list_total = 0.0
+            for entry in payments:
+                if isinstance(entry, dict):
+                    list_total += cls._to_float(entry.get("amount"))
+            if list_total > total_paid:
+                total_paid = list_total
+
+        derived = total_price - total_paid
+        if derived < 0:
+            derived = 0.0
+        return round(derived, 2)
+
     def add_customer(self, customer):
         doc_ref = self.customers_ref.document(str(customer["id"]))
         doc_ref.set(customer)
@@ -143,11 +233,9 @@ class FirestoreCustomerService:
         if not snapshot.exists:
             return {"applied": False, "reason": "customer_not_found", "customer_id": customer_id}
 
-        invoice_debt = self._to_float(invoice.get("debt"))
+        invoice_debt = self._resolve_invoice_debt(invoice)
         invoice_total_price = self._to_float(invoice.get("totalPrice"))
-        invoice_cost = self._to_float(
-             invoice.get("totalCost")
-        )
+        invoice_cost = self._to_float(invoice.get("totalCost"))
         invoice_profit = invoice_total_price - invoice_cost
 
         data = snapshot.to_dict() or {}
@@ -235,15 +323,15 @@ class FirestoreCustomerService:
 
             for invoice in invoices:
                 total_revenue += _to_number(invoice.get("totalPrice"))
-                total_debt += _to_number(invoice.get("debt"))
+                total_debt += self._resolve_invoice_debt(invoice)
 
             total_point = total_revenue / total_invoiced if total_invoiced else 0.0
 
             updates = {
-                "Debt": total_debt,
+                "Debt": round(total_debt, 2),
                 "TotalInvoiced": total_invoiced,
-                "TotalRevenue": total_revenue,
-                "TotalPoint": total_point,
+                "TotalRevenue": round(total_revenue, 2),
+                "TotalPoint": round(total_point, 2),
             }
 
             try:
@@ -325,13 +413,28 @@ class FirestoreCustomerService:
             "invalid": invalid_inputs,
         }
 
-    def read_all_customers(self):
-    # Nếu có cache thì dùng, không thì lấy từ Firestore
-        if self.cache.has("all_customers"):
-            return self.cache.get("all_customers")
+    def read_all_customers(self, force_refresh: bool = False):
+        cache_key = "all_customers"
+        if not force_refresh and self.cache and self.cache.has(cache_key):
+            cached = self.cache.get(cache_key)
+            if cached is not None:
+                return cached
+
         docs = self.customers_ref.stream()
         result = [doc.to_dict() | {"id": doc.id} for doc in docs]
-        self.cache.set("all_customers", result, ttl=300)  # Cache 5 phút
+
+        if force_refresh:
+            try:
+                aggregated_customers, _ = self.refresh_customer_aggregates()
+                if aggregated_customers:
+                    result = aggregated_customers
+            except ResourceExhausted:
+                raise
+            except Exception:
+                pass
+
+        if self.cache:
+            self.cache.set(cache_key, result, ttl=300)
         return result
 
     def get_invoices_by_customer_id(self, customer_id):
