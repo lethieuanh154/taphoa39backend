@@ -282,6 +282,11 @@ def handle_customers_connect():
 def handle_customers_disconnect():
     print('Client disconnected from customers websocket')
 
+def notify_customer_created(customer):
+    if not isinstance(customer, dict):
+        return
+    socketio.emit('customer_created', customer, namespace='/api/websocket/customers')
+
 # === Static Files and Index ===
 @app.route("/")
 def serve_index():
@@ -790,14 +795,35 @@ def get_invoices_by_customer(customer_id):
 
 @app.route("/api/firebase/add_customer", methods=["POST"])
 def add_customer():
-    customer = request.json
-    return jsonify(firebase_service_customer.add_customer(customer))
+    try:
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            return jsonify({"status": "error", "message": "JSON body is required"}), 400
 
+        customer_id = payload.get("id") or payload.get("Id")
+        if not customer_id:
+            return jsonify({"status": "error", "message": "Customer ID is required"}), 400
 
-@app.route("/api/firebase/add_customers", methods=["POST"])
-def add_customers():
-    customers = request.json  # Nhận 1 list các customer
-    return jsonify(firebase_service_customer.add_customers(customers))
+        normalized = dict(payload)
+        normalized["id"] = str(customer_id).strip()
+        normalized.setdefault("Id", normalized["id"])
+
+        result = firebase_service_customer.add_customer(normalized)
+
+        broadcast_customer_updates([
+            {"applied": True, "customer": normalized}
+        ])
+        notify_customer_created(normalized)
+
+        response = dict(result)
+        response["customer"] = normalized
+        return jsonify(response), 201
+    except ResourceExhausted as exc:
+        return jsonify({"status": "error", "message": "Firestore quota exceeded", "detail": str(exc)}), 429
+    except Exception as e:
+        import traceback
+        print(traceback.format_exc())
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 
 @app.route("/api/firebase/customers/<customer_id>", methods=["PUT"])
