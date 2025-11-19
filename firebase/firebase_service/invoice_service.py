@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from dotenv import load_dotenv
 
 from firebase.init_firebase import init_firestore
@@ -100,6 +102,143 @@ class FirestoreInvoiceService:
         self.cache.invalidate(invoice_id)
         self.cache.invalidate("all_invoices")
         return {"message": "invoice deleted"}
+
+    def adjust_invoice_summaries(self, invoice: dict, direction: int) -> dict:
+        if invoice is None or not isinstance(invoice, dict):
+            return {"updated": False, "reason": "invalid_invoice"}
+
+        if direction not in (1, -1):
+            return {"updated": False, "reason": "invalid_direction"}
+
+        totals = self._compute_invoice_totals(invoice)
+        if totals["buyer_quantity"] == 0:
+            return {"updated": False, "reason": "no_totals"}
+
+        keys = self._extract_summary_keys(invoice)
+        if keys["date"] is None:
+            return {"updated": False, "reason": "missing_date"}
+
+        deltas = {
+            "revenue": direction * totals["revenue"],
+            "cost": direction * totals["cost"],
+            "profit": direction * totals["profit"],
+            "buyer_quantity": direction * totals["buyer_quantity"],
+        }
+
+        self._apply_summary_delta("DailySummary", keys["date"], deltas, direction)
+        if keys["month"]:
+            self._apply_summary_delta("MonthlySummary", keys["month"], deltas, direction)
+        if keys["year"]:
+            self._apply_summary_delta("YearlySummary", keys["year"], deltas, direction)
+
+        return {
+            "updated": True,
+            "keys": keys,
+            "deltas": deltas,
+        }
+
+    def _compute_invoice_totals(self, invoice: dict) -> dict:
+        revenue = self.safe_float(
+            invoice.get("totalPrice")
+            or invoice.get("TotalPrice")
+            or invoice.get("grandTotal")
+        )
+        cost = self.safe_float(
+            invoice.get("totalCost")
+            or invoice.get("TotalCost")
+            or invoice.get("costTotal")
+        )
+
+        if (revenue == 0.0 and cost == 0.0) and isinstance(invoice.get("cartItems"), list):
+            cart_items = invoice.get("cartItems", [])
+            for item in cart_items:
+                product = item.get("product", {}) if isinstance(item, dict) else {}
+                quantity = self.safe_int(item.get("quantity", 0)) if isinstance(item, dict) else 0
+                price = self.safe_float(
+                    item.get("price")
+                    or product.get("BasePrice")
+                    or product.get("Price")
+                )
+                cost_price = self.safe_float(product.get("Cost"))
+                revenue += price * quantity
+                cost += cost_price * quantity
+
+        profit = revenue - cost
+        return {
+            "revenue": round(revenue, 2),
+            "cost": round(cost, 2),
+            "profit": round(profit, 2),
+            "buyer_quantity": 1,
+        }
+
+    def _extract_summary_keys(self, invoice: dict) -> dict:
+        created = (
+            invoice.get("createdDate")
+            or invoice.get("CreatedDate")
+            or invoice.get("date")
+            or invoice.get("Date")
+        )
+
+        date_str = None
+        if created:
+            if isinstance(created, datetime):
+                date_str = created.date().isoformat()
+            else:
+                created_str = str(created)
+                if len(created_str) >= 10:
+                    date_str = created_str[:10]
+
+        if not date_str:
+            return {"date": None, "month": None, "year": None}
+
+        try:
+            year = date_str[:4]
+            month = date_str[:7]
+        except Exception:
+            year = None
+            month = None
+
+        return {"date": date_str, "month": month, "year": year}
+
+    def _apply_summary_delta(self, collection: str, doc_id: str, delta: dict, direction: int) -> None:
+        if not doc_id:
+            return
+
+        doc_ref = db.collection(collection).document(doc_id)
+        snapshot = doc_ref.get()
+
+        if not snapshot.exists and direction < 0:
+            return
+
+        current = snapshot.to_dict() if snapshot.exists else {}
+
+        revenue = round((current.get("revenue") or 0.0) + delta["revenue"], 2)
+        cost = round((current.get("cost") or 0.0) + delta["cost"], 2)
+        profit = round((current.get("profit") or 0.0) + delta["profit"], 2)
+        buyer_quantity = int((current.get("buyer_quantity") or 0) + delta["buyer_quantity"])
+
+        revenue = max(revenue, 0.0)
+        cost = max(cost, 0.0)
+        profit = max(profit, 0.0)
+        buyer_quantity = max(buyer_quantity, 0)
+
+        payload = {
+            "revenue": revenue,
+            "cost": cost,
+            "profit": profit,
+            "buyer_quantity": buyer_quantity,
+        }
+
+        if collection == "DailySummary":
+            payload.setdefault("date", doc_id)
+        elif collection == "MonthlySummary":
+            payload.setdefault("month", doc_id)
+        elif collection == "YearlySummary":
+            payload.setdefault("year", doc_id)
+
+        payload["lastUpdated"] = datetime.utcnow().isoformat() + "Z"
+
+        doc_ref.set(payload, merge=True)
 
     def safe_float(self, val):
         try:

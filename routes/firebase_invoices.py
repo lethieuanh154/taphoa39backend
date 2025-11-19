@@ -130,6 +130,7 @@ def create_firebase_invoices_bp(invoice_service, product_service, customer_servi
 
             restocked_updates = []
             restock_errors = []
+            summary_adjustment = {"updated": False}
             cart_items = existing_invoice.get('cartItems', []) or []
 
             for item in cart_items:
@@ -162,6 +163,8 @@ def create_firebase_invoices_bp(invoice_service, product_service, customer_servi
                     print(traceback.format_exc())
                     restock_errors.append({"id": pid_str, "error": str(exc)})
 
+                    summary_adjustment = invoice_service.adjust_invoice_summaries(existing_invoice, direction=-1)
+
             delete_result = invoice_service.delete_invoice(invoice_id)
 
             invalidate_invoice_cache(customer_service, existing_invoice)
@@ -181,6 +184,8 @@ def create_firebase_invoices_bp(invoice_service, product_service, customer_servi
                 "message": delete_result.get("message", "invoice deleted"),
                 "restocked_products": restocked_updates,
             }
+            if summary_adjustment.get("updated"):
+                response["summary_adjustment"] = summary_adjustment
             if restock_errors:
                 response["restock_errors"] = restock_errors
 
