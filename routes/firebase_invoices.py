@@ -8,9 +8,13 @@ from routes.shared import (
     broadcast_products_onhand_updated,
     invalidate_invoice_cache,
     is_valid_pid,
+    notify_daily_summary,
     notify_invoice_created,
     notify_invoice_deleted,
     notify_invoice_updated,
+    notify_monthly_summary,
+    notify_top_products,
+    notify_yearly_summary,
     safe_float,
     safe_int,
     to_number,
@@ -239,6 +243,7 @@ def create_firebase_invoices_bp(invoice_service, product_service, customer_servi
             return jsonify({"status": "error", "message": "date is required (YYYY-MM-DD)"}), 400
         try:
             summary = invoice_service.get_daily_summary(date)
+            notify_daily_summary(socketio, date, summary)
             return jsonify(summary)
         except Exception as exc:
             import traceback
@@ -253,6 +258,7 @@ def create_firebase_invoices_bp(invoice_service, product_service, customer_servi
             return jsonify({"status": "error", "message": "year and month are required"}), 400
         try:
             summary = invoice_service.get_monthly_summary(year, month)
+            notify_monthly_summary(socketio, year, month, summary)
             return jsonify(summary)
         except Exception as exc:
             import traceback
@@ -266,6 +272,7 @@ def create_firebase_invoices_bp(invoice_service, product_service, customer_servi
             return jsonify({"status": "error", "message": "year is required"}), 400
         try:
             summary = invoice_service.get_yearly_summary(year)
+            notify_yearly_summary(socketio, year, summary)
             return jsonify(summary)
         except Exception as exc:
             import traceback
@@ -322,6 +329,14 @@ def create_firebase_invoices_bp(invoice_service, product_service, customer_servi
                         product_sales[product_id]['totalProfit'] += total_profit
                         product_sales[product_id]['totalQuantity'] += quantity
             top_products = sorted(product_sales.values(), key=lambda x: x['totalProfit'], reverse=True)[:20]
+            filters = {}
+            if date:
+                filters['date'] = date
+            if year:
+                filters['year'] = year
+            if month:
+                filters['month'] = month
+            notify_top_products(socketio, filters, top_products)
             return jsonify(top_products)
         except Exception as exc:
             import traceback

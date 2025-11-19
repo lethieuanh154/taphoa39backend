@@ -229,6 +229,26 @@ def notify_order_deleted(socketio, order_id: Any):
     socketio.emit('order_deleted', {'data': order_id}, namespace='/api/websocket/orders')
 
 
+def notify_daily_summary(socketio, date: str, summary: Dict[str, Any]):
+    payload = {'date': date, 'summary': summary if summary is not None else {}}
+    socketio.emit('daily_summary', payload, namespace='/api/websocket/invoices')
+
+
+def notify_monthly_summary(socketio, year: str, month: str, summary: Dict[str, Any]):
+    payload = {'year': year, 'month': month, 'summary': summary if summary is not None else {}}
+    socketio.emit('monthly_summary', payload, namespace='/api/websocket/invoices')
+
+
+def notify_yearly_summary(socketio, year: str, summary: Dict[str, Any]):
+    payload = {'year': year, 'summary': summary if summary is not None else {}}
+    socketio.emit('yearly_summary', payload, namespace='/api/websocket/invoices')
+
+
+def notify_top_products(socketio, filters: Dict[str, Any], products: List[Dict[str, Any]]):
+    payload = {'filters': filters, 'products': products}
+    socketio.emit('top_products', payload, namespace='/api/websocket/invoices')
+
+
 def safe_float(val: Any) -> float:
     try:
         return float(val)
