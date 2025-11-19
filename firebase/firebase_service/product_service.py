@@ -125,64 +125,79 @@ class FirestoreProductService:
         return masters
     
     def update_products_from_kiotviet_to_firestore(self):
+        """Backwards-compatible wrapper for legacy callers."""
+        return self.sync_products_from_kiotviet()
+
+    def sync_products_from_kiotviet(self):
         try:
-            print("Bắt đầu cập nhật sản phẩm từ KiotViet...")
-            firestore_items = self.fetch_firestore_items()
-            print("Đã lấy dữ liệu từ Firestore.")
-            api_items = self.fetch_api_items()  # Thêm timeout trong fetch_api_items
-            print("Đã lấy dữ liệu từ API KiotViet.")
-            # Tạo map theo Code
-            firestore_by_code = {}
-            for item_id, item in firestore_items.items():
-                code = item['data'].get('Code')
-                if code:
-                    if code not in firestore_by_code:
-                        firestore_by_code[code] = []
-                    firestore_by_code[code].append({'id': item_id, 'data': item['data']})
-            api_by_code = {getattr(item, 'Code', None): item for item in api_items}
+            print("Bắt đầu đồng bộ sản phẩm từ KiotViet (tối ưu)...")
+            existing_checksums = {}
+            existing_ids = set()
+            # Lấy tối thiểu dữ liệu từ Firestore (chỉ checksum) để giảm tải bộ nhớ.
+            for doc in self.products_ref.select(["SyncChecksum"]).stream():
+                data = doc.to_dict() or {}
+                existing_checksums[doc.id] = data.get("SyncChecksum")
+                existing_ids.add(doc.id)
 
-            to_delete = []
-            to_add = []
+            api_items = self.fetch_api_items()
 
-            for code, api_item in api_by_code.items():
-                api_id = getattr(api_item, 'Id', None)
-                api_mod = getattr(api_item, 'ModifiedDate', '')
-                # Nếu code đã tồn tại trong Firestore
-                if code in firestore_by_code:
-                    # Xóa tất cả các bản ghi cũ có cùng code này (dù id nào)
-                    for fs_item in firestore_by_code[code]:
-                        fs_id = fs_item['id']
-                        fs_mod = fs_item['data'].get('ModifiedDate', '')
-                        # Nếu Id khác hoặc bản API mới hơn, xóa bản cũ
-                        if api_id != fs_id or is_newer(api_mod, fs_mod):
-                            to_delete.append(fs_id)
-                    # Sau khi xóa, sẽ thêm bản mới nhất từ API
-                    to_add.append(api_item)
-                else:
-                    # Code chỉ có ở API, thêm mới
-                    to_add.append(api_item)
+            to_upsert = []
+            seen_ids = set()
 
-            # Xóa những sản phẩm trong Firestore mà không có trong API
-            for code, fs_items in firestore_by_code.items():
-                if code not in api_by_code:
-                    for fs_item in fs_items:
-                        to_delete.append(fs_item['id'])
+            for item in api_items:
+                product_dict = item.__dict__ if hasattr(item, "__dict__") else dict(item)
+                doc_id = str(product_dict.get("Id"))
+                if not doc_id:
+                    continue
+                seen_ids.add(doc_id)
 
-            # Thực hiện xóa và thêm/cập nhật Firestore
-            print("Đang xử lý cập nhật/xóa sản phẩm...")
-            for item_id in set(to_delete):
-                doc_ref = db.collection(COLLECTION_NAME).document(str(item_id))
-                doc_ref.delete()
-            for item in to_add:
-                doc_ref = db.collection(COLLECTION_NAME).document(str(getattr(item, 'Id')))
-                doc_ref.set(item.__dict__ if hasattr(item, '__dict__') else item)
+                checksum = self.hash_item(product_dict)
+                if existing_checksums.get(doc_id) == checksum:
+                    continue
 
-            print(f"Đã xóa {len(set(to_delete))} sản phẩm, thêm/cập nhật {len(to_add)} sản phẩm.")
-            print("Hoàn tất cập nhật/xóa sản phẩm.")
-        except Exception as e:
-            print("Lỗi khi cập nhật sản phẩm từ KiotViet:", e)
+                # Gắn checksum để lần sau so sánh nhanh.
+                product_to_store = dict(product_dict)
+                product_to_store["SyncChecksum"] = checksum
+                to_upsert.append((doc_id, product_to_store))
+
+            to_delete = [doc_id for doc_id in existing_ids if doc_id not in seen_ids]
+
+            # Thực thi batch để hạn chế số round-trip
+            BATCH_SIZE = 500
+            for i in range(0, len(to_upsert), BATCH_SIZE):
+                batch = db.batch()
+                for doc_id, payload in to_upsert[i : i + BATCH_SIZE]:
+                    doc_ref = self.products_ref.document(doc_id)
+                    batch.set(doc_ref, payload)
+                batch.commit()
+
+            for i in range(0, len(to_delete), BATCH_SIZE):
+                batch = db.batch()
+                for doc_id in to_delete[i : i + BATCH_SIZE]:
+                    doc_ref = self.products_ref.document(doc_id)
+                    batch.delete(doc_ref)
+                batch.commit()
+
+            self.cache.invalidate("all_products")
+            for doc_id, _ in to_upsert:
+                self.cache.invalidate(doc_id)
+            for doc_id in to_delete:
+                self.cache.invalidate(doc_id)
+
+            print(
+                f"Đồng bộ hoàn tất: cập nhật/thêm {len(to_upsert)} sản phẩm, xóa {len(to_delete)} sản phẩm."
+            )
+            return {
+                "message": "Đã đồng bộ sản phẩm",
+                "updated_or_created": len(to_upsert),
+                "deleted": len(to_delete),
+                "total_api_items": len(api_items),
+            }
+        except Exception as exc:
+            print("Lỗi khi đồng bộ sản phẩm từ KiotViet:", exc)
             import traceback
             print(traceback.format_exc())
+            return {"message": "sync_failed", "error": str(exc)}
 
     def fetch_firestore_items(self):
         print("Đang tải dữ liệu từ Firestore...")
@@ -260,6 +275,7 @@ class FirestoreProductService:
                 return obj.isoformat()
             raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
         item_copy = dict(item)
+        item_copy.pop("SyncChecksum", None)
         return hashlib.md5(json.dumps(item_copy, sort_keys=True, default=default_serializer).encode()).hexdigest()
 
 def is_newer(api_mod, fs_mod):

@@ -1,0 +1,326 @@
+from __future__ import annotations
+
+from flask import Blueprint, jsonify, request
+from google.api_core.exceptions import ResourceExhausted
+
+from routes.shared import (
+    broadcast_customer_updates,
+    broadcast_products_onhand_updated,
+    invalidate_invoice_cache,
+    is_valid_pid,
+    notify_invoice_created,
+    notify_invoice_deleted,
+    notify_invoice_updated,
+    safe_float,
+    safe_int,
+    to_number,
+)
+
+
+def create_firebase_invoices_bp(invoice_service, product_service, customer_service, socketio) -> Blueprint:
+    bp = Blueprint("firebase_invoices", __name__, url_prefix="/api/firebase")
+
+    @bp.route("/all_invoices", methods=["GET"])
+    def get_all_invoices():
+        try:
+            invoices = invoice_service.read_all_invoices()
+            return jsonify(invoices)
+        except Exception as exc:
+            import traceback
+            print(traceback.format_exc())
+            return jsonify({"status": "error", "message": str(exc), "trace": traceback.format_exc()}), 500
+
+    @bp.route("/invoices/<invoice_id>", methods=["GET"])
+    def get_invoice_by_id(invoice_id: str):
+        try:
+            invoice = invoice_service.read_invoice(invoice_id)
+            if invoice:
+                return jsonify(invoice)
+            return jsonify({"status": "error", "message": "Invoice not found"}), 404
+        except Exception as exc:
+            import traceback
+            print(traceback.format_exc())
+            return jsonify({"status": "error", "message": str(exc), "trace": traceback.format_exc()}), 500
+
+    @bp.route("/add_invoice", methods=["POST"])
+    def add_invoice():
+        try:
+            invoice = request.get_json(silent=True) or {}
+            invoice_id = invoice.get("id") or invoice.get("Id")
+            if invoice_id is None:
+                return jsonify({"status": "error", "message": "invoice id is required"}), 400
+
+            normalized_invoice = dict(invoice)
+            normalized_invoice["id"] = str(invoice_id).strip()
+
+            result = invoice_service.add_invoice(normalized_invoice)
+
+            invalidate_invoice_cache(customer_service, normalized_invoice)
+
+            recalc_result = customer_service.recalculate_customer_from_invoice(normalized_invoice)
+            if recalc_result.get("updated") and recalc_result.get("customer"):
+                broadcast_customer_updates(socketio, [
+                    {"applied": True, "customer": recalc_result.get("customer")}
+                ])
+
+            notify_invoice_created(socketio, normalized_invoice)
+            return jsonify(result)
+        except ResourceExhausted as exc:
+            import traceback
+            print(traceback.format_exc())
+            return jsonify({"status": "error", "message": "Firestore quota exceeded", "details": str(exc)}), 429
+        except Exception as exc:
+            import traceback
+            print(traceback.format_exc())
+            return jsonify({"status": "error", "message": str(exc)}), 500
+
+    @bp.route("/invoices/<invoice_id>", methods=["PUT"])
+    def update_invoice(invoice_id: str):
+        try:
+            updates = request.get_json(silent=True) or {}
+            existing_invoice = invoice_service.read_invoice(invoice_id)
+
+            result = invoice_service.update_invoice(invoice_id, updates)
+
+            updated_invoice = invoice_service.read_invoice(invoice_id)
+
+            if existing_invoice:
+                invalidate_invoice_cache(customer_service, existing_invoice)
+            if updated_invoice:
+                invalidate_invoice_cache(customer_service, updated_invoice)
+
+            recalc_results = []
+            if existing_invoice:
+                prev_recalc = customer_service.recalculate_customer_from_invoice(existing_invoice)
+                if prev_recalc.get("updated") and prev_recalc.get("customer"):
+                    recalc_results.append(prev_recalc)
+
+            if updated_invoice:
+                new_recalc = customer_service.recalculate_customer_from_invoice(updated_invoice)
+                if new_recalc.get("updated") and new_recalc.get("customer"):
+                    if not any(r.get("customer_id") == new_recalc.get("customer_id") for r in recalc_results):
+                        recalc_results.append(new_recalc)
+
+            if recalc_results:
+                broadcast_customer_updates(socketio, [
+                    {"applied": True, "customer": recalc.get("customer")}
+                    for recalc in recalc_results
+                    if recalc.get("customer")
+                ])
+
+            if updated_invoice:
+                notify_invoice_updated(socketio, updated_invoice)
+
+            return jsonify(result)
+        except ResourceExhausted as exc:
+            import traceback
+            print(traceback.format_exc())
+            return jsonify({"status": "error", "message": "Firestore quota exceeded", "details": str(exc)}), 429
+        except Exception as exc:
+            import traceback
+            print(traceback.format_exc())
+            return jsonify({"status": "error", "message": str(exc)}), 500
+
+    @bp.route("/invoices/<invoice_id>", methods=["DELETE"])
+    def delete_invoice(invoice_id: str):
+        try:
+            existing_invoice = invoice_service.read_invoice(invoice_id)
+            if not existing_invoice:
+                return jsonify({"status": "error", "message": "Invoice not found"}), 404
+
+            restocked_updates = []
+            restock_errors = []
+            cart_items = existing_invoice.get('cartItems', []) or []
+
+            for item in cart_items:
+                product_data = item.get('product') or {}
+                product_id = product_data.get('Id') or product_data.get('id') or item.get('productId')
+                quantity = safe_int(item.get('quantity', 0))
+
+                if quantity <= 0:
+                    continue
+
+                pid_str = str(product_id) if product_id is not None else None
+                if not is_valid_pid(pid_str):
+                    continue
+
+                product_doc = product_service.read_product(pid_str)
+                if not product_doc:
+                    continue
+
+                current_onhand = to_number(product_doc.get('OnHand'))
+                if current_onhand is None:
+                    continue
+
+                new_onhand = int(current_onhand) + quantity
+                try:
+                    product_service.update_product(pid_str, {"OnHand": new_onhand})
+                    restocked_updates.append({"Id": pid_str, "OnHand": new_onhand})
+                except Exception as exc:
+                    import traceback
+                    print(f"Error restocking product {pid_str}: {exc}")
+                    print(traceback.format_exc())
+                    restock_errors.append({"id": pid_str, "error": str(exc)})
+
+            delete_result = invoice_service.delete_invoice(invoice_id)
+
+            invalidate_invoice_cache(customer_service, existing_invoice)
+
+            recalc_result = customer_service.recalculate_customer_from_invoice(existing_invoice)
+            if recalc_result.get("updated") and recalc_result.get("customer"):
+                broadcast_customer_updates(socketio, [
+                    {"applied": True, "customer": recalc_result.get("customer")}
+                ])
+
+            notify_invoice_deleted(socketio, invoice_id)
+
+            if restocked_updates:
+                broadcast_products_onhand_updated(socketio, restocked_updates)
+
+            response = {
+                "message": delete_result.get("message", "invoice deleted"),
+                "restocked_products": restocked_updates,
+            }
+            if restock_errors:
+                response["restock_errors"] = restock_errors
+
+            return jsonify(response)
+        except ResourceExhausted as exc:
+            import traceback
+            print(traceback.format_exc())
+            return jsonify({"status": "error", "message": "Firestore quota exceeded", "details": str(exc)}), 429
+        except Exception as exc:
+            import traceback
+            print(traceback.format_exc())
+            return jsonify({"status": "error", "message": str(exc)}), 500
+
+    @bp.route("/invoices/date", methods=["GET"])
+    def get_invoices_by_date():
+        try:
+            date = request.args.get('date')
+            if not date:
+                return jsonify({"status": "error", "message": "date is required"}), 400
+            invoices = invoice_service.get_invoices_by_date(date)
+            return jsonify(invoices)
+        except Exception as exc:
+            import traceback
+            print(traceback.format_exc())
+            return jsonify({"status": "error", "message": str(exc), "trace": traceback.format_exc()}), 500
+
+    @bp.route("/invoices/status/<status>", methods=["GET"])
+    def get_invoices_by_status(status: str):
+        try:
+            invoices = invoice_service.get_invoices_by_status(status)
+            return jsonify(invoices)
+        except Exception as exc:
+            import traceback
+            print(traceback.format_exc())
+            return jsonify({"status": "error", "message": str(exc), "trace": traceback.format_exc()}), 500
+
+    @bp.route("/invoices/customer/<customer_id>", methods=["GET"])
+    def get_invoices_by_customer(customer_id: str):
+        try:
+            invoices = invoice_service.get_invoices_by_customer(customer_id)
+            return jsonify(invoices)
+        except Exception as exc:
+            import traceback
+            print(traceback.format_exc())
+            return jsonify({"status": "error", "message": str(exc), "trace": traceback.format_exc()}), 500
+
+    @bp.route("/daily_summary", methods=["GET"])
+    def get_daily_summary():
+        date = request.args.get('date')
+        if not date:
+            return jsonify({"status": "error", "message": "date is required (YYYY-MM-DD)"}), 400
+        try:
+            summary = invoice_service.get_daily_summary(date)
+            return jsonify(summary)
+        except Exception as exc:
+            import traceback
+            print(traceback.format_exc())
+            return jsonify({"status": "error", "message": str(exc), "trace": traceback.format_exc()}), 500
+
+    @bp.route("/monthly_summary", methods=["GET"])
+    def get_monthly_summary():
+        year = request.args.get('year')
+        month = request.args.get('month')
+        if not year or not month:
+            return jsonify({"status": "error", "message": "year and month are required"}), 400
+        try:
+            summary = invoice_service.get_monthly_summary(year, month)
+            return jsonify(summary)
+        except Exception as exc:
+            import traceback
+            print(traceback.format_exc())
+            return jsonify({"status": "error", "message": str(exc), "trace": traceback.format_exc()}), 500
+
+    @bp.route("/yearly_summary", methods=["GET"])
+    def get_yearly_summary():
+        year = request.args.get('year')
+        if not year:
+            return jsonify({"status": "error", "message": "year is required"}), 400
+        try:
+            summary = invoice_service.get_yearly_summary(year)
+            return jsonify(summary)
+        except Exception as exc:
+            import traceback
+            print(traceback.format_exc())
+            return jsonify({"status": "error", "message": str(exc), "trace": traceback.format_exc()}), 500
+
+    @bp.route("/top_products", methods=["GET"])
+    def get_top_products():
+        try:
+            date = request.args.get('date')
+            year = request.args.get('year')
+            month = request.args.get('month')
+            if date:
+                invoices = invoice_service.get_invoices_by_date(date)
+            elif year and month:
+                from calendar import monthrange
+
+                days_in_month = monthrange(int(year), int(month))[1]
+                invoices = []
+                for day in range(1, days_in_month + 1):
+                    date_str = f"{year}-{str(month).zfill(2)}-{str(day).zfill(2)}"
+                    invoices.extend(invoice_service.get_invoices_by_date(date_str))
+            elif year:
+                invoices = []
+                for m in range(1, 13):
+                    from calendar import monthrange
+
+                    days_in_month = monthrange(int(year), m)[1]
+                    for day in range(1, days_in_month + 1):
+                        date_str = f"{year}-{str(m).zfill(2)}-{str(day).zfill(2)}"
+                        invoices.extend(invoice_service.get_invoices_by_date(date_str))
+            else:
+                invoices = invoice_service.read_all_invoices()
+
+            product_sales = {}
+            for invoice in invoices:
+                cart_items = invoice.get('cartItems', [])
+                for item in cart_items:
+                    product = item.get('product', {})
+                    product_id = product.get('Id')
+                    product_name = product.get('FullName', 'Unknown')
+                    price = safe_float(product.get('BasePrice', 0))
+                    quantity = safe_int(item.get('quantity', 0))
+                    cost = safe_float(product.get('Cost', 0))
+                    total_profit = (price - cost) * quantity
+                    if product_id is not None:
+                        if product_id not in product_sales:
+                            product_sales[product_id] = {
+                                'productId': product_id,
+                                'productName': product_name,
+                                'totalProfit': 0,
+                                'totalQuantity': 0,
+                            }
+                        product_sales[product_id]['totalProfit'] += total_profit
+                        product_sales[product_id]['totalQuantity'] += quantity
+            top_products = sorted(product_sales.values(), key=lambda x: x['totalProfit'], reverse=True)[:20]
+            return jsonify(top_products)
+        except Exception as exc:
+            import traceback
+            print(traceback.format_exc())
+            return jsonify({"status": "error", "message": str(exc), "trace": traceback.format_exc()}), 500
+
+    return bp

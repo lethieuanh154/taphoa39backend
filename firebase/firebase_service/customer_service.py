@@ -1,5 +1,8 @@
 from google.api_core.exceptions import ResourceExhausted
+from dotenv import load_dotenv
 
+
+load_dotenv()
 try:
     from google.cloud.firestore_v1 import FieldFilter
 except ImportError:  # pragma: no cover
