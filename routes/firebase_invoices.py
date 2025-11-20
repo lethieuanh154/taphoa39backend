@@ -24,16 +24,6 @@ from routes.shared import (
 def create_firebase_invoices_bp(invoice_service, product_service, customer_service, socketio) -> Blueprint:
     bp = Blueprint("firebase_invoices", __name__, url_prefix="/api/firebase")
 
-    @bp.route("/all_invoices", methods=["GET"])
-    def get_all_invoices():
-        try:
-            invoices = invoice_service.read_all_invoices()
-            return jsonify(invoices)
-        except Exception as exc:
-            import traceback
-            print(traceback.format_exc())
-            return jsonify({"status": "error", "message": str(exc), "trace": traceback.format_exc()}), 500
-
     @bp.route("/invoices/<invoice_id>", methods=["GET"])
     def get_invoice_by_id(invoice_id: str):
         try:
@@ -305,7 +295,7 @@ def create_firebase_invoices_bp(invoice_service, product_service, customer_servi
                         date_str = f"{year}-{str(m).zfill(2)}-{str(day).zfill(2)}"
                         invoices.extend(invoice_service.get_invoices_by_date(date_str))
             else:
-                invoices = invoice_service.read_all_invoices()
+                invoices = list(invoice_service.stream_invoices())
 
             product_sales = {}
             for invoice in invoices:

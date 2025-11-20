@@ -20,15 +20,11 @@ class FirestoreInvoiceService:
         self.cache = cache
         self.invoices_ref = db.collection(COLLECTION_NAME)
 
-    def read_all_invoices(self):
-        # Kiểm tra cache
-        if self.cache.has("all_invoices"):
-            return self.cache.get("all_invoices")
-
+    def stream_invoices(self):
         docs = self.invoices_ref.stream()
-        result = [doc.to_dict() | {"id": doc.id} for doc in docs]
-        self.cache.set("all_invoices", result, ttl=300)  # Cache 5 phút
-        return result
+        for doc in docs:
+            data = doc.to_dict() or {}
+            yield data | {"id": doc.id}
 
     def read_invoice(self, invoice_id):
         if self.cache.has(invoice_id):
@@ -370,7 +366,7 @@ class FirestoreInvoiceService:
                     invoices.extend(self.get_invoices_by_date(date_str))
             doc_id = str(year)
         else:
-            invoices = self.read_all_invoices()
+            invoices = self.stream_invoices()
             doc_id = "all"
 
         for invoice in invoices:
