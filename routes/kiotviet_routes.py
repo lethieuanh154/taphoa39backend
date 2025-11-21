@@ -9,6 +9,7 @@ from FromKiotViet.get_all_customer import get_entire_customer
 from FromKiotViet.get_all_product_by_category import get_items_category
 from FromKiotViet.get_category import get_category
 from FromKiotViet.get_entire_product import get_all as get_all_products_from_kiotviet
+from FromKiotViet.get_all_out_of_stock import get_out_of_stock_master_products_data
 from FromKiotViet.get_one_product import get_item
 from Utility.get_env import LatestBranchId, retailer
 
@@ -96,23 +97,27 @@ def create_kiotviet_routes_bp() -> Blueprint:
     @bp.route("/items/out_of_stock", methods=["GET"])
     def get_items_out_of_stock_route():
         try:
-            all_items = get_all_products_from_kiotviet() or []
-            out_of_stock_items = [
-                {
+            api_items = get_out_of_stock_master_products_data()
+            sanitized_items = []
+            for item in api_items or []:
+                if item.get("Id") in (-1, "-1"):
+                    continue
+                sanitized_items.append({
+                    "Id": item.get("Id"),
+                    "MasterProductId": item.get("Id"),
                     "Code": item.get("Code"),
                     "Image": item.get("Image"),
                     "FullName": item.get("FullName"),
                     "Cost": item.get("Cost"),
                     "BasePrice": item.get("BasePrice"),
                     "OnHand": item.get("OnHand"),
-                }
-                for item in all_items
-                if (item.get("MasterUnitId") is None) and (item.get("OnHand", 0) < 10)
-            ]
-            out_of_stock_items.sort(key=lambda x: x.get("OnHand", 0))
+                    "Unit": item.get("Unit"),
+                    "AttributeLabel": item.get("AttributeLabel"),
+                })
 
-            total_items = len(out_of_stock_items)
-            return jsonify({"items": out_of_stock_items, "total_items": total_items})
+            sanitized_items.sort(key=lambda x: x.get("OnHand", 0.0))
+
+            return jsonify({"items": sanitized_items, "total_items": len(sanitized_items)})
         except Exception as exc:
             import traceback
             print(traceback.format_exc())
