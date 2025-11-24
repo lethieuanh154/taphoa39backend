@@ -501,7 +501,7 @@ class FirestoreCustomerService:
                 return cached
 
         docs = self.customers_ref.stream()
-        result = [doc.to_dict() | {"id": doc.id} for doc in docs]
+        result = [doc.to_dict() | {"Id": doc.id} for doc in docs]
 
         if self.cache:
             self.cache.set(cache_key, result, ttl=300)
