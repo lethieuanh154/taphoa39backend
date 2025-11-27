@@ -211,4 +211,36 @@ def create_firebase_customers_bp(customer_service, socketio) -> Blueprint:
             print(traceback.format_exc())
             return jsonify({"status": "error", "message": str(exc)}), 500
 
+    @bp.route("/customers/fetch", methods=["POST"])
+    def fetch_customers_changed():
+        """
+        Accepts JSON: { "id": "123" } or { "ids": ["1","2"] }
+        Returns the latest customer document(s) from Firestore.
+        """
+        try:
+            payload = request.get_json(silent=True) or {}
+            ids = []
+            if isinstance(payload, dict) and payload.get("id"):
+                ids = [str(payload.get("id"))]
+            elif isinstance(payload, dict) and payload.get("ids"):
+                ids = [str(i) for i in payload.get("ids") if i is not None]
+            else:
+                return jsonify({"status": "error", "message": "Provide 'id' or 'ids' in JSON body"}), 400
+
+            all_customers = customer_service.read_all_customers() or []
+            lookup = {str(c.get('Id') or c.get('id')): c for c in all_customers if isinstance(c, dict)}
+
+            results = []
+            for cid in ids:
+                if cid in lookup:
+                    results.append(lookup[cid])
+
+            if len(results) == 1:
+                return jsonify(results[0])
+            return jsonify(results)
+        except Exception as exc:
+            import traceback
+            print(traceback.format_exc())
+            return jsonify({"status": "error", "message": str(exc), "trace": traceback.format_exc()}), 500
+
     return bp

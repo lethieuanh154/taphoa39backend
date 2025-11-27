@@ -1,5 +1,4 @@
 import requests
-import json
 
 import unidecode
 from Utility.get_env import LatestBranchId, retailer

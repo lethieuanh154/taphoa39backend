@@ -13,9 +13,9 @@ def create_static_routes_bp() -> Blueprint:
 
     @bp.route("/<path:path>")
     def serve_static_files(path: str):
-        if 'socket.io' in path:
-            return abort(404)
-
+        # Allow socket.io traffic to be handled by the SocketIO server.
+        # Only serve static files for other paths; if path exists serve it,
+        # otherwise fall back to index.html for SPA routing.
         full_path = os.path.join(current_app.static_folder, path)
         if os.path.exists(full_path):
             return send_from_directory(current_app.static_folder, path)

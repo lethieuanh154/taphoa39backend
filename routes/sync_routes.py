@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from flask import Blueprint, jsonify
+from flask import Blueprint, jsonify, request
 
 from routes.shared import safe_int
 
@@ -14,9 +14,23 @@ def create_sync_routes_bp(product_service) -> Blueprint:
     def sync_customers_from_kiotviet():
         return jsonify(update_customer_from_kiotviet_to_firestore())
 
-    @bp.route("/kiotviet/firebase/products", methods=["PUT"])
+    @bp.route("/kiotviet/firebase/products", methods=["POST"])
     def sync_products_from_kiotviet():
-        return jsonify(product_service.update_products_from_kiotviet_to_firestore())
+        """Trigger a sync from KiotViet into Firestore and return final Firestore data.
+        Accepts optional JSON body: { "limit": 100 }
+        """
+        try:
+            # perform sync (upsert-only behavior handled in service)
+            sync_result = product_service.update_products_from_kiotviet_to_firestore()
+
+            # return latest products from Firestore (include deleted/inactive so caller sees everything)
+            products = product_service.read_all_products(include_inactive=True, include_deleted=True) or []
+
+            return jsonify({"sync": sync_result, "products": products})
+        except Exception as exc:
+            import traceback
+            print(traceback.format_exc())
+            return jsonify({"status": "error", "message": str(exc), "trace": traceback.format_exc()}), 500
 
     @bp.route("/kiotviet/firebase/products/compare", methods=["GET"])
     def compare_products_between_sources():
@@ -37,11 +51,26 @@ def create_sync_routes_bp(product_service) -> Blueprint:
             fb_item = fb_by_id.get(pid)
 
             if kv_item is None and fb_item is not None:
-                missing_in_kiotviet.append(pid)
+                missing_in_kiotviet.append({
+                    "Id": pid,
+                    "code": fb_item.get("Code") or fb_item.get("code"),
+                })
                 continue
 
             if kv_item is not None and fb_item is None:
-                missing_in_firebase.append(pid)
+                kv_code = None
+                if hasattr(kv_item, "__dict__"):
+                    kv_code = getattr(kv_item, "Code", None) or kv_item.__dict__.get("Code") or kv_item.__dict__.get("code")
+                else:
+                    try:
+                        kv_code = kv_item.get("Code") or kv_item.get("code")
+                    except Exception:
+                        kv_code = None
+
+                missing_in_firebase.append({
+                    "Id": pid,
+                    "code": kv_code,
+                })
                 continue
 
             if kv_item is None or fb_item is None:

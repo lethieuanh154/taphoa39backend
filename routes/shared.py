@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
+from routes.firebase_websocket import set_last_notify
 
 UPDATE_ID_KEYS: Tuple[str, ...] = ("Id", "id", "productId", "ProductId")
 ONHAND_KEYS: Tuple[str, ...] = ("OnHand", "onHand", "onhand")
@@ -139,114 +140,192 @@ def apply_product_updates(product_service, normalized_items: Iterable[Dict[str, 
 
 
 def notify_product_onhand_updated(socketio, product_id: Any, fields: Dict[str, Any]):
-    if not fields:
+    # Emit a minimal notification so clients know to fetch fresh product data.
+    if not socketio:
         return
-
-    payload = {'productId': str(product_id)}
-
-    def copy_field(src_key: str, dest_key: Optional[str] = None) -> None:
-        if src_key in fields and fields[src_key] is not None:
-            payload[dest_key or src_key] = fields[src_key]
-
-    copy_field('OnHand', 'onHand')
-    copy_field('onHand', 'onHand')
-    copy_field('BasePrice', 'basePrice')
-    copy_field('basePrice', 'basePrice')
-    copy_field('Cost', 'cost')
-    copy_field('cost', 'cost')
-    copy_field('Code', 'code')
-    copy_field('code', 'code')
-    copy_field('FullName', 'fullName')
-    copy_field('fullName', 'fullName')
-    copy_field('Name', 'name')
-    copy_field('name', 'name')
-
-    if len(payload) > 1:
-        socketio.emit('product_onhand_updated', payload, namespace='/api/websocket/products')
+    socketio.emit('product_onhand_updated', {'productId': str(product_id)}, namespace='/api/websocket/products')
 
 
 def broadcast_products_onhand_updated(socketio, updates: Iterable[Dict[str, Any]]):
     updates_list = list(updates)
     if not updates_list:
         return
-
-    socketio.emit('products_onhand_updated', updates_list, namespace='/api/websocket/products')
+    # Emit only product IDs; clients should call GET /api/firebase/get/products/<id> or
+    # use `GET /api/firebase/products/latest` to refresh data.
+    ids = []
     for item in updates_list:
         pid = item.get('Id') or item.get('productId')
         if pid is None:
             continue
-        fields = {k: v for k, v in item.items() if k not in UPDATE_ID_KEYS}
-        notify_product_onhand_updated(socketio, pid, fields)
+        ids.append(str(pid))
+
+    if not socketio:
+        return
+    socketio.emit('products_onhand_updated', ids, namespace='/api/websocket/products')
+    for pid in ids:
+        notify_product_onhand_updated(socketio, pid, {})
 
 
 def broadcast_customer_updates(socketio, results: Iterable[Dict[str, Any]]):
     if not results:
         return
-
-    batch_payload: List[Dict[str, Any]] = []
+    # Emit only customer IDs so clients will fetch fresh customer data.
+    ids: List[str] = []
     for result in results:
         if not isinstance(result, dict) or not result.get('applied'):
             continue
-
         customer_data = result.get('customer')
-        if not customer_data:
+        if not isinstance(customer_data, dict):
             continue
+        cid = customer_data.get('Id') or customer_data.get('id')
+        if cid is None:
+            continue
+        cid_str = str(cid)
+        ids.append(cid_str)
+        if socketio:
+            socketio.emit('customer_updated', {'id': cid_str}, namespace='/api/websocket/customers')
 
-        batch_payload.append(customer_data)
-        socketio.emit('customer_updated', customer_data, namespace='/api/websocket/customers')
-
-    if batch_payload:
-        socketio.emit('customers_updated', batch_payload, namespace='/api/websocket/customers')
+    if ids and socketio:
+        socketio.emit('customers_updated', ids, namespace='/api/websocket/customers')
 
 
 def notify_customer_created(socketio, customer: Dict[str, Any]):
     if not isinstance(customer, dict):
         return
-    socketio.emit('customer_created', customer, namespace='/api/websocket/customers')
+    cid = customer.get('Id') or customer.get('id')
+    if cid is None:
+        return
+    if not socketio:
+        return
+    socketio.emit('customer_created', {'id': str(cid)}, namespace='/api/websocket/customers')
 
 
 def notify_invoice_updated(socketio, invoice: Dict[str, Any]):
-    socketio.emit('invoice_updated', {'data': invoice}, namespace='/api/websocket/invoices')
+    if isinstance(invoice, dict):
+        iid = invoice.get('Id') or invoice.get('id')
+    else:
+        iid = invoice
+    if iid is None:
+        return
+    if not socketio:
+        return
+    socketio.emit('invoice_updated', {'id': str(iid)}, namespace='/api/websocket/invoices')
+    try:
+        set_last_notify('/api/websocket/invoices', 'invoice_updated', {'id': str(iid)})
+    except Exception:
+        pass
 
 
 def notify_invoice_deleted(socketio, invoice_id: Any):
-    socketio.emit('invoice_deleted', {'data': invoice_id}, namespace='/api/websocket/invoices')
+    if not socketio:
+        return
+    socketio.emit('invoice_deleted', {'id': str(invoice_id)}, namespace='/api/websocket/invoices')
+    try:
+        set_last_notify('/api/websocket/invoices', 'invoice_deleted', {'id': str(invoice_id)})
+    except Exception:
+        pass
 
 
 def notify_invoice_created(socketio, invoice: Dict[str, Any]):
-    socketio.emit('invoice_created', {'data': invoice}, namespace='/api/websocket/invoices')
+    if isinstance(invoice, dict):
+        iid = invoice.get('Id') or invoice.get('id')
+    else:
+        iid = invoice
+    if iid is None:
+        return
+    if not socketio:
+        return
+    socketio.emit('invoice_created', {'id': str(iid)}, namespace='/api/websocket/invoices')
+    try:
+        set_last_notify('/api/websocket/invoices', 'invoice_created', {'id': str(iid)})
+    except Exception:
+        pass
 
 
 def notify_order_created(socketio, order: Dict[str, Any]):
-    socketio.emit('order_created', {'data': order}, namespace='/api/websocket/orders')
+    if isinstance(order, dict):
+        oid = order.get('Id') or order.get('id')
+    else:
+        oid = order
+    if oid is None:
+        return
+    if not socketio:
+        return
+    socketio.emit('order_created', {'id': str(oid)}, namespace='/api/websocket/orders')
+    try:
+        set_last_notify('/api/websocket/orders', 'order_created', {'id': str(oid)})
+    except Exception:
+        pass
 
 
 def notify_order_updated(socketio, order: Dict[str, Any]):
-    socketio.emit('order_updated', {'data': order}, namespace='/api/websocket/orders')
+    if isinstance(order, dict):
+        oid = order.get('Id') or order.get('id')
+    else:
+        oid = order
+    if oid is None:
+        return
+    if not socketio:
+        return
+    socketio.emit('order_updated', {'id': str(oid)}, namespace='/api/websocket/orders')
+    try:
+        set_last_notify('/api/websocket/orders', 'order_updated', {'id': str(oid)})
+    except Exception:
+        pass
 
 
 def notify_order_deleted(socketio, order_id: Any):
-    socketio.emit('order_deleted', {'data': order_id}, namespace='/api/websocket/orders')
+    if not socketio:
+        return
+    socketio.emit('order_deleted', {'id': str(order_id)}, namespace='/api/websocket/orders')
+    try:
+        set_last_notify('/api/websocket/orders', 'order_deleted', {'id': str(order_id)})
+    except Exception:
+        pass
 
 
 def notify_daily_summary(socketio, date: str, summary: Dict[str, Any]):
     payload = {'date': date, 'summary': summary if summary is not None else {}}
+    if not socketio:
+        return
     socketio.emit('daily_summary', payload, namespace='/api/websocket/invoices')
+    try:
+        set_last_notify('/api/websocket/invoices', 'daily_summary', payload)
+    except Exception:
+        pass
 
 
 def notify_monthly_summary(socketio, year: str, month: str, summary: Dict[str, Any]):
     payload = {'year': year, 'month': month, 'summary': summary if summary is not None else {}}
+    if not socketio:
+        return
     socketio.emit('monthly_summary', payload, namespace='/api/websocket/invoices')
+    try:
+        set_last_notify('/api/websocket/invoices', 'monthly_summary', payload)
+    except Exception:
+        pass
 
 
 def notify_yearly_summary(socketio, year: str, summary: Dict[str, Any]):
     payload = {'year': year, 'summary': summary if summary is not None else {}}
+    if not socketio:
+        return
     socketio.emit('yearly_summary', payload, namespace='/api/websocket/invoices')
+    try:
+        set_last_notify('/api/websocket/invoices', 'yearly_summary', payload)
+    except Exception:
+        pass
 
 
 def notify_top_products(socketio, filters: Dict[str, Any], products: List[Dict[str, Any]]):
     payload = {'filters': filters, 'products': products}
+    if not socketio:
+        return
     socketio.emit('top_products', payload, namespace='/api/websocket/invoices')
+    try:
+        set_last_notify('/api/websocket/invoices', 'top_products', payload)
+    except Exception:
+        pass
 
 
 def safe_float(val: Any) -> float:

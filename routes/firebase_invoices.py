@@ -184,6 +184,36 @@ def create_firebase_invoices_bp(invoice_service, product_service, customer_servi
                 response["restock_errors"] = restock_errors
 
             return jsonify(response)
+
+            @bp.route("/invoices/fetch", methods=["POST"])
+            def fetch_invoices_changed():
+                """
+                Accepts JSON: { "id": "123" } or { "ids": ["1","2"] }
+                Returns the latest invoice document(s) from Firestore.
+                """
+                try:
+                    payload = request.get_json(silent=True) or {}
+                    ids = []
+                    if isinstance(payload, dict) and payload.get("id"):
+                        ids = [str(payload.get("id"))]
+                    elif isinstance(payload, dict) and payload.get("ids"):
+                        ids = [str(i) for i in payload.get("ids") if i is not None]
+                    else:
+                        return jsonify({"status": "error", "message": "Provide 'id' or 'ids' in JSON body"}), 400
+
+                    results = []
+                    for iid in ids:
+                        inv = invoice_service.read_invoice(str(iid))
+                        if inv:
+                            results.append(inv)
+
+                    if len(results) == 1:
+                        return jsonify(results[0])
+                    return jsonify(results)
+                except Exception as exc:
+                    import traceback
+                    print(traceback.format_exc())
+                    return jsonify({"status": "error", "message": str(exc), "trace": traceback.format_exc()}), 500
         except ResourceExhausted as exc:
             import traceback
             print(traceback.format_exc())
@@ -332,5 +362,54 @@ def create_firebase_invoices_bp(invoice_service, product_service, customer_servi
             import traceback
             print(traceback.format_exc())
             return jsonify({"status": "error", "message": str(exc), "trace": traceback.format_exc()}), 500
+    @bp.route("/notify_change", methods=["POST"])
+    def notify_change():
+        """Accept a notification from a client that data changed and broadcast
+        a simple event to other connected clients. This endpoint DOES NOT update
+        application data; it only notifies other clients they should refresh.
+
+        Expected JSON body example:
+          { "namespace": "invoices", "event": "invoice_created", "data": { "id": "123" }, "sender_sid": "<optional-socket-sid>" }
+
+        Allowed namespaces: `invoices`, `products`, `customers`, `orders`.
+        If `sender_sid` is provided, it will be used as `skip_sid` to avoid
+        echoing the notification back to the sender socket.
+        """
+        try:
+            payload = request.get_json(silent=True) or {}
+            namespace = (payload.get("namespace") or "invoices").strip()
+            event = (payload.get("event") or "data_changed").strip()
+            data = payload.get("data") or {}
+            sender_sid = payload.get("sender_sid")
+
+            allowed = {"invoices", "products", "customers", "orders"}
+            if namespace not in allowed:
+                return jsonify({"status": "error", "message": "invalid namespace"}), 400
+
+            ns_path = f"/api/websocket/{namespace}"
+
+            if not socketio:
+                return jsonify({"status": "error", "message": "socketio not available"}), 500
+
+            # store last notify for the namespace so new connections receive it on connect
+            try:
+                from routes.firebase_websocket import set_last_notify
+
+                set_last_notify(ns_path, event, data)
+            except Exception:
+                pass
+
+            # If sender_sid supplied, skip sending to that socket id (avoid echo)
+            emit_kwargs = {"namespace": ns_path}
+            if sender_sid:
+                emit_kwargs["skip_sid"] = sender_sid
+
+            socketio.emit(event, data, **emit_kwargs)
+
+            return jsonify({"status": "ok", "namespace": namespace, "event": event})
+        except Exception as exc:
+            import traceback
+            print(traceback.format_exc())
+            return jsonify({"status": "error", "message": str(exc)}), 500
 
     return bp

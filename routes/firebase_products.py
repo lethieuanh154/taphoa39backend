@@ -33,7 +33,15 @@ def create_firebase_products_bp(product_service, socketio) -> Blueprint:
 
     @bp.route("/get/products", methods=["GET"])
     def get_all_products():
-        return jsonify(product_service.read_all_products())
+        try:
+            include_inactive = request.args.get("include_inactive", "false").lower() in ("1", "true", "yes")
+            include_deleted = request.args.get("include_deleted", "false").lower() in ("1", "true", "yes")
+            products = product_service.read_all_products(include_inactive=include_inactive, include_deleted=include_deleted)
+            return jsonify(products)
+        except Exception as exc:
+            import traceback
+            print(traceback.format_exc())
+            return jsonify({"status": "error", "message": str(exc), "trace": traceback.format_exc()}), 500
 
     @bp.route("/get/grouped_products", methods=["GET"])
     def get_grouped_products():
@@ -65,6 +73,8 @@ def create_firebase_products_bp(product_service, socketio) -> Blueprint:
 
             results, broadcast_updates = apply_product_updates(product_service, normalized)
 
+            # Keep REST update behavior but do not accept websocket updates for OnHand.
+            # Broadcasting to websocket clients is still allowed so UIs can receive updates.
             if broadcast_updates:
                 broadcast_products_onhand_updated(socketio, broadcast_updates)
 
@@ -83,5 +93,82 @@ def create_firebase_products_bp(product_service, socketio) -> Blueprint:
         products_dict = request.json
         result = product_service.update_products(products_dict)
         return jsonify(result)
+
+    @bp.route("/products/sync", methods=["POST"])
+    def sync_products_from_kiotviet():
+        """
+        Trigger a sync from KiotViet into Firestore (KiotViet is source-of-truth).
+        Accepts optional JSON body: { "force": true, "limit": 100 }
+        Returns the sync summary and latest products (up to `limit`).
+        """
+        try:
+            payload = request.get_json(silent=True) or {}
+            force = bool(payload.get("force", False))
+            limit = int(payload.get("limit", 100)) if payload.get("limit") is not None else 100
+
+            # product_service.sync_products_from_kiotviet() is the canonical sync method
+            sync_result = product_service.sync_products_from_kiotviet()
+
+            # After a sync, return the freshest product list (limited)
+            products = product_service.read_all_products() or []
+            if limit and isinstance(limit, int) and limit > 0:
+                products = products[:limit]
+
+            return jsonify({"sync": sync_result, "products": products})
+        except Exception as exc:
+            import traceback
+            print(traceback.format_exc())
+            return jsonify({"status": "error", "message": str(exc), "trace": traceback.format_exc()}), 500
+
+    @bp.route("/products/latest", methods=["GET"])
+    def get_latest_products():
+        """Return latest cached products (optional query param `limit`)."""
+        try:
+            try:
+                limit = int(request.args.get("limit")) if request.args.get("limit") is not None else None
+            except ValueError:
+                limit = None
+
+            include_inactive = request.args.get("include_inactive", "false").lower() in ("1", "true", "yes")
+            include_deleted = request.args.get("include_deleted", "false").lower() in ("1", "true", "yes")
+
+            products = product_service.read_all_products(include_inactive=include_inactive, include_deleted=include_deleted) or []
+            if limit and isinstance(limit, int) and limit > 0:
+                products = products[:limit]
+            return jsonify(products)
+        except Exception as exc:
+            import traceback
+            print(traceback.format_exc())
+            return jsonify({"status": "error", "message": str(exc), "trace": traceback.format_exc()}), 500
+
+    @bp.route("/products/fetch", methods=["POST"])
+    def fetch_products_changed():
+        """
+        Accepts JSON: { "id": "123" } or { "ids": ["1","2"] }
+        Returns the latest product document(s) from Firestore.
+        """
+        try:
+            payload = request.get_json(silent=True) or {}
+            ids = []
+            if isinstance(payload, dict) and payload.get("id"):
+                ids = [str(payload.get("id"))]
+            elif isinstance(payload, dict) and payload.get("ids"):
+                ids = [str(i) for i in payload.get("ids") if i is not None]
+            else:
+                return jsonify({"status": "error", "message": "Provide 'id' or 'ids' in JSON body"}), 400
+
+            results = []
+            for pid in ids:
+                prod = product_service.read_product(str(pid))
+                if prod:
+                    results.append(prod)
+
+            if len(results) == 1:
+                return jsonify(results[0])
+            return jsonify(results)
+        except Exception as exc:
+            import traceback
+            print(traceback.format_exc())
+            return jsonify({"status": "error", "message": str(exc), "trace": traceback.format_exc()}), 500
 
     return bp

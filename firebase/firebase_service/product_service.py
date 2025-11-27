@@ -65,26 +65,41 @@ class FirestoreProductService:
             record = record.__dict__
         if not isinstance(record, dict):
             return False
-        is_active = cls._coerce_bool(record.get("isActive"), True)
+        # is_active = cls._coerce_bool(record.get("isActive"), True)
         is_deleted = cls._coerce_bool(record.get("isDeleted"), False)
-        return is_active and not is_deleted
+        return not is_deleted
 
-    def read_all_products(self):
-        # Kiểm tra cache
-        if self.cache.has("all_products"):
-            return self.cache.get("all_products")
+    def read_all_products(self, include_inactive: bool = False, include_deleted: bool = False):
+        """Read products from Firestore.
+
+        By default, only active and not-deleted products are returned (backwards-compatible).
+        Set `include_inactive=True` to include products with `isActive=false`.
+        Set `include_deleted=True` to include products with `isDeleted=true`.
+        """
+        cache_key = f"all_products:inactive={include_inactive}:deleted={include_deleted}"
+        if self.cache.has(cache_key):
+            return self.cache.get(cache_key)
 
         docs = self.products_ref.stream()
         result = []
         for doc in docs:
             data = doc.to_dict() or {}
-            if not self._should_store_product(data):
+
+            # Determine item flags
+            is_active = self._coerce_bool(data.get("isActive"), True)
+            is_deleted = self._coerce_bool(data.get("isDeleted"), False)
+
+            # Apply filters based on function args
+            if (not include_inactive) and (not is_active):
                 continue
+            if (not include_deleted) and is_deleted:
+                continue
+
             enriched = dict(data)
             enriched["id"] = doc.id
             result.append(enriched)
 
-        self.cache.set("all_products", result, ttl=300)  # Cache 5 phút
+        self.cache.set(cache_key, result, ttl=300)  # Cache 5 phút
         return result
 
     def read_product(self, product_id):
@@ -211,7 +226,8 @@ class FirestoreProductService:
 
             to_upsert = []
             active_ids: Set[str] = set()
-            filtered_count = 0
+            deleted_count = 0
+            inactive_count = 0
 
             for item in api_items:
                 product_dict = item.__dict__ if hasattr(item, "__dict__") else dict(item)
@@ -219,25 +235,34 @@ class FirestoreProductService:
                 if not doc_id:
                     continue
 
-                if not self._should_store_product(product_dict):
-                    filtered_count += 1
-                    continue
+                # Determine flags from API
+                is_deleted = self._coerce_bool(product_dict.get("isDeleted"), False)
+                is_active = self._coerce_bool(product_dict.get("isActive"), True)
 
+                # Count for reporting
+                if is_deleted:
+                    deleted_count += 1
+                if not is_active:
+                    inactive_count += 1
+
+                # Keep track of ids present in API
                 active_ids.add(doc_id)
 
                 checksum = self.hash_item(product_dict)
                 if existing_checksums.get(doc_id) == checksum:
                     continue
 
-                # Gắn checksum để lần sau so sánh nhanh.
+                # Prepare payload to store in Firestore (include flags so clients can act)
                 product_to_store = dict(product_dict)
                 product_to_store["SyncChecksum"] = checksum
+                if not is_active:
+                    product_to_store["StoreForIndexedDB"] = True
+                if is_deleted:
+                    product_to_store["KiotVietDeleted"] = True
+
                 to_upsert.append((doc_id, product_to_store))
 
-            to_delete_ids = set(existing_ids) - active_ids
-            to_delete = list(to_delete_ids)
-
-            # Thực thi batch để hạn chế số round-trip
+            # Thực thi batch để hạn chế số round-trip (chỉ upsert, KHÔNG xóa)
             BATCH_SIZE = 500
             for i in range(0, len(to_upsert), BATCH_SIZE):
                 batch = db.batch()
@@ -246,30 +271,24 @@ class FirestoreProductService:
                     batch.set(doc_ref, payload)
                 batch.commit()
 
-            for i in range(0, len(to_delete), BATCH_SIZE):
-                batch = db.batch()
-                for doc_id in to_delete[i : i + BATCH_SIZE]:
-                    doc_ref = self.products_ref.document(doc_id)
-                    batch.delete(doc_ref)
-                batch.commit()
+            # Không xóa các sản phẩm trong Firestore nếu chúng không xuất hiện trong KiotViet.
+            # Giữ nguyên các sản phẩm chỉ có trong Firestore (firebase-only).
 
+            # Invalidate cache for affected documents
             self.cache.invalidate("all_products")
             for doc_id, _ in to_upsert:
                 self.cache.invalidate(doc_id)
-            for doc_id in to_delete:
-                self.cache.invalidate(doc_id)
 
-            if filtered_count:
-                print(f"Đã bỏ qua {filtered_count} sản phẩm không hoạt động hoặc đã xóa.")
+            if inactive_count or deleted_count:
+                print(f"Đã bao gồm {inactive_count} sản phẩm inactive và {deleted_count} sản phẩm deleted từ KiotViet.")
 
-            print(
-                f"Đồng bộ hoàn tất: cập nhật/thêm {len(to_upsert)} sản phẩm, xóa {len(to_delete)} sản phẩm."
-            )
+            print(f"Đồng bộ hoàn tất: cập nhật/thêm {len(to_upsert)} sản phẩm. (Không xóa sản phẩm Firestore)")
             return {
-                "message": "Đã đồng bộ sản phẩm",
+                "message": "Đã đồng bộ sản phẩm (upsert only, no deletes)",
                 "updated_or_created": len(to_upsert),
-                "deleted": len(to_delete),
                 "total_api_items": len(api_items),
+                "inactive_included": inactive_count,
+                "deleted_included": deleted_count,
             }
         except Exception as exc:
             print("Lỗi khi đồng bộ sản phẩm từ KiotViet:", exc)
