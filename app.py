@@ -74,4 +74,12 @@ if __name__ == "__main__":
     port = 8000 if env == "prod" else 5000
     print(f"Running in {env.upper()} mode on port {port}")
     # Use socketio.run so WebSocket endpoints are served
-    app.socketio.run(app, host="0.0.0.0", port=port)
+    # Note: Flask-SocketIO will refuse to run the Werkzeug development server
+    # in production. For quick local/prod testing we allow it when explicitly
+    # running in PROD by passing allow_unsafe_werkzeug=True. For real
+    # production deployments use an async server (eventlet/uwsgi/gunicorn)
+    # and the Socket.IO Redis manager if scaling across processes.
+    allow_unsafe = True if env == "prod" else False
+    if allow_unsafe:
+        print("Warning: running Werkzeug in PROD mode (allow_unsafe_werkzeug=True)")
+    app.socketio.run(app, host="0.0.0.0", port=port, allow_unsafe_werkzeug=allow_unsafe)
