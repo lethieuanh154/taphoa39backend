@@ -1,7 +1,3 @@
-from FromKiotViet.get_all_product_by_category import get_items_category
-from FromKiotViet.get_category import get_category
-from FromKiotViet.get_one_product import get_item
-from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
 from FromKiotViet.get_authorization import auth_token
 from Utility.get_env import LatestBranchId, retailer
@@ -24,8 +20,9 @@ def get_all():
     if response.status_code == 200:
         data = response.json()
         raw_items = data.get('Data', [])
-        print(f"Total products : {len(raw_items)}")
-        return raw_items
+        filtered_items = [item for item in raw_items if not item.get('isDeleted', False)]
+        print(f"Total products : {len(filtered_items)}")
+        return filtered_items
     else:
         return None
     
