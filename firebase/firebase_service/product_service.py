@@ -260,6 +260,13 @@ class FirestoreProductService:
                 if is_deleted:
                     product_to_store["KiotVietDeleted"] = True
 
+                # Debug: log which fields are being queued for upsert (helpful to verify BasePrice/Cost presence)
+                try:
+                    field_keys = list(product_to_store.keys())
+                except Exception:
+                    field_keys = None
+                print(f"Queueing upsert for {doc_id}, fields: {field_keys}")
+
                 to_upsert.append((doc_id, product_to_store))
 
             # Thực thi batch để hạn chế số round-trip (chỉ upsert, KHÔNG xóa)
@@ -268,7 +275,9 @@ class FirestoreProductService:
                 batch = db.batch()
                 for doc_id, payload in to_upsert[i : i + BATCH_SIZE]:
                     doc_ref = self.products_ref.document(doc_id)
-                    batch.set(doc_ref, payload)
+                    # Use merge=True to avoid accidentally removing fields
+                    # and to ensure partial updates (like BasePrice/Cost) are applied.
+                    batch.set(doc_ref, payload, merge=True)
                 batch.commit()
 
             # Không xóa các sản phẩm trong Firestore nếu chúng không xuất hiện trong KiotViet.
@@ -442,7 +451,7 @@ class FirestoreProductService:
            batch = db.batch()
            for item in changed_items[i:i + BATCH_SIZE]:
                doc_ref = db.collection(COLLECTION_NAME).document(str(item['Id']))
-               batch.set(doc_ref, item)
+               batch.set(doc_ref, item, merge=True)
            batch.commit()
            print(f"Đã cập nhật batch {i // BATCH_SIZE + 1}")
     
