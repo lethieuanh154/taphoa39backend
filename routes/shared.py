@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
+from functools import wraps
+from flask import jsonify, request
+from google.api_core.exceptions import ResourceExhausted
+import traceback
+
 from routes.firebase_websocket import set_last_notify
 
 UPDATE_ID_KEYS: Tuple[str, ...] = ("Id", "id", "productId", "ProductId")
@@ -366,3 +371,178 @@ def invalidate_invoice_cache(customer_service, invoice: Dict[str, Any]):
     customer_ids = collect_customer_ids_from_invoice(invoice)
     if customer_ids:
         customer_service.invalidate_invoices_cache(customer_ids)
+
+
+# ============================================================================
+# ERROR HANDLING UTILITIES
+# ============================================================================
+
+def handle_api_errors(f: Callable) -> Callable:
+    """
+    Decorator for consistent error handling in Flask routes.
+
+    Handles:
+    - ResourceExhausted (Firestore quota) -> 429
+    - ValueError -> 400
+    - KeyError -> 400
+    - General exceptions -> 500
+
+    Usage:
+        @bp.route('/endpoint')
+        @handle_api_errors
+        def my_endpoint():
+            return jsonify({"status": "success"})
+    """
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        try:
+            return f(*args, **kwargs)
+        except ResourceExhausted as exc:
+            print(traceback.format_exc())
+            return jsonify({
+                "status": "error",
+                "message": "Firestore quota exceeded",
+                "details": str(exc)
+            }), 429
+        except ValueError as exc:
+            print(traceback.format_exc())
+            return jsonify({
+                "status": "error",
+                "message": str(exc)
+            }), 400
+        except KeyError as exc:
+            print(traceback.format_exc())
+            return jsonify({
+                "status": "error",
+                "message": f"Missing required field: {str(exc)}"
+            }), 400
+        except Exception as exc:
+            print(traceback.format_exc())
+            return jsonify({
+                "status": "error",
+                "message": str(exc),
+                "trace": traceback.format_exc()
+            }), 500
+    return decorated
+
+
+# ============================================================================
+# FETCH ENDPOINT FACTORY
+# ============================================================================
+
+def create_fetch_handler(service, read_method_name: str = "read_all"):
+    """
+    Factory function to create a fetch endpoint handler for any resource.
+
+    Accepts JSON: { "id": "123" } or { "ids": ["1","2"] }
+    Returns the latest document(s) from Firestore.
+
+    Args:
+        service: The service instance (e.g., customer_service, product_service)
+        read_method_name: Name of the method to read all items (default: "read_all")
+
+    Returns:
+        Flask route handler function
+
+    Usage:
+        @bp.route("/customers/fetch", methods=["POST"])
+        def fetch_customers():
+            return create_fetch_handler(customer_service, "read_all_customers")()
+    """
+    @handle_api_errors
+    def fetch_handler():
+        payload = request.get_json(silent=True) or {}
+        ids = []
+
+        # Extract IDs from payload
+        if isinstance(payload, dict) and payload.get("id"):
+            ids = [str(payload.get("id"))]
+        elif isinstance(payload, dict) and payload.get("ids"):
+            ids = [str(i) for i in payload.get("ids") if i is not None]
+        else:
+            return jsonify({
+                "status": "error",
+                "message": "Provide 'id' or 'ids' in JSON body"
+            }), 400
+
+        # Get all items and create lookup dictionary
+        read_all_method = getattr(service, read_method_name, None)
+        if not read_all_method:
+            raise ValueError(f"Service method '{read_method_name}' not found")
+
+        all_items = read_all_method() or []
+
+        # Build lookup by Id/id field
+        lookup = {}
+        for item in all_items:
+            if not isinstance(item, dict):
+                continue
+            item_id = str(item.get('Id') or item.get('id'))
+            if item_id:
+                lookup[item_id] = item
+
+        # Find matching items
+        results = []
+        for item_id in ids:
+            if item_id in lookup:
+                results.append(lookup[item_id])
+
+        # Return single item or array
+        if len(results) == 1:
+            return jsonify(results[0])
+        return jsonify(results)
+
+    return fetch_handler
+
+
+def create_simple_fetch_handler(service, read_single_method_name: str):
+    """
+    Simplified fetch handler that reads items one by one.
+    Use this when you don't need to load all items into memory.
+
+    Args:
+        service: The service instance
+        read_single_method_name: Name of the method to read a single item (e.g., "read_product")
+
+    Returns:
+        Flask route handler function
+
+    Usage:
+        @bp.route("/products/fetch", methods=["POST"])
+        def fetch_products():
+            return create_simple_fetch_handler(product_service, "read_product")()
+    """
+    @handle_api_errors
+    def fetch_handler():
+        payload = request.get_json(silent=True) or {}
+        ids = []
+
+        # Extract IDs from payload
+        if isinstance(payload, dict) and payload.get("id"):
+            ids = [str(payload.get("id"))]
+        elif isinstance(payload, dict) and payload.get("ids"):
+            ids = [str(i) for i in payload.get("ids") if i is not None]
+        else:
+            return jsonify({
+                "status": "error",
+                "message": "Provide 'id' or 'ids' in JSON body"
+            }), 400
+
+        # Get read method
+        read_method = getattr(service, read_single_method_name, None)
+        if not read_method:
+            raise ValueError(f"Service method '{read_single_method_name}' not found")
+
+        # Read items
+        results = []
+        for item_id in ids:
+            item = read_method(str(item_id))
+            if item:
+                results.append(item)
+
+        # Return single item or array
+        if len(results) == 1:
+            return jsonify(results[0])
+        return jsonify(results)
+
+    return fetch_handler

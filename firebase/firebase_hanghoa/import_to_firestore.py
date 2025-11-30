@@ -1,5 +1,6 @@
 from dotenv import load_dotenv
 from firebase.init_firebase import init_firestore
+from google.cloud import firestore
 
 load_dotenv()
 
@@ -34,10 +35,10 @@ def update_products_from_banhang_app_to_firestore(update_payload):
         # We'll persist processed event markers when an event/invoice id is provided
         processed_collection = db.collection("product_updates_processed")
 
-        def _process_single(txn, doc_ref, proc_ref, item):
-            # Use the transaction object's get/set APIs so requests are executed
-            # within the active transaction context.
-            doc = txn.get(doc_ref)
+        @firestore.transactional
+        def _process_single(transaction, doc_ref, proc_ref, item):
+            # Use doc_ref.get() with transaction parameter (correct Firestore Python SDK usage)
+            doc = doc_ref.get(transaction=transaction)
             if not doc.exists:
                 return None
             product_doc = doc.to_dict() or {}
@@ -54,7 +55,7 @@ def update_products_from_banhang_app_to_firestore(update_payload):
 
             # If proc_ref (event marker) exists, skip to make it idempotent
             if proc_ref is not None:
-                proc_doc = txn.get(proc_ref)
+                proc_doc = proc_ref.get(transaction=transaction)
                 if proc_doc.exists:
                     # Already applied
                     return {
@@ -67,12 +68,12 @@ def update_products_from_banhang_app_to_firestore(update_payload):
                 target_onhand = int(current_onhand) - int(minus_value)
 
             # Update product OnHand
-            txn.update(doc_ref, {"OnHand": target_onhand})
+            transaction.update(doc_ref, {"OnHand": target_onhand})
 
-            # Create processed marker if available — use txn.set so it's part of the transaction
+            # Create processed marker if available — use transaction.set
             if proc_ref is not None:
                 try:
-                    txn.set(proc_ref, {"applied": True, "productId": str(item.get("productId") or item.get("Id") or item.get("id")), "minus": minus_value})
+                    transaction.set(proc_ref, {"applied": True, "productId": str(item.get("productId") or item.get("Id") or item.get("id")), "minus": minus_value})
                 except Exception:
                     # best-effort: ignore set errors inside transaction wrapper
                     pass
@@ -97,10 +98,9 @@ def update_products_from_banhang_app_to_firestore(update_payload):
                 proc_ref = processed_collection.document(f"{str(event_id)}_{str(product_id)}")
 
             try:
-                # Use the client's transaction context manager to ensure the
-                # transaction is properly started before performing API calls.
-                with db.transaction() as txn:
-                    result = _process_single(txn, doc_ref, proc_ref, item)
+                # Create a transaction and pass it to the decorated function
+                transaction = db.transaction()
+                result = _process_single(transaction, doc_ref, proc_ref, item)
                 if result:
                     # result may be dict or None
                     if isinstance(result, dict) and not result.get("skipped"):

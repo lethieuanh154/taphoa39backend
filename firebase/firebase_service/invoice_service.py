@@ -1,4 +1,6 @@
 from datetime import datetime
+import time
+from google.api_core.exceptions import DeadlineExceeded
 
 from dotenv import load_dotenv
 
@@ -13,6 +15,24 @@ COLLECTION_NAME = "invoices"
 db = init_firestore("FIREBASE_SERVICE_ACCOUNT_HOADON")
 # Chuyển chuỗi JSON thành dict và tạo credential
 
+
+def _retry_on_deadline(operation, max_retries=3, initial_delay=1, operation_name="Firestore operation"):
+    """
+    Retry wrapper for Firestore operations that may timeout.
+    Uses exponential backoff for retries.
+    """
+    retry_delay = initial_delay
+    for attempt in range(max_retries):
+        try:
+            return operation()
+        except DeadlineExceeded as e:
+            if attempt < max_retries - 1:
+                print(f"{operation_name} timeout on attempt {attempt + 1}/{max_retries}, retrying in {retry_delay}s...")
+                time.sleep(retry_delay)
+                retry_delay *= 2  # Exponential backoff
+            else:
+                print(f"{operation_name} failed after {max_retries} attempts: {str(e)}")
+                raise Exception(f"Firestore timeout after {max_retries} attempts. Please check your network connection.")
 
 
 class FirestoreInvoiceService:
@@ -81,23 +101,34 @@ class FirestoreInvoiceService:
 
     def add_invoice(self, invoice):
         doc_ref = self.invoices_ref.document(str(invoice["id"]))
-        doc_ref.set(invoice)
-        self.cache.invalidate("all_invoices")
-        self.cache.invalidate(str(invoice["id"]))
-        return {"message": "invoice added"}
+
+        def _add_operation():
+            doc_ref.set(invoice, timeout=30.0)
+            self.cache.invalidate("all_invoices")
+            self.cache.invalidate(str(invoice["id"]))
+            return {"message": "invoice added"}
+
+        return _retry_on_deadline(_add_operation, operation_name=f"Add invoice {invoice['id']}")
 
     def update_invoice(self, invoice_id, updates):
         doc_ref = self.invoices_ref.document(invoice_id)
-        doc_ref.update(updates)
-        self.cache.invalidate(invoice_id)
-        self.cache.invalidate("all_invoices")
-        return {"message": "invoice updated"}
+
+        def _update_operation():
+            doc_ref.update(updates, timeout=30.0)
+            self.cache.invalidate(invoice_id)
+            self.cache.invalidate("all_invoices")
+            return {"message": "invoice updated"}
+
+        return _retry_on_deadline(_update_operation, operation_name=f"Update invoice {invoice_id}")
 
     def delete_invoice(self, invoice_id):
-        self.invoices_ref.document(invoice_id).delete()
-        self.cache.invalidate(invoice_id)
-        self.cache.invalidate("all_invoices")
-        return {"message": "invoice deleted"}
+        def _delete_operation():
+            self.invoices_ref.document(invoice_id).delete(timeout=30.0)
+            self.cache.invalidate(invoice_id)
+            self.cache.invalidate("all_invoices")
+            return {"message": "invoice deleted"}
+
+        return _retry_on_deadline(_delete_operation, operation_name=f"Delete invoice {invoice_id}")
 
     def adjust_invoice_summaries(self, invoice: dict, direction: int) -> dict:
         if invoice is None or not isinstance(invoice, dict):

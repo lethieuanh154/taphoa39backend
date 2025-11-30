@@ -2,8 +2,7 @@ from __future__ import annotations
 
 from flask import Blueprint, jsonify, request
 
-from routes.shared import safe_int
-
+from routes.shared import handle_api_errors, safe_int
 from firebase.firebase_khachhang.import_to_firestore import update_customer_from_kiotviet_to_firestore
 
 
@@ -15,22 +14,18 @@ def create_sync_routes_bp(product_service) -> Blueprint:
         return jsonify(update_customer_from_kiotviet_to_firestore())
 
     @bp.route("/kiotviet/firebase/products", methods=["POST"])
+    @handle_api_errors
     def sync_products_from_kiotviet():
         """Trigger a sync from KiotViet into Firestore and return final Firestore data.
         Accepts optional JSON body: { "limit": 100 }
         """
-        try:
-            # perform sync (upsert-only behavior handled in service)
-            sync_result = product_service.update_products_from_kiotviet_to_firestore()
+        # perform sync (upsert-only behavior handled in service)
+        sync_result = product_service.update_products_from_kiotviet_to_firestore()
 
-            # return latest products from Firestore (include deleted/inactive so caller sees everything)
-            products = product_service.read_all_products(include_inactive=True, include_deleted=True) or []
+        # return latest products from Firestore (include deleted/inactive so caller sees everything)
+        products = product_service.read_all_products(include_inactive=True, include_deleted=True) or []
 
-            return jsonify({"sync": sync_result, "products": products})
-        except Exception as exc:
-            import traceback
-            print(traceback.format_exc())
-            return jsonify({"status": "error", "message": str(exc), "trace": traceback.format_exc()}), 500
+        return jsonify({"sync": sync_result, "products": products})
 
     @bp.route("/kiotviet/firebase/products/compare", methods=["GET"])
     def compare_products_between_sources():

@@ -40,3 +40,4 @@ dist/
 build/
 
 .angular/
+.claude/

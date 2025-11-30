@@ -6,7 +6,12 @@ from google.api_core.exceptions import ResourceExhausted
 from FromKiotViet.Model.customer import Customer
 from FromKiotViet.add_customer import add_customer_to_kiotviet
 from Utility.get_env import LatestBranchId
-from routes.shared import broadcast_customer_updates, notify_customer_created
+from routes.shared import (
+    broadcast_customer_updates,
+    create_fetch_handler,
+    handle_api_errors,
+    notify_customer_created,
+)
 
 
 def create_firebase_customers_bp(customer_service, socketio) -> Blueprint:
@@ -50,40 +55,20 @@ def create_firebase_customers_bp(customer_service, socketio) -> Blueprint:
         return records
 
     @bp.route("/get/customers", methods=["GET"])
+    @handle_api_errors
     def get_all_customers():
-        try:
-            customers = customer_service.read_all_customers()
-            _coerce_numeric_ids(customers)
-            return jsonify(customers)
-        except ResourceExhausted as exc:
-            import traceback
-            print(traceback.format_exc())
-            return jsonify({
-                "status": "error",
-                "message": "Firestore quota exceeded during customer refresh",
-                "details": str(exc),
-            }), 429
-        except Exception as exc:
-            import traceback
-            print(traceback.format_exc())
-            return jsonify({"status": "error", "message": str(exc)}), 500
+        customers = customer_service.read_all_customers()
+        _coerce_numeric_ids(customers)
+        return jsonify(customers)
 
     @bp.route("/customers/invoices/<customer_id>", methods=["GET"])
+    @handle_api_errors
     def get_invoices_for_customer(customer_id: str):
-        try:
-            if not customer_id:
-                return jsonify({"error": "Customer ID is required"}), 400
+        if not customer_id:
+            return jsonify({"error": "Customer ID is required"}), 400
 
-            result = customer_service.get_invoices_by_customer_id(customer_id)
-            return jsonify(result)
-        except ResourceExhausted as exc:
-            import traceback
-            print(traceback.format_exc())
-            return jsonify({"status": "error", "message": "Firestore quota exceeded", "details": str(exc)}), 429
-        except Exception as exc:
-            import traceback
-            print(traceback.format_exc())
-            return jsonify({"status": "error", "message": str(exc)}), 500
+        result = customer_service.get_invoices_by_customer_id(customer_id)
+        return jsonify(result)
 
     @bp.route("/add_customer", methods=["POST"])
     def add_customer():
@@ -217,30 +202,6 @@ def create_firebase_customers_bp(customer_service, socketio) -> Blueprint:
         Accepts JSON: { "id": "123" } or { "ids": ["1","2"] }
         Returns the latest customer document(s) from Firestore.
         """
-        try:
-            payload = request.get_json(silent=True) or {}
-            ids = []
-            if isinstance(payload, dict) and payload.get("id"):
-                ids = [str(payload.get("id"))]
-            elif isinstance(payload, dict) and payload.get("ids"):
-                ids = [str(i) for i in payload.get("ids") if i is not None]
-            else:
-                return jsonify({"status": "error", "message": "Provide 'id' or 'ids' in JSON body"}), 400
-
-            all_customers = customer_service.read_all_customers() or []
-            lookup = {str(c.get('Id') or c.get('id')): c for c in all_customers if isinstance(c, dict)}
-
-            results = []
-            for cid in ids:
-                if cid in lookup:
-                    results.append(lookup[cid])
-
-            if len(results) == 1:
-                return jsonify(results[0])
-            return jsonify(results)
-        except Exception as exc:
-            import traceback
-            print(traceback.format_exc())
-            return jsonify({"status": "error", "message": str(exc), "trace": traceback.format_exc()}), 500
+        return create_fetch_handler(customer_service, "read_all_customers")()
 
     return bp

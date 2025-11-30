@@ -6,6 +6,8 @@ from google.api_core.exceptions import ResourceExhausted
 from routes.shared import (
     broadcast_customer_updates,
     broadcast_products_onhand_updated,
+    create_simple_fetch_handler,
+    handle_api_errors,
     invalidate_invoice_cache,
     is_valid_pid,
     notify_daily_summary,
@@ -25,16 +27,12 @@ def create_firebase_invoices_bp(invoice_service, product_service, customer_servi
     bp = Blueprint("firebase_invoices", __name__, url_prefix="/api/firebase")
 
     @bp.route("/invoices/<invoice_id>", methods=["GET"])
+    @handle_api_errors
     def get_invoice_by_id(invoice_id: str):
-        try:
-            invoice = invoice_service.read_invoice(invoice_id)
-            if invoice:
-                return jsonify(invoice)
-            return jsonify({"status": "error", "message": "Invoice not found"}), 404
-        except Exception as exc:
-            import traceback
-            print(traceback.format_exc())
-            return jsonify({"status": "error", "message": str(exc), "trace": traceback.format_exc()}), 500
+        invoice = invoice_service.read_invoice(invoice_id)
+        if invoice:
+            return jsonify(invoice)
+        return jsonify({"status": "error", "message": "Invoice not found"}), 404
 
     @bp.route("/add_invoice", methods=["POST"])
     def add_invoice():
@@ -184,36 +182,6 @@ def create_firebase_invoices_bp(invoice_service, product_service, customer_servi
                 response["restock_errors"] = restock_errors
 
             return jsonify(response)
-
-            @bp.route("/invoices/fetch", methods=["POST"])
-            def fetch_invoices_changed():
-                """
-                Accepts JSON: { "id": "123" } or { "ids": ["1","2"] }
-                Returns the latest invoice document(s) from Firestore.
-                """
-                try:
-                    payload = request.get_json(silent=True) or {}
-                    ids = []
-                    if isinstance(payload, dict) and payload.get("id"):
-                        ids = [str(payload.get("id"))]
-                    elif isinstance(payload, dict) and payload.get("ids"):
-                        ids = [str(i) for i in payload.get("ids") if i is not None]
-                    else:
-                        return jsonify({"status": "error", "message": "Provide 'id' or 'ids' in JSON body"}), 400
-
-                    results = []
-                    for iid in ids:
-                        inv = invoice_service.read_invoice(str(iid))
-                        if inv:
-                            results.append(inv)
-
-                    if len(results) == 1:
-                        return jsonify(results[0])
-                    return jsonify(results)
-                except Exception as exc:
-                    import traceback
-                    print(traceback.format_exc())
-                    return jsonify({"status": "error", "message": str(exc), "trace": traceback.format_exc()}), 500
         except ResourceExhausted as exc:
             import traceback
             print(traceback.format_exc())
@@ -223,146 +191,127 @@ def create_firebase_invoices_bp(invoice_service, product_service, customer_servi
             print(traceback.format_exc())
             return jsonify({"status": "error", "message": str(exc)}), 500
 
+    @bp.route("/invoices/fetch", methods=["POST"])
+    def fetch_invoices_changed():
+        """
+        Accepts JSON: { "id": "123" } or { "ids": ["1","2"] }
+        Returns the latest invoice document(s) from Firestore.
+        """
+        return create_simple_fetch_handler(invoice_service, "read_invoice")()
+
     @bp.route("/invoices/date", methods=["GET"])
+    @handle_api_errors
     def get_invoices_by_date():
-        try:
-            date = request.args.get('date')
-            if not date:
-                return jsonify({"status": "error", "message": "date is required"}), 400
-            invoices = invoice_service.get_invoices_by_date(date)
-            return jsonify(invoices)
-        except Exception as exc:
-            import traceback
-            print(traceback.format_exc())
-            return jsonify({"status": "error", "message": str(exc), "trace": traceback.format_exc()}), 500
+        date = request.args.get('date')
+        if not date:
+            return jsonify({"status": "error", "message": "date is required"}), 400
+        invoices = invoice_service.get_invoices_by_date(date)
+        return jsonify(invoices)
 
     @bp.route("/invoices/status/<status>", methods=["GET"])
+    @handle_api_errors
     def get_invoices_by_status(status: str):
-        try:
-            invoices = invoice_service.get_invoices_by_status(status)
-            return jsonify(invoices)
-        except Exception as exc:
-            import traceback
-            print(traceback.format_exc())
-            return jsonify({"status": "error", "message": str(exc), "trace": traceback.format_exc()}), 500
+        invoices = invoice_service.get_invoices_by_status(status)
+        return jsonify(invoices)
 
     @bp.route("/invoices/customer/<customer_id>", methods=["GET"])
+    @handle_api_errors
     def get_invoices_by_customer(customer_id: str):
-        try:
-            invoices = invoice_service.get_invoices_by_customer(customer_id)
-            return jsonify(invoices)
-        except Exception as exc:
-            import traceback
-            print(traceback.format_exc())
-            return jsonify({"status": "error", "message": str(exc), "trace": traceback.format_exc()}), 500
+        invoices = invoice_service.get_invoices_by_customer(customer_id)
+        return jsonify(invoices)
 
     @bp.route("/daily_summary", methods=["GET"])
+    @handle_api_errors
     def get_daily_summary():
         date = request.args.get('date')
         if not date:
             return jsonify({"status": "error", "message": "date is required (YYYY-MM-DD)"}), 400
-        try:
-            summary = invoice_service.get_daily_summary(date)
-            notify_daily_summary(socketio, date, summary)
-            return jsonify(summary)
-        except Exception as exc:
-            import traceback
-            print(traceback.format_exc())
-            return jsonify({"status": "error", "message": str(exc), "trace": traceback.format_exc()}), 500
+        summary = invoice_service.get_daily_summary(date)
+        notify_daily_summary(socketio, date, summary)
+        return jsonify(summary)
 
     @bp.route("/monthly_summary", methods=["GET"])
+    @handle_api_errors
     def get_monthly_summary():
         year = request.args.get('year')
         month = request.args.get('month')
         if not year or not month:
             return jsonify({"status": "error", "message": "year and month are required"}), 400
-        try:
-            summary = invoice_service.get_monthly_summary(year, month)
-            notify_monthly_summary(socketio, year, month, summary)
-            return jsonify(summary)
-        except Exception as exc:
-            import traceback
-            print(traceback.format_exc())
-            return jsonify({"status": "error", "message": str(exc), "trace": traceback.format_exc()}), 500
+        summary = invoice_service.get_monthly_summary(year, month)
+        notify_monthly_summary(socketio, year, month, summary)
+        return jsonify(summary)
 
     @bp.route("/yearly_summary", methods=["GET"])
+    @handle_api_errors
     def get_yearly_summary():
         year = request.args.get('year')
         if not year:
             return jsonify({"status": "error", "message": "year is required"}), 400
-        try:
-            summary = invoice_service.get_yearly_summary(year)
-            notify_yearly_summary(socketio, year, summary)
-            return jsonify(summary)
-        except Exception as exc:
-            import traceback
-            print(traceback.format_exc())
-            return jsonify({"status": "error", "message": str(exc), "trace": traceback.format_exc()}), 500
+        summary = invoice_service.get_yearly_summary(year)
+        notify_yearly_summary(socketio, year, summary)
+        return jsonify(summary)
 
     @bp.route("/top_products", methods=["GET"])
+    @handle_api_errors
     def get_top_products():
-        try:
-            date = request.args.get('date')
-            year = request.args.get('year')
-            month = request.args.get('month')
-            if date:
-                invoices = invoice_service.get_invoices_by_date(date)
-            elif year and month:
+        date = request.args.get('date')
+        year = request.args.get('year')
+        month = request.args.get('month')
+        if date:
+            invoices = invoice_service.get_invoices_by_date(date)
+        elif year and month:
+            from calendar import monthrange
+
+            days_in_month = monthrange(int(year), int(month))[1]
+            invoices = []
+            for day in range(1, days_in_month + 1):
+                date_str = f"{year}-{str(month).zfill(2)}-{str(day).zfill(2)}"
+                invoices.extend(invoice_service.get_invoices_by_date(date_str))
+        elif year:
+            invoices = []
+            for m in range(1, 13):
                 from calendar import monthrange
 
-                days_in_month = monthrange(int(year), int(month))[1]
-                invoices = []
+                days_in_month = monthrange(int(year), m)[1]
                 for day in range(1, days_in_month + 1):
-                    date_str = f"{year}-{str(month).zfill(2)}-{str(day).zfill(2)}"
+                    date_str = f"{year}-{str(m).zfill(2)}-{str(day).zfill(2)}"
                     invoices.extend(invoice_service.get_invoices_by_date(date_str))
-            elif year:
-                invoices = []
-                for m in range(1, 13):
-                    from calendar import monthrange
+        else:
+            invoices = list(invoice_service.stream_invoices())
 
-                    days_in_month = monthrange(int(year), m)[1]
-                    for day in range(1, days_in_month + 1):
-                        date_str = f"{year}-{str(m).zfill(2)}-{str(day).zfill(2)}"
-                        invoices.extend(invoice_service.get_invoices_by_date(date_str))
-            else:
-                invoices = list(invoice_service.stream_invoices())
-
-            product_sales = {}
-            for invoice in invoices:
-                cart_items = invoice.get('cartItems', [])
-                for item in cart_items:
-                    product = item.get('product', {})
-                    product_id = product.get('Id')
-                    product_name = product.get('FullName', 'Unknown')
-                    price = safe_float(product.get('BasePrice', 0))
-                    quantity = safe_int(item.get('quantity', 0))
-                    cost = safe_float(product.get('Cost', 0))
-                    total_profit = (price - cost) * quantity
-                    if product_id is not None:
-                        if product_id not in product_sales:
-                            product_sales[product_id] = {
-                                'productId': product_id,
-                                'productName': product_name,
-                                'totalProfit': 0,
-                                'totalQuantity': 0,
-                            }
-                        product_sales[product_id]['totalProfit'] += total_profit
-                        product_sales[product_id]['totalQuantity'] += quantity
-            top_products = sorted(product_sales.values(), key=lambda x: x['totalProfit'], reverse=True)[:20]
-            filters = {}
-            if date:
-                filters['date'] = date
-            if year:
-                filters['year'] = year
-            if month:
-                filters['month'] = month
-            notify_top_products(socketio, filters, top_products)
-            return jsonify(top_products)
-        except Exception as exc:
-            import traceback
-            print(traceback.format_exc())
-            return jsonify({"status": "error", "message": str(exc), "trace": traceback.format_exc()}), 500
+        product_sales = {}
+        for invoice in invoices:
+            cart_items = invoice.get('cartItems', [])
+            for item in cart_items:
+                product = item.get('product', {})
+                product_id = product.get('Id')
+                product_name = product.get('FullName', 'Unknown')
+                price = safe_float(product.get('BasePrice', 0))
+                quantity = safe_int(item.get('quantity', 0))
+                cost = safe_float(product.get('Cost', 0))
+                total_profit = (price - cost) * quantity
+                if product_id is not None:
+                    if product_id not in product_sales:
+                        product_sales[product_id] = {
+                            'productId': product_id,
+                            'productName': product_name,
+                            'totalProfit': 0,
+                            'totalQuantity': 0,
+                        }
+                    product_sales[product_id]['totalProfit'] += total_profit
+                    product_sales[product_id]['totalQuantity'] += quantity
+        top_products = sorted(product_sales.values(), key=lambda x: x['totalProfit'], reverse=True)[:20]
+        filters = {}
+        if date:
+            filters['date'] = date
+        if year:
+            filters['year'] = year
+        if month:
+            filters['month'] = month
+        notify_top_products(socketio, filters, top_products)
+        return jsonify(top_products)
     @bp.route("/notify_change", methods=["POST"])
+    @handle_api_errors
     def notify_change():
         """Accept a notification from a client that data changed and broadcast
         a simple event to other connected clients. This endpoint DOES NOT update
@@ -375,41 +324,36 @@ def create_firebase_invoices_bp(invoice_service, product_service, customer_servi
         If `sender_sid` is provided, it will be used as `skip_sid` to avoid
         echoing the notification back to the sender socket.
         """
+        payload = request.get_json(silent=True) or {}
+        namespace = (payload.get("namespace") or "invoices").strip()
+        event = (payload.get("event") or "data_changed").strip()
+        data = payload.get("data") or {}
+        sender_sid = payload.get("sender_sid")
+
+        allowed = {"invoices", "products", "customers", "orders"}
+        if namespace not in allowed:
+            return jsonify({"status": "error", "message": "invalid namespace"}), 400
+
+        ns_path = f"/api/websocket/{namespace}"
+
+        if not socketio:
+            return jsonify({"status": "error", "message": "socketio not available"}), 500
+
+        # store last notify for the namespace so new connections receive it on connect
         try:
-            payload = request.get_json(silent=True) or {}
-            namespace = (payload.get("namespace") or "invoices").strip()
-            event = (payload.get("event") or "data_changed").strip()
-            data = payload.get("data") or {}
-            sender_sid = payload.get("sender_sid")
+            from routes.firebase_websocket import set_last_notify
 
-            allowed = {"invoices", "products", "customers", "orders"}
-            if namespace not in allowed:
-                return jsonify({"status": "error", "message": "invalid namespace"}), 400
+            set_last_notify(ns_path, event, data)
+        except Exception:
+            pass
 
-            ns_path = f"/api/websocket/{namespace}"
+        # If sender_sid supplied, skip sending to that socket id (avoid echo)
+        emit_kwargs = {"namespace": ns_path}
+        if sender_sid:
+            emit_kwargs["skip_sid"] = sender_sid
 
-            if not socketio:
-                return jsonify({"status": "error", "message": "socketio not available"}), 500
+        socketio.emit(event, data, **emit_kwargs)
 
-            # store last notify for the namespace so new connections receive it on connect
-            try:
-                from routes.firebase_websocket import set_last_notify
-
-                set_last_notify(ns_path, event, data)
-            except Exception:
-                pass
-
-            # If sender_sid supplied, skip sending to that socket id (avoid echo)
-            emit_kwargs = {"namespace": ns_path}
-            if sender_sid:
-                emit_kwargs["skip_sid"] = sender_sid
-
-            socketio.emit(event, data, **emit_kwargs)
-
-            return jsonify({"status": "ok", "namespace": namespace, "event": event})
-        except Exception as exc:
-            import traceback
-            print(traceback.format_exc())
-            return jsonify({"status": "error", "message": str(exc)}), 500
+        return jsonify({"status": "ok", "namespace": namespace, "event": event})
 
     return bp

@@ -5,7 +5,7 @@ from typing import Dict, Tuple
 
 from flask import Flask
 from flask_cors import CORS
-# WebSocket support removed — use REST polling endpoints instead.
+from flask_socketio import SocketIO
 
 from firebase.firebase_service.cache import Cache
 from firebase.firebase_service.customer_service import FirestoreCustomerService
@@ -16,7 +16,6 @@ from routes.firebase_customers import create_firebase_customers_bp
 from routes.firebase_invoices import create_firebase_invoices_bp
 from routes.firebase_orders import create_firebase_orders_bp
 from routes.firebase_products import create_firebase_products_bp
-from flask_socketio import SocketIO
 from routes.kiotviet_routes import create_kiotviet_routes_bp
 from routes.sync_routes import create_sync_routes_bp
 from routes.static_routes import create_static_routes_bp
@@ -35,8 +34,19 @@ def _build_app() -> Flask:
     customer_service = FirestoreCustomerService(Cache())
     order_service = FirestoreorderService(Cache())
 
-    # Initialize SocketIO and pass instance to blueprints so routes can emit events
-    socketio = SocketIO(app, cors_allowed_origins="*")
+    # Initialize SocketIO without async_mode (uses threading by default)
+    # Frontend uses polling transport only, so no WebSocket needed
+    # This avoids eventlet monkey patching issues that can block REST APIs
+    socketio = SocketIO(
+        app,
+        cors_allowed_origins="*",
+        logger=False,
+        engineio_logger=False,
+        ping_timeout=60,
+        ping_interval=25,
+        # Allow both polling and websocket, but frontend will use polling only
+        transports=['polling', 'websocket']
+    )
 
     # Register Socket.IO namespaces so clients can connect and receive events
     try:
@@ -72,14 +82,19 @@ app = _build_app()
 if __name__ == "__main__":
     env = os.getenv("e", "prod")
     port = 8000 if env == "prod" else 5000
-    print(f"Running in {env.upper()} mode on port {port}")
-    # Use socketio.run so WebSocket endpoints are served
-    # Note: Flask-SocketIO will refuse to run the Werkzeug development server
-    # in production. For quick local/prod testing we allow it when explicitly
-    # running in PROD by passing allow_unsafe_werkzeug=True. For real
-    # production deployments use an async server (eventlet/uwsgi/gunicorn)
-    # and the Socket.IO Redis manager if scaling across processes.
-    allow_unsafe = True if env == "prod" else False
-    if allow_unsafe:
-        print("Warning: running Werkzeug in PROD mode (allow_unsafe_werkzeug=True)")
-    app.socketio.run(app, host="0.0.0.0", port=port, allow_unsafe_werkzeug=allow_unsafe)
+    print(f"\n{'='*60}")
+    print(f"Starting server in {env.upper()} mode on port {port}")
+    print(f"Socket.IO: Polling transport (threading mode)")
+    print(f"Server URL: http://0.0.0.0:{port}")
+    print(f"{'='*60}\n")
+
+    # Use socketio.run() which handles both regular HTTP and Socket.IO
+    # Using threading mode (default) instead of eventlet to avoid blocking REST APIs
+    app.socketio.run(
+        app,
+        host="0.0.0.0",
+        port=port,
+        debug=False,  # Disable debug to prevent blocking
+        use_reloader=False,  # Disable reloader for stability
+        log_output=True  # Show request logs
+    )
