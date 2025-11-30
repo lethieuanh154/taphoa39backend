@@ -96,5 +96,6 @@ if __name__ == "__main__":
         port=port,
         debug=False,  # Disable debug to prevent blocking
         use_reloader=False,  # Disable reloader for stability
-        log_output=True  # Show request logs
+        log_output=True,  # Show request logs
+        allow_unsafe_werkzeug=True
     )
