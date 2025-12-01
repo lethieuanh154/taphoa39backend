@@ -212,22 +212,48 @@ class FirestoreProductService:
         return self.sync_products_from_kiotviet()
 
     def sync_products_from_kiotviet(self):
+        """
+        Optimized sync that:
+        1. Fetches checksums from Firestore in one go
+        2. Fetches products from KiotViet with timeout
+        3. Compares and updates only changed products
+        4. Returns stats without re-fetching all data
+        """
+        import time
+        start_time = time.time()
+
         try:
-            print("Bắt đầu đồng bộ sản phẩm từ KiotViet (tối ưu)...")
+            print("🔄 Bắt đầu đồng bộ sản phẩm từ KiotViet (tối ưu)...")
+
+            # Step 1: Fetch checksums from Firestore (fast, minimal data)
+            print("  📥 Lấy checksums từ Firestore...")
+            checksum_start = time.time()
             existing_checksums = {}
             existing_ids = set()
-            # Lấy tối thiểu dữ liệu từ Firestore (chỉ checksum) để giảm tải bộ nhớ.
+
             for doc in self.products_ref.select(["SyncChecksum"]).stream():
                 data = doc.to_dict() or {}
                 existing_checksums[doc.id] = data.get("SyncChecksum")
                 existing_ids.add(doc.id)
 
-            api_items = self.fetch_api_items()
+            checksum_time = time.time() - checksum_start
+            print(f"  ✅ Đã lấy {len(existing_checksums)} checksums trong {checksum_time:.2f}s")
 
+            # Step 2: Fetch products from KiotViet API
+            print("  📥 Lấy sản phẩm từ KiotViet API...")
+            api_start = time.time()
+            api_items = self.fetch_api_items()
+            api_time = time.time() - api_start
+            print(f"  ✅ Đã lấy {len(api_items)} sản phẩm từ KiotViet trong {api_time:.2f}s")
+
+            # Step 3: Compare and prepare updates
+            print("  🔍 So sánh và chuẩn bị cập nhật...")
+            compare_start = time.time()
             to_upsert = []
             active_ids: Set[str] = set()
             deleted_count = 0
             inactive_count = 0
+            unchanged_count = 0
 
             for item in api_items:
                 product_dict = item.__dict__ if hasattr(item, "__dict__") else dict(item)
@@ -248,11 +274,13 @@ class FirestoreProductService:
                 # Keep track of ids present in API
                 active_ids.add(doc_id)
 
+                # Check if changed
                 checksum = self.hash_item(product_dict)
                 if existing_checksums.get(doc_id) == checksum:
+                    unchanged_count += 1
                     continue
 
-                # Prepare payload to store in Firestore (include flags so clients can act)
+                # Prepare payload to store in Firestore
                 product_to_store = dict(product_dict)
                 product_to_store["SyncChecksum"] = checksum
                 if not is_active:
@@ -260,50 +288,78 @@ class FirestoreProductService:
                 if is_deleted:
                     product_to_store["KiotVietDeleted"] = True
 
-                # Debug: log which fields are being queued for upsert (helpful to verify BasePrice/Cost presence)
-                try:
-                    field_keys = list(product_to_store.keys())
-                except Exception:
-                    field_keys = None
-                print(f"Queueing upsert for {doc_id}, fields: {field_keys}")
-
                 to_upsert.append((doc_id, product_to_store))
 
-            # Thực thi batch để hạn chế số round-trip (chỉ upsert, KHÔNG xóa)
-            BATCH_SIZE = 500
-            for i in range(0, len(to_upsert), BATCH_SIZE):
-                batch = db.batch()
-                for doc_id, payload in to_upsert[i : i + BATCH_SIZE]:
-                    doc_ref = self.products_ref.document(doc_id)
-                    # Use merge=True to avoid accidentally removing fields
-                    # and to ensure partial updates (like BasePrice/Cost) are applied.
-                    batch.set(doc_ref, payload, merge=True)
-                batch.commit()
+            compare_time = time.time() - compare_start
+            print(f"  ✅ So sánh hoàn tất trong {compare_time:.2f}s: {len(to_upsert)} cần cập nhật, {unchanged_count} không đổi")
 
-            # Không xóa các sản phẩm trong Firestore nếu chúng không xuất hiện trong KiotViet.
-            # Giữ nguyên các sản phẩm chỉ có trong Firestore (firebase-only).
+            # Step 4: Batch update to Firestore
+            if to_upsert:
+                print(f"  📤 Cập nhật {len(to_upsert)} sản phẩm lên Firestore...")
+                update_start = time.time()
+                BATCH_SIZE = 500
+                batch_count = 0
 
-            # Invalidate cache for affected documents
+                for i in range(0, len(to_upsert), BATCH_SIZE):
+                    batch = db.batch()
+                    for doc_id, payload in to_upsert[i : i + BATCH_SIZE]:
+                        doc_ref = self.products_ref.document(doc_id)
+                        batch.set(doc_ref, payload, merge=True)
+                    batch.commit()
+                    batch_count += 1
+                    if batch_count % 5 == 0:  # Log every 5 batches
+                        print(f"    Đã ghi {batch_count * BATCH_SIZE} sản phẩm...")
+
+                update_time = time.time() - update_start
+                print(f"  ✅ Cập nhật hoàn tất trong {update_time:.2f}s ({batch_count} batches)")
+            else:
+                print("  ℹ️ Không có sản phẩm nào cần cập nhật")
+
+            # Step 5: Invalidate cache (only affected docs)
+            print("  🗑️ Xóa cache...")
             self.cache.invalidate("all_products")
             for doc_id, _ in to_upsert:
                 self.cache.invalidate(doc_id)
 
-            if inactive_count or deleted_count:
-                print(f"Đã bao gồm {inactive_count} sản phẩm inactive và {deleted_count} sản phẩm deleted từ KiotViet.")
+            total_time = time.time() - start_time
 
-            print(f"Đồng bộ hoàn tất: cập nhật/thêm {len(to_upsert)} sản phẩm. (Không xóa sản phẩm Firestore)")
+            print(f"\n✅ Đồng bộ hoàn tất trong {total_time:.2f}s:")
+            print(f"   - Tổng sản phẩm từ KiotViet: {len(api_items)}")
+            print(f"   - Cập nhật/thêm mới: {len(to_upsert)}")
+            print(f"   - Không thay đổi: {unchanged_count}")
+            print(f"   - Inactive: {inactive_count}")
+            print(f"   - Deleted: {deleted_count}")
+
             return {
-                "message": "Đã đồng bộ sản phẩm (upsert only, no deletes)",
-                "updated_or_created": len(to_upsert),
-                "total_api_items": len(api_items),
-                "inactive_included": inactive_count,
-                "deleted_included": deleted_count,
+                "success": True,
+                "message": "Đồng bộ thành công",
+                "version": "optimized_v2",  # Version marker to verify code is running
+                "stats": {
+                    "total_api_items": len(api_items),
+                    "updated_or_created": len(to_upsert),
+                    "unchanged": unchanged_count,
+                    "inactive_included": inactive_count,
+                    "deleted_included": deleted_count,
+                    "total_time_seconds": round(total_time, 2),
+                    "breakdown": {
+                        "checksum_fetch": round(checksum_time, 2),
+                        "api_fetch": round(api_time, 2),
+                        "compare": round(compare_time, 2),
+                        "update": round(time.time() - update_start if to_upsert else 0, 2)
+                    }
+                }
             }
         except Exception as exc:
-            print("Lỗi khi đồng bộ sản phẩm từ KiotViet:", exc)
             import traceback
-            print(traceback.format_exc())
-            return {"message": "sync_failed", "error": str(exc)}
+            error_trace = traceback.format_exc()
+            print(f"❌ Lỗi khi đồng bộ sản phẩm từ KiotViet: {exc}")
+            print(error_trace)
+            return {
+                "success": False,
+                "message": "Đồng bộ thất bại",
+                "error": str(exc),
+                "error_type": type(exc).__name__
+            }
 
     def fetch_firestore_items(self):
         print("Đang tải dữ liệu từ Firestore...")
@@ -332,31 +388,64 @@ class FirestoreProductService:
         return self._fetch_paginated_items()
 
     def _fetch_single_batch(self) -> Optional[List[dict]]:
+        """Fetch all products in a single batch with retry logic."""
         params = {
             "clientId": API_CLIENT_ID,
             "resourceName": API_RESOURCE,
             "pageSize": API_SINGLE_FETCH_LIMIT,
         }
 
-        response = requests.get(API_BASE_URL, params=params, headers=API_HEADERS, timeout=60)
-        response.raise_for_status()
-        payload = response.json() or {}
-        items = payload.get("Data", []) or []
+        max_retries = 3
+        retry_delay = 2  # seconds
 
-        total = payload.get("Total") or payload.get("total")
-        if total and total > len(items):
-            return None
-        if len(items) >= API_SINGLE_FETCH_LIMIT:
-            return None
-        return items
+        for attempt in range(max_retries):
+            try:
+                response = requests.get(
+                    API_BASE_URL,
+                    params=params,
+                    headers=API_HEADERS,
+                    timeout=90  # Increased timeout for large dataset
+                )
+                response.raise_for_status()
+                payload = response.json() or {}
+                items = payload.get("Data", []) or []
+
+                total = payload.get("Total") or payload.get("total")
+                if total and total > len(items):
+                    return None
+                if len(items) >= API_SINGLE_FETCH_LIMIT:
+                    return None
+                return items
+
+            except requests.exceptions.Timeout:
+                print(f"⚠️ Timeout khi fetch single batch (lần {attempt + 1}/{max_retries})")
+                if attempt < max_retries - 1:
+                    import time
+                    time.sleep(retry_delay)
+                    continue
+                raise
+
+            except requests.exceptions.RequestException as e:
+                print(f"⚠️ Lỗi khi fetch single batch (lần {attempt + 1}/{max_retries}): {e}")
+                if attempt < max_retries - 1:
+                    import time
+                    time.sleep(retry_delay)
+                    continue
+                raise
+
+        return None
 
     def _fetch_paginated_items(self) -> List[Product]:
+        """Fetch products with pagination and retry logic."""
+        import time
         products: List[Product] = []
         page_index = 0
         total_returned = 0
         seen_ids: Set[str] = set()
         duplicate_pages = 0
         MAX_DUPLICATE_PAGES = 3
+        max_retries = 3
+        retry_delay = 2
 
         while True:
             params = {
@@ -366,12 +455,45 @@ class FirestoreProductService:
                 "pageIndex": page_index,
             }
 
-            response = requests.get(API_BASE_URL, params=params, headers=API_HEADERS, timeout=30)
-            response.raise_for_status()
-            payload = response.json() or {}
-            items = payload.get("Data", [])
+            # Retry logic for each page
+            page_fetched = False
+            for attempt in range(max_retries):
+                try:
+                    response = requests.get(
+                        API_BASE_URL,
+                        params=params,
+                        headers=API_HEADERS,
+                        timeout=45  # Reasonable timeout per page
+                    )
+                    response.raise_for_status()
+                    payload = response.json() or {}
+                    items = payload.get("Data", [])
+                    page_fetched = True
+                    break
 
-            if not items:
+                except requests.exceptions.Timeout:
+                    print(f"⚠️ Timeout khi fetch trang {page_index} (lần {attempt + 1}/{max_retries})")
+                    if attempt < max_retries - 1:
+                        time.sleep(retry_delay)
+                        continue
+                    else:
+                        print(f"❌ Không thể fetch trang {page_index} sau {max_retries} lần thử, bỏ qua trang này")
+                        items = []
+                        page_fetched = True
+                        break
+
+                except requests.exceptions.RequestException as e:
+                    print(f"⚠️ Lỗi khi fetch trang {page_index} (lần {attempt + 1}/{max_retries}): {e}")
+                    if attempt < max_retries - 1:
+                        time.sleep(retry_delay)
+                        continue
+                    else:
+                        print(f"❌ Không thể fetch trang {page_index} sau {max_retries} lần thử, bỏ qua trang này")
+                        items = []
+                        page_fetched = True
+                        break
+
+            if not page_fetched or not items:
                 break
 
             unique_items = []

@@ -17,12 +17,36 @@ def create_sync_routes_bp(product_service) -> Blueprint:
     @handle_api_errors
     def sync_products_from_kiotviet():
         """Trigger a sync from KiotViet into Firestore and return final Firestore data.
-        Accepts optional JSON body: { "limit": 100 }
+        Accepts optional JSON body: { "limit": 100, "skip_products": false }
+
+        Optimizations:
+        - Returns sync stats by default (no product data)
+        - Set skip_products=false to include products in response
+        - Uses optimized sync with retry logic and timeout
         """
-        # perform sync (upsert-only behavior handled in service)
+        payload = request.get_json(silent=True) or {}
+        skip_products = payload.get("skip_products", True)  # Default to skip for faster response
+
+        # Perform optimized sync
         sync_result = product_service.update_products_from_kiotviet_to_firestore()
 
-        # return latest products from Firestore (include deleted/inactive so caller sees everything)
+        # Check if sync succeeded
+        if not sync_result.get("success", False):
+            return jsonify({
+                "sync": sync_result,
+                "products": [],
+                "error": sync_result.get("message", "Đồng bộ thất bại")
+            }), 500
+
+        # Only fetch products if explicitly requested
+        if skip_products:
+            return jsonify({
+                "sync": sync_result,
+                "message": "Đồng bộ thành công. Gọi /api/firebase/get/products để lấy danh sách.",
+                "products_count": sync_result.get("stats", {}).get("total_api_items", 0)
+            })
+
+        # Fetch and return products (slower)
         products = product_service.read_all_products(include_inactive=True, include_deleted=True) or []
 
         return jsonify({"sync": sync_result, "products": products})
