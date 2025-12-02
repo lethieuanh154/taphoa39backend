@@ -24,7 +24,12 @@ def create_sync_routes_bp(product_service) -> Blueprint:
         - Set skip_products=false to include products in response
         - Uses optimized sync with retry logic and timeout
         """
-        payload = request.get_json(silent=True) or {}
+        payload = request.get_json(silent=True)
+
+        # Handle case where payload is None, list, or dict
+        if payload is None or isinstance(payload, list):
+            payload = {}
+
         skip_products = payload.get("skip_products", True)  # Default to skip for faster response
 
         # Perform optimized sync
