@@ -1,5 +1,6 @@
 from datetime import datetime
 import time
+import traceback
 from google.api_core.exceptions import DeadlineExceeded
 
 from dotenv import load_dotenv
@@ -266,6 +267,8 @@ class FirestoreInvoiceService:
         payload["lastUpdated"] = datetime.utcnow().isoformat() + "Z"
 
         doc_ref.set(payload, merge=True)
+
+    
 
     def safe_float(self, val):
         try:

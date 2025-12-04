@@ -17,6 +17,7 @@ class Product:
     Cost: float = 0.0
     BasePrice: float = 0.0
     OnHand: float = 0.0
+    OnHandNV: float = 0.0
     Unit: Optional[str] = None
     MasterUnitId: Optional[int] = None
     MasterProductId: Optional[int] = None
@@ -86,6 +87,7 @@ class Product:
             Image=data.get("Image"),
             CreatedDate=safe_datetime(data.get("CreatedDate")),
             ProductAttributes=data.get("ProductAttributes", []) or [],
+            OnHandNV=safe_float(data.get("OnHandNV"), 0.0),
             NormalizedName=data.get("NormalizedName"),
             NormalizedCode=data.get("NormalizedCode"),
             OrderTemplate=data.get("OrderTemplate"),

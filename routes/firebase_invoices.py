@@ -49,6 +49,10 @@ def create_firebase_invoices_bp(invoice_service, product_service, customer_servi
 
             invalidate_invoice_cache(customer_service, normalized_invoice)
 
+            # ✅ NEW: Update summaries (DailySummary, MonthlySummary, YearlySummary)
+            summary_result = invoice_service.adjust_invoice_summaries(normalized_invoice, direction=1)
+
+            # ✅ Update customer totals
             recalc_result = customer_service.recalculate_customer_from_invoice(normalized_invoice)
             if recalc_result.get("updated") and recalc_result.get("customer"):
                 broadcast_customer_updates(socketio, [
@@ -56,7 +60,12 @@ def create_firebase_invoices_bp(invoice_service, product_service, customer_servi
                 ])
 
             notify_invoice_created(socketio, normalized_invoice)
-            return jsonify(result)
+            
+            response = dict(result)
+            if summary_result.get("updated"):
+                response["summary_adjusted"] = summary_result
+            
+            return jsonify(response)
         except ResourceExhausted as exc:
             import traceback
             print(traceback.format_exc())
@@ -81,6 +90,26 @@ def create_firebase_invoices_bp(invoice_service, product_service, customer_servi
             if updated_invoice:
                 invalidate_invoice_cache(customer_service, updated_invoice)
 
+            # ✅ NEW: Handle summary changes
+            summary_adjustments = []
+            
+            # Reverse old summary
+            if existing_invoice:
+                old_summary_result = invoice_service.adjust_invoice_summaries(
+                    existing_invoice, direction=-1
+                )
+                if old_summary_result.get("updated"):
+                    summary_adjustments.append(("old", old_summary_result))
+            
+            # Apply new summary
+            if updated_invoice:
+                new_summary_result = invoice_service.adjust_invoice_summaries(
+                    updated_invoice, direction=1
+                )
+                if new_summary_result.get("updated"):
+                    summary_adjustments.append(("new", new_summary_result))
+
+            # ✅ Update customer totals
             recalc_results = []
             if existing_invoice:
                 prev_recalc = customer_service.recalculate_customer_from_invoice(existing_invoice)
@@ -99,11 +128,14 @@ def create_firebase_invoices_bp(invoice_service, product_service, customer_servi
                     for recalc in recalc_results
                     if recalc.get("customer")
                 ])
-
             if updated_invoice:
                 notify_invoice_updated(socketio, updated_invoice)
 
-            return jsonify(result)
+            response = dict(result)
+            if summary_adjustments:
+                response["summary_adjusted"] = summary_adjustments
+
+            return jsonify(response)
         except ResourceExhausted as exc:
             import traceback
             print(traceback.format_exc())
@@ -119,32 +151,25 @@ def create_firebase_invoices_bp(invoice_service, product_service, customer_servi
             existing_invoice = invoice_service.read_invoice(invoice_id)
             if not existing_invoice:
                 return jsonify({"status": "error", "message": "Invoice not found"}), 404
-
             restocked_updates = []
             restock_errors = []
-            summary_adjustment = {"updated": False}
-            cart_items = existing_invoice.get('cartItems', []) or []
-
+            cart_items = existing_invoice.get('cartItems', []) or []   
+            	
             for item in cart_items:
                 product_data = item.get('product') or {}
                 product_id = product_data.get('Id') or product_data.get('id') or item.get('productId')
                 quantity = safe_int(item.get('quantity', 0))
-
                 if quantity <= 0:
                     continue
-
                 pid_str = str(product_id) if product_id is not None else None
                 if not is_valid_pid(pid_str):
                     continue
-
                 product_doc = product_service.read_product(pid_str)
                 if not product_doc:
                     continue
-
                 current_onhand = to_number(product_doc.get('OnHand'))
                 if current_onhand is None:
                     continue
-
                 new_onhand = int(current_onhand) + quantity
                 try:
                     product_service.update_product(pid_str, {"OnHand": new_onhand})
@@ -154,13 +179,15 @@ def create_firebase_invoices_bp(invoice_service, product_service, customer_servi
                     print(f"Error restocking product {pid_str}: {exc}")
                     print(traceback.format_exc())
                     restock_errors.append({"id": pid_str, "error": str(exc)})
-
-                    summary_adjustment = invoice_service.adjust_invoice_summaries(existing_invoice, direction=-1)
+            
+            # ✅ Adjust summaries (reverse the invoice)
+            summary_adjustment = invoice_service.adjust_invoice_summaries(existing_invoice, direction=-1)
 
             delete_result = invoice_service.delete_invoice(invoice_id)
 
             invalidate_invoice_cache(customer_service, existing_invoice)
 
+            # ✅ Recalculate customer totals
             recalc_result = customer_service.recalculate_customer_from_invoice(existing_invoice)
             if recalc_result.get("updated") and recalc_result.get("customer"):
                 broadcast_customer_updates(socketio, [
@@ -169,8 +196,8 @@ def create_firebase_invoices_bp(invoice_service, product_service, customer_servi
 
             notify_invoice_deleted(socketio, invoice_id)
 
-            if restocked_updates:
-                broadcast_products_onhand_updated(socketio, restocked_updates)
+                # Filter out error entries for the broadcast
+            broadcast_products_onhand_updated(socketio, restocked_updates)
 
             response = {
                 "message": delete_result.get("message", "invoice deleted"),

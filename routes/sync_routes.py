@@ -62,7 +62,7 @@ def create_sync_routes_bp(product_service) -> Blueprint:
         firebase_products = product_service.read_all_products()
 
         kv_by_id = {str(getattr(prod, "Id", "")): prod for prod in kiotviet_products if getattr(prod, "Id", None) is not None}
-        fb_by_id = {str(prod.get("Id") or prod.get("id")): prod for prod in firebase_products if prod.get("Id") or prod.get("id")}
+        fb_by_id = {str(prod.get("Id")): prod for prod in firebase_products if prod.get("Id")}
 
         all_ids = set(kv_by_id.keys()) | set(fb_by_id.keys())
 

@@ -134,9 +134,78 @@ def create_firebase_products_bp(product_service, socketio) -> Blueprint:
     @bp.route("/products/fetch", methods=["POST"])
     def fetch_products_changed():
         """
-        Accepts JSON: { "id": "123" } or { "ids": ["1","2"] }
-        Returns the latest product document(s) from Firestore.
-        """
-        return create_simple_fetch_handler(product_service, "read_product")()
+        Accepts JSON: 
+        - { "id": "123" } - Fetch single product
+        - { "ids": ["1","2"] } - Fetch multiple products
+        - { "all": true } - ✅ NEW: Fetch ALL products (bypass cache)
 
+        Returns the latest product document(s) from Firestore. 
+        """
+        payload = request.get_json(silent=True) or {}
+    
+    # ✅ NEW: Support fetch all products
+        if payload.get("all") == True:
+            print("🔄 Fetching ALL products directly from Firestore (no cache)...")
+
+            # Invalidate all caches first
+            product_service.invalidate_all_product_caches()
+
+            # Read directly from Firestore
+            include_inactive = payload.get("include_inactive", False)
+            include_deleted = payload.get("include_deleted", False)
+
+            products = product_service.read_all_products_fresh(
+                include_inactive=include_inactive,
+                include_deleted=include_deleted
+            )
+
+            print(f"✅ Fetched {len(products)} products from Firestore")
+            return jsonify(products)
+    
+    # Original logic for single/multiple IDs
+        return create_simple_fetch_handler(product_service, "read_product")()
+    
+    def read_all_products_fresh(self, include_inactive: bool = False, include_deleted: bool = False):
+        """
+        ✅ NEW: Đọc TẤT CẢ products trực tiếp từ Firestore, KHÔNG dùng cache. 
+        """
+        print(f"🔄 read_all_products_fresh called (include_inactive={include_inactive}, include_deleted={include_deleted})")
+    
+        docs = self.products_ref.stream()
+        result = []
+
+        for doc in docs:
+            data = doc.to_dict() or {}
+
+            # Determine item flags
+            is_active = self._coerce_bool(data.get("isActive"), True)
+            is_deleted = self._coerce_bool(data.get("isDeleted"), False)
+
+            # Apply filters based on function args
+            if (not include_inactive) and (not is_active):
+                continue
+            if (not include_deleted) and is_deleted:
+                continue
+
+            result.append(dict(data))
+
+        print(f"✅ Fetched {len(result)} products from Firestore (fresh)")
+        return result
+
+
+    def invalidate_all_product_caches(self):
+        """Invalidate tất cả các cache keys liên quan đến products"""
+        cache_keys_to_invalidate = [
+            "all_products",
+            "all_products:inactive=False:deleted=False",
+            "all_products:inactive=True:deleted=False",
+            "all_products:inactive=False:deleted=True",
+            "all_products:inactive=True:deleted=True",
+        ]
+        
+        for key in cache_keys_to_invalidate:
+            self.cache.invalidate(key)
+        
+        print(f"🗑️ Invalidated {len(cache_keys_to_invalidate)} product cache keys")
+    
     return bp
