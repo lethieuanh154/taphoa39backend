@@ -54,9 +54,75 @@ def create_firebase_products_bp(product_service, socketio) -> Blueprint:
         return jsonify({"error": "Product not found"}), 404
 
     @bp.route("/add/product", methods=["POST"])
+    @handle_api_errors
     def add_product():
+        """Add a single product to Firebase."""
         product = request.json
+        if not product:
+            return jsonify({"status": "error", "message": "No product data provided"}), 400
+        
+        # ✅ Xử lý tồn kho: user nhập -> OnHandNV, OnHand = 0
+        product = _process_stock_for_new_product(product)
+        
         return jsonify(product_service.add_product(product))
+
+    @bp.route("/add/products/batch", methods=["POST"])
+    @handle_api_errors
+    def add_products_batch():
+        """
+        ✅ NEW: Add multiple products to Firebase in batch.
+        Expects JSON: { "products": [...] }
+        
+        Xử lý tồn kho:
+        - OnHand: Tồn kho từ KiotViet API (ban đầu = 0 cho sản phẩm mới)
+        - OnHandNV: Tồn kho do user nhập khi tạo sản phẩm mới
+        
+        Khi tạo sản phẩm mới:
+        - Giá trị tồn kho user nhập sẽ lưu vào OnHandNV
+        - OnHand = 0 (vì sản phẩm mới chưa có trên KiotViet)
+        """
+        payload = request.get_json(silent=True)
+        if not payload:
+            return jsonify({"status": "error", "message": "No JSON body provided"}), 400
+
+        products = payload.get("products", [])
+        if not products:
+            return jsonify({"status": "error", "message": "No products provided"}), 400
+
+        if not isinstance(products, list):
+            return jsonify({"status": "error", "message": "Products must be a list"}), 400
+
+        # ✅ Validate và xử lý tồn kho cho mỗi product
+        processed_products = []
+        errors = []
+        
+        for idx, product in enumerate(products):
+            if not product.get("Id"):
+                errors.append({"index": idx, "error": "Missing Id"})
+                continue
+            if not product.get("Code"):
+                errors.append({"index": idx, "error": "Missing Code"})
+                continue
+            
+            # ✅ Xử lý tồn kho: user nhập -> OnHandNV, OnHand = 0
+            processed_product = _process_stock_for_new_product(product)
+            processed_products.append(processed_product)
+
+        if not processed_products:
+            return jsonify({
+                "status": "error", 
+                "message": "No valid products to add",
+                "errors": errors
+            }), 400
+
+        # ✅ Gọi service để add batch
+        result = product_service.add_products_batch(processed_products)
+        
+        # Thêm errors từ validation vào result
+        if errors:
+            result["validation_errors"] = errors
+
+        return jsonify(result)
 
     @bp.route("/update/products", methods=["PUT"])
     def update_product():
@@ -71,13 +137,11 @@ def create_firebase_products_bp(product_service, socketio) -> Blueprint:
 
             results, broadcast_updates = apply_product_updates(product_service, normalized)
 
-            # Keep REST update behavior but do not accept websocket updates for OnHand.
-            # Broadcasting to websocket clients is still allowed so UIs can receive updates.
             if broadcast_updates:
                 broadcast_products_onhand_updated(socketio, broadcast_updates)
 
             return jsonify({"message": f"Processed {len(results)} items", "results": results})
-        except Exception as exc:  # pragma: no cover - best effort logging
+        except Exception as exc:
             import traceback
             print(traceback.format_exc())
             return jsonify({"status": "error", "message": str(exc), "trace": traceback.format_exc()}), 500
@@ -104,10 +168,8 @@ def create_firebase_products_bp(product_service, socketio) -> Blueprint:
         force = bool(payload.get("force", False))
         limit = int(payload.get("limit", 100)) if payload.get("limit") is not None else 100
 
-        # product_service.sync_products_from_kiotviet() is the canonical sync method
         sync_result = product_service.sync_products_from_kiotviet()
 
-        # After a sync, return the freshest product list (limited)
         products = product_service.read_all_products() or []
         if limit and isinstance(limit, int) and limit > 0:
             products = products[:limit]
@@ -137,20 +199,18 @@ def create_firebase_products_bp(product_service, socketio) -> Blueprint:
         Accepts JSON: 
         - { "id": "123" } - Fetch single product
         - { "ids": ["1","2"] } - Fetch multiple products
-        - { "all": true } - ✅ NEW: Fetch ALL products (bypass cache)
+        - { "all": true } - Fetch ALL products (bypass cache)
 
-        Returns the latest product document(s) from Firestore. 
+        Returns the latest product document(s) from Firestore.
         """
         payload = request.get_json(silent=True) or {}
     
-    # ✅ NEW: Support fetch all products
+        # Support fetch all products
         if payload.get("all") == True:
             print("🔄 Fetching ALL products directly from Firestore (no cache)...")
 
-            # Invalidate all caches first
             product_service.invalidate_all_product_caches()
 
-            # Read directly from Firestore
             include_inactive = payload.get("include_inactive", False)
             include_deleted = payload.get("include_deleted", False)
 
@@ -162,50 +222,64 @@ def create_firebase_products_bp(product_service, socketio) -> Blueprint:
             print(f"✅ Fetched {len(products)} products from Firestore")
             return jsonify(products)
     
-    # Original logic for single/multiple IDs
+        # Original logic for single/multiple IDs
         return create_simple_fetch_handler(product_service, "read_product")()
-    
-    def read_all_products_fresh(self, include_inactive: bool = False, include_deleted: bool = False):
+
+    @bp.route("/products/variants/<int:product_id>", methods=["GET"])
+    @handle_api_errors
+    def get_product_variants(product_id: int):
         """
-        ✅ NEW: Đọc TẤT CẢ products trực tiếp từ Firestore, KHÔNG dùng cache. 
+        Get a product and all its variants (by unit and attributes).
+        Returns the master product and all related variants.
         """
-        print(f"🔄 read_all_products_fresh called (include_inactive={include_inactive}, include_deleted={include_deleted})")
-    
-        docs = self.products_ref.stream()
-        result = []
+        result = product_service.get_product_variants(product_id)
+        return jsonify(result)
 
-        for doc in docs:
-            data = doc.to_dict() or {}
-
-            # Determine item flags
-            is_active = self._coerce_bool(data.get("isActive"), True)
-            is_deleted = self._coerce_bool(data.get("isDeleted"), False)
-
-            # Apply filters based on function args
-            if (not include_inactive) and (not is_active):
-                continue
-            if (not include_deleted) and is_deleted:
-                continue
-
-            result.append(dict(data))
-
-        print(f"✅ Fetched {len(result)} products from Firestore (fresh)")
-        return result
-
-
-    def invalidate_all_product_caches(self):
-        """Invalidate tất cả các cache keys liên quan đến products"""
-        cache_keys_to_invalidate = [
-            "all_products",
-            "all_products:inactive=False:deleted=False",
-            "all_products:inactive=True:deleted=False",
-            "all_products:inactive=False:deleted=True",
-            "all_products:inactive=True:deleted=True",
-        ]
-        
-        for key in cache_keys_to_invalidate:
-            self.cache.invalidate(key)
-        
-        print(f"🗑️ Invalidated {len(cache_keys_to_invalidate)} product cache keys")
-    
     return bp
+
+
+def _process_stock_for_new_product(product: dict) -> dict:
+    """
+    ✅ Helper function: Xử lý tồn kho cho sản phẩm mới.
+    
+    Phân biệt:
+    - OnHand: Tồn kho từ KiotViet API (/items/all) - tồn kho thực tế
+    - OnHandNV: Tồn kho do user nhập khi tạo sản phẩm mới
+    
+    Khi tạo sản phẩm mới từ frontend:
+    - User nhập tồn kho -> lưu vào OnHandNV
+    - OnHand = 0 (vì sản phẩm mới chưa có trên KiotViet)
+    
+    Sau này khi sync từ KiotViet:
+    - OnHand sẽ được cập nhật từ API KiotViet
+    - OnHandNV giữ nguyên giá trị user đã nhập
+    """
+    if not isinstance(product, dict):
+        return product
+    
+    # Tạo bản copy để không thay đổi dict gốc
+    result = dict(product)
+    
+    # Lấy giá trị tồn kho từ input (user nhập vào field OnHand hoặc stock)
+    # Frontend có thể gửi qua field "OnHand" hoặc "stock"
+    user_input_stock = result.get("OnHand") or result.get("stock") or 0
+    
+    # Parse thành số
+    try:
+        stock_value = float(user_input_stock) if user_input_stock is not None else 0
+    except (TypeError, ValueError):
+        stock_value = 0
+    
+    # ✅ Lưu tồn kho user nhập vào OnHandNV
+    result["OnHandNV"] = stock_value
+    
+    # ✅ OnHand = 0 (sản phẩm mới chưa có trên KiotViet)
+    # Sau này khi sync từ KiotViet, OnHand sẽ được cập nhật
+    result["OnHand"] = 0
+    
+    # Xóa field "stock" nếu có (không cần lưu vào Firebase)
+    result.pop("stock", None)
+    
+    print(f"📦 Product {result.get('Id')}: User input stock={user_input_stock} -> OnHandNV={stock_value}, OnHand=0")
+    
+    return result

@@ -20,7 +20,7 @@ from routes.kiotviet_routes import create_kiotviet_routes_bp
 from routes.sync_routes import create_sync_routes_bp
 from routes.static_routes import create_static_routes_bp
 from routes.firebase_websocket import register_namespaces
-
+from routes.auth_routes import auth_bp
 
 # SocketIO middleware removed — websockets are no longer used.
 
@@ -54,7 +54,7 @@ def _build_app() -> Flask:
     except Exception:
         # best-effort registration; avoid crashing startup if socketio not available
         pass
-
+    app.register_blueprint(auth_bp)
     app.register_blueprint(create_static_routes_bp())
     app.register_blueprint(create_kiotviet_routes_bp())
     app.register_blueprint(create_sync_routes_bp(product_service))
