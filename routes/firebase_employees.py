@@ -248,4 +248,115 @@ def create_firebase_employees_bp(employee_service, socketio=None) -> Blueprint:
         else:
             return jsonify(result), 400
 
+    # ===============================
+    # ATTENDANCE ENDPOINTS
+    # ===============================
+
+    @bp.route("/get/attendance", methods=["GET"])
+    @handle_api_errors
+    def get_all_attendance():
+        """Get all attendance records from attendance collection"""
+        attendance = employee_service.get_all_attendance()
+        return jsonify(attendance)
+
+    @bp.route("/attendance/filter", methods=["GET"])
+    @handle_api_errors
+    def get_attendance_by_date():
+        """
+        Get attendance records filtered by date range
+        Query params: from_date (YYYY-MM-DD), to_date (YYYY-MM-DD)
+        Example: /api/firebase/attendance/filter?from_date=2024-01-01&to_date=2024-01-31
+        """
+        from_date = request.args.get('from_date')
+        to_date = request.args.get('to_date')
+
+        if not from_date or not to_date:
+            return jsonify({
+                "success": False,
+                "message": "Both from_date and to_date query parameters are required (format: YYYY-MM-DD)"
+            }), 400
+
+        result = employee_service.get_attendance_by_date_range(from_date, to_date)
+
+        if result.get("success"):
+            return jsonify(result), 200
+        else:
+            return jsonify(result), 400
+
+    @bp.route("/add_attendance", methods=["POST"])
+    @handle_api_errors
+    def add_attendance():
+        """
+        Add a new attendance record
+        Expected payload:
+        {
+            "date": "2024-01-01",
+            "workerId": "NV001",
+            "workerName": "Nguyễn Văn A",
+            "startTime": "07:00",
+            "endTime": "17:00",
+            "totalHours": 10,
+            "notes": "..."
+        }
+        """
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            return jsonify({"success": False, "message": "JSON body is required"}), 400
+
+        result = employee_service.add_attendance(payload)
+
+        if result.get("success"):
+            # Broadcast update via SocketIO if available
+            if socketio:
+                try:
+                    socketio.emit('attendance_added', result.get("data"), namespace='/employees')
+                except:
+                    pass
+            return jsonify(result), 201
+        else:
+            return jsonify(result), 400
+
+    @bp.route("/update_attendance/<attendance_id>", methods=["PUT"])
+    @handle_api_errors
+    def update_attendance(attendance_id: str):
+        """Update an existing attendance record"""
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            return jsonify({"success": False, "message": "JSON body is required"}), 400
+
+        result = employee_service.update_attendance(attendance_id, payload)
+
+        if result.get("success"):
+            # Broadcast update via SocketIO if available
+            if socketio:
+                try:
+                    socketio.emit('attendance_updated', {
+                        "id": attendance_id,
+                        "updates": result.get("updates")
+                    }, namespace='/employees')
+                except:
+                    pass
+            return jsonify(result), 200
+        else:
+            status_code = 404 if result.get("message") == "Attendance record not found" else 400
+            return jsonify(result), status_code
+
+    @bp.route("/delete_attendance/<attendance_id>", methods=["DELETE"])
+    @handle_api_errors
+    def delete_attendance(attendance_id: str):
+        """Delete an attendance record"""
+        result = employee_service.delete_attendance(attendance_id)
+
+        if result.get("success"):
+            # Broadcast update via SocketIO if available
+            if socketio:
+                try:
+                    socketio.emit('attendance_deleted', {"id": attendance_id}, namespace='/employees')
+                except:
+                    pass
+            return jsonify(result), 200
+        else:
+            status_code = 404 if result.get("message") == "Attendance record not found" else 400
+            return jsonify(result), status_code
+
     return bp

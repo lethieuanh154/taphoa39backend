@@ -14,6 +14,7 @@ EMPLOYEE_LIST_COLLECTION = "employeeList"
 WORK_SCHEDULE_COLLECTION = "workSchedule"
 TIME_SHEET_COLLECTION = "timeSheet"
 PAYROLL_COLLECTION = "payroll"
+ATTENDANCE_COLLECTION = "attendance"
 
 # Initialize Firestore with NHANVIEN service account
 db = init_firestore("FIREBASE_SERVICE_ACCOUNT_NHANVIEN")
@@ -21,6 +22,7 @@ employee_list_ref = db.collection(EMPLOYEE_LIST_COLLECTION)
 work_schedule_ref = db.collection(WORK_SCHEDULE_COLLECTION)
 time_sheet_ref = db.collection(TIME_SHEET_COLLECTION)
 payroll_ref = db.collection(PAYROLL_COLLECTION)
+attendance_ref = db.collection(ATTENDANCE_COLLECTION)
 
 
 class FirestoreEmployeeService:
@@ -30,6 +32,7 @@ class FirestoreEmployeeService:
         self.work_schedule_ref = work_schedule_ref
         self.time_sheet_ref = time_sheet_ref
         self.payroll_ref = payroll_ref
+        self.attendance_ref = attendance_ref
 
     # ===============================
     # EMPLOYEE LIST METHODS
@@ -181,7 +184,7 @@ class FirestoreEmployeeService:
                 continue
 
             # Handle date fields
-            if key in ["ngaySinh", "ngayBatDau"]:
+            if key in ["ngaySinh", "ngayBatDau", "ngayKetThuc"]:
                 if isinstance(value, str):
                     try:
                         # Try parsing ISO format
@@ -393,3 +396,213 @@ class FirestoreEmployeeService:
             }
         except Exception as exc:
             return {"success": False, "message": str(exc)}
+
+    # ===============================
+    # ATTENDANCE METHODS
+    # ===============================
+
+    def get_all_attendance(self):
+        """Get all attendance records"""
+        cache_key = "all_attendance"
+        if self.cache and self.cache.has(cache_key):
+            cached = self.cache.get(cache_key)
+            if cached is not None:
+                return cached
+
+        docs = self.attendance_ref.stream()
+        result = []
+        for doc in docs:
+            data = doc.to_dict()
+            data["id"] = doc.id
+            # Convert datetime to string for JSON serialization
+            if "date" in data and hasattr(data["date"], "isoformat"):
+                data["date"] = data["date"].isoformat()
+            if "createdAt" in data and hasattr(data["createdAt"], "isoformat"):
+                data["createdAt"] = data["createdAt"].isoformat()
+            if "updatedAt" in data and hasattr(data["updatedAt"], "isoformat"):
+                data["updatedAt"] = data["updatedAt"].isoformat()
+            result.append(data)
+
+        if self.cache:
+            self.cache.set(cache_key, result, ttl=300)
+        return result
+
+    def get_attendance_by_date_range(self, from_date: str, to_date: str):
+        """
+        Get attendance records within a date range
+        from_date and to_date should be in format: YYYY-MM-DD
+        """
+        if not from_date or not to_date:
+            return {"success": False, "message": "from_date and to_date are required"}
+
+        try:
+            # Parse dates
+            from_date_obj = datetime.strptime(from_date, "%Y-%m-%d")
+            to_date_obj = datetime.strptime(to_date, "%Y-%m-%d")
+            # Set to end of day for to_date
+            to_date_obj = to_date_obj.replace(hour=23, minute=59, second=59)
+
+            # Query attendance where date >= from_date and date <= to_date
+            query = self.attendance_ref.where(
+                filter=FieldFilter("date", ">=", from_date_obj)
+            ).where(
+                filter=FieldFilter("date", "<=", to_date_obj)
+            )
+
+            docs = query.stream()
+            result = []
+            for doc in docs:
+                data = doc.to_dict()
+                data["id"] = doc.id
+                # Convert datetime to string for JSON serialization
+                if "date" in data and hasattr(data["date"], "isoformat"):
+                    data["date"] = data["date"].isoformat()
+                if "createdAt" in data and hasattr(data["createdAt"], "isoformat"):
+                    data["createdAt"] = data["createdAt"].isoformat()
+                if "updatedAt" in data and hasattr(data["updatedAt"], "isoformat"):
+                    data["updatedAt"] = data["updatedAt"].isoformat()
+                result.append(data)
+
+            return {"success": True, "data": result}
+        except Exception as exc:
+            return {"success": False, "message": str(exc)}
+
+    def add_attendance(self, attendance_data: dict):
+        """
+        Add a new attendance record
+        Expected structure:
+        {
+            "date": "2024-01-01",
+            "workerId": "NV001",
+            "workerName": "Nguyễn Văn A",
+            "startTime": "07:00",
+            "endTime": "17:00",
+            "totalHours": 10,
+            "notes": "..."
+        }
+        """
+        if not attendance_data:
+            return {"success": False, "message": "attendance_data is required"}
+
+        # Validate required fields
+        if "workerId" not in attendance_data or not attendance_data["workerId"]:
+            return {"success": False, "message": "workerId is required"}
+
+        if "date" not in attendance_data or not attendance_data["date"]:
+            return {"success": False, "message": "date is required"}
+
+        try:
+            # Process the data
+            processed_data = self._process_attendance_data(attendance_data)
+            processed_data["createdAt"] = datetime.now()
+
+            # Create a unique document ID based on workerId and date
+            date_str = attendance_data["date"]
+            if isinstance(date_str, datetime):
+                date_str = date_str.strftime("%Y-%m-%d")
+            doc_id = f"{attendance_data['workerId']}_{date_str}"
+
+            doc_ref = self.attendance_ref.document(doc_id)
+            doc_ref.set(processed_data)
+
+            self.cache.invalidate("all_attendance")
+
+            # Convert datetime for response
+            response_data = processed_data.copy()
+            if "date" in response_data and hasattr(response_data["date"], "isoformat"):
+                response_data["date"] = response_data["date"].isoformat()
+            if "createdAt" in response_data and hasattr(response_data["createdAt"], "isoformat"):
+                response_data["createdAt"] = response_data["createdAt"].isoformat()
+
+            return {
+                "success": True,
+                "message": "Attendance record added successfully",
+                "id": doc_id,
+                "data": response_data
+            }
+        except Exception as exc:
+            return {"success": False, "message": str(exc)}
+
+    def update_attendance(self, attendance_id: str, updates: dict):
+        """Update an existing attendance record"""
+        if not attendance_id:
+            return {"success": False, "message": "attendance_id is required"}
+
+        if not isinstance(updates, dict) or len(updates) == 0:
+            return {"success": False, "message": "updates must be a non-empty object"}
+
+        doc_id = str(attendance_id).strip()
+        doc_ref = self.attendance_ref.document(doc_id)
+        snapshot = doc_ref.get()
+
+        if not snapshot.exists:
+            return {"success": False, "message": "Attendance record not found"}
+
+        try:
+            # Process updates
+            processed_updates = self._process_attendance_data(updates)
+            processed_updates["updatedAt"] = datetime.now()
+
+            doc_ref.update(processed_updates)
+
+            self.cache.invalidate("all_attendance")
+
+            return {
+                "success": True,
+                "message": "Attendance record updated successfully",
+                "id": doc_id,
+                "updates": updates
+            }
+        except Exception as exc:
+            return {"success": False, "message": str(exc)}
+
+    def delete_attendance(self, attendance_id: str):
+        """Delete an attendance record"""
+        if not attendance_id:
+            return {"success": False, "message": "attendance_id is required"}
+
+        doc_id = str(attendance_id).strip()
+        doc_ref = self.attendance_ref.document(doc_id)
+        snapshot = doc_ref.get()
+
+        if not snapshot.exists:
+            return {"success": False, "message": "Attendance record not found"}
+
+        try:
+            doc_ref.delete()
+            self.cache.invalidate("all_attendance")
+
+            return {
+                "success": True,
+                "message": "Attendance record deleted successfully",
+                "id": doc_id
+            }
+        except Exception as exc:
+            return {"success": False, "message": str(exc)}
+
+    def _process_attendance_data(self, data: dict) -> dict:
+        """Process attendance data, converting dates and cleaning fields"""
+        processed = {}
+
+        for key, value in data.items():
+            if value is None or value == "":
+                continue
+
+            # Handle date field
+            if key == "date":
+                if isinstance(value, str):
+                    try:
+                        # Try parsing ISO format or YYYY-MM-DD
+                        if "T" in value:
+                            date_obj = datetime.fromisoformat(value.replace('Z', '+00:00'))
+                        else:
+                            date_obj = datetime.strptime(value, "%Y-%m-%d")
+                        processed[key] = date_obj
+                    except:
+                        processed[key] = value
+                else:
+                    processed[key] = value
+            else:
+                processed[key] = value
+
+        return processed
