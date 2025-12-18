@@ -489,6 +489,29 @@ class FirestoreEmployeeService:
         except Exception as exc:
             return {"success": False, "message": str(exc)}
 
+    def delete_payroll(self, payroll_id: str):
+        """
+        Delete a payroll record by ID
+        """
+        if not payroll_id:
+            return {"success": False, "message": "payroll_id is required"}
+
+        try:
+            doc_ref = self.payroll_ref.document(payroll_id)
+            doc = doc_ref.get()
+
+            if not doc.exists:
+                return {"success": False, "message": "Payroll record not found"}
+
+            doc_ref.delete()
+
+            # Invalidate cache
+            self.cache.invalidate("all_payrolls")
+
+            return {"success": True, "message": "Payroll record deleted successfully", "id": payroll_id}
+        except Exception as exc:
+            return {"success": False, "message": str(exc)}
+
     # ===============================
     # ATTENDANCE METHODS
     # ===============================

@@ -302,6 +302,24 @@ def create_firebase_employees_bp(employee_service, socketio=None) -> Blueprint:
         else:
             return jsonify(result), 400
 
+    @bp.route("/delete_payroll/<payroll_id>", methods=["DELETE"])
+    @handle_api_errors
+    def delete_payroll(payroll_id: str):
+        """Delete a payroll record"""
+        result = employee_service.delete_payroll(payroll_id)
+
+        if result.get("success"):
+            # Broadcast update via SocketIO if available
+            if socketio:
+                try:
+                    socketio.emit('payroll_deleted', {"id": payroll_id}, namespace='/employees')
+                except:
+                    pass
+            return jsonify(result), 200
+        else:
+            status_code = 404 if result.get("message") == "Payroll record not found" else 400
+            return jsonify(result), status_code
+
     # ===============================
     # ATTENDANCE ENDPOINTS
     # ===============================
