@@ -397,6 +397,98 @@ class FirestoreEmployeeService:
         except Exception as exc:
             return {"success": False, "message": str(exc)}
 
+    def save_payroll(self, payroll_data: dict):
+        """
+        Save or update a payroll record
+        Uses maNhanVien + period as document ID for upsert behavior
+        """
+        if not payroll_data:
+            return {"success": False, "message": "payroll_data is required"}
+
+        if "maNhanVien" not in payroll_data or not payroll_data["maNhanVien"]:
+            return {"success": False, "message": "maNhanVien is required"}
+
+        try:
+            # Create document ID from maNhanVien and period
+            ma_nv = payroll_data["maNhanVien"]
+            period = payroll_data.get("period", datetime.now().strftime("%Y-%m"))
+            doc_id = f"{ma_nv}_{period}"
+
+            payroll_data["updatedAt"] = datetime.now()
+            if "createdAt" not in payroll_data:
+                payroll_data["createdAt"] = datetime.now()
+
+            doc_ref = self.payroll_ref.document(doc_id)
+            doc_ref.set(payroll_data, merge=True)
+
+            self.cache.invalidate("all_payrolls")
+
+            return {
+                "success": True,
+                "message": "Payroll saved successfully",
+                "id": doc_id,
+                "data": payroll_data
+            }
+        except Exception as exc:
+            return {"success": False, "message": str(exc)}
+
+    def save_payrolls_batch(self, payrolls: list):
+        """
+        Save multiple payroll records in batch
+        """
+        if not payrolls or not isinstance(payrolls, list):
+            return {"success": False, "message": "payrolls must be a non-empty list"}
+
+        try:
+            saved_count = 0
+            errors = []
+
+            for payroll_data in payrolls:
+                result = self.save_payroll(payroll_data)
+                if result.get("success"):
+                    saved_count += 1
+                else:
+                    errors.append(result.get("message"))
+
+            self.cache.invalidate("all_payrolls")
+
+            return {
+                "success": True,
+                "message": f"Saved {saved_count}/{len(payrolls)} payroll records",
+                "savedCount": saved_count,
+                "errors": errors if errors else None
+            }
+        except Exception as exc:
+            return {"success": False, "message": str(exc)}
+
+    def get_payrolls_by_period(self, period: str):
+        """
+        Get payroll records for a specific period (YYYY-MM)
+        """
+        if not period:
+            return {"success": False, "message": "period is required"}
+
+        try:
+            query = self.payroll_ref.where(
+                filter=FieldFilter("period", "==", period)
+            )
+
+            docs = query.stream()
+            result = []
+            for doc in docs:
+                data = doc.to_dict()
+                data["id"] = doc.id
+                # Convert datetime to string
+                if "createdAt" in data and hasattr(data["createdAt"], "isoformat"):
+                    data["createdAt"] = data["createdAt"].isoformat()
+                if "updatedAt" in data and hasattr(data["updatedAt"], "isoformat"):
+                    data["updatedAt"] = data["updatedAt"].isoformat()
+                result.append(data)
+
+            return {"success": True, "data": result}
+        except Exception as exc:
+            return {"success": False, "message": str(exc)}
+
     # ===============================
     # ATTENDANCE METHODS
     # ===============================
@@ -576,6 +668,57 @@ class FirestoreEmployeeService:
                 "success": True,
                 "message": "Attendance record deleted successfully",
                 "id": doc_id
+            }
+        except Exception as exc:
+            return {"success": False, "message": str(exc)}
+
+    def save_attendance_batch(self, records: list):
+        """
+        Save multiple attendance records in batch
+        Each record uses workerId + date as document ID for upsert behavior
+        """
+        if not records or not isinstance(records, list):
+            return {"success": False, "message": "records must be a non-empty list"}
+
+        try:
+            saved_count = 0
+            errors = []
+
+            for attendance_data in records:
+                # Validate required fields
+                if "workerId" not in attendance_data or not attendance_data["workerId"]:
+                    errors.append("Missing workerId in record")
+                    continue
+                if "date" not in attendance_data or not attendance_data["date"]:
+                    errors.append("Missing date in record")
+                    continue
+
+                try:
+                    # Process the data
+                    processed_data = self._process_attendance_data(attendance_data)
+                    processed_data["updatedAt"] = datetime.now()
+                    if "createdAt" not in processed_data:
+                        processed_data["createdAt"] = datetime.now()
+
+                    # Create a unique document ID based on workerId and date
+                    date_str = attendance_data["date"]
+                    if isinstance(date_str, datetime):
+                        date_str = date_str.strftime("%Y-%m-%d")
+                    doc_id = f"{attendance_data['workerId']}_{date_str}"
+
+                    doc_ref = self.attendance_ref.document(doc_id)
+                    doc_ref.set(processed_data, merge=True)
+                    saved_count += 1
+                except Exception as e:
+                    errors.append(str(e))
+
+            self.cache.invalidate("all_attendance")
+
+            return {
+                "success": True,
+                "message": f"Saved {saved_count}/{len(records)} attendance records",
+                "savedCount": saved_count,
+                "errors": errors if errors else None
             }
         except Exception as exc:
             return {"success": False, "message": str(exc)}

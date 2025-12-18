@@ -248,6 +248,60 @@ def create_firebase_employees_bp(employee_service, socketio=None) -> Blueprint:
         else:
             return jsonify(result), 400
 
+    @bp.route("/save_payroll", methods=["PUT"])
+    @handle_api_errors
+    def save_payroll():
+        """Save or update a payroll record"""
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            return jsonify({"success": False, "message": "JSON body is required"}), 400
+
+        result = employee_service.save_payroll(payload)
+
+        if result.get("success"):
+            return jsonify(result), 200
+        else:
+            return jsonify(result), 400
+
+    @bp.route("/save_payrolls_batch", methods=["PUT"])
+    @handle_api_errors
+    def save_payrolls_batch():
+        """Save multiple payroll records in batch"""
+        payload = request.get_json(silent=True)
+        # Accept both array directly or { payrolls: [...] } format
+        if isinstance(payload, dict) and "payrolls" in payload:
+            payrolls = payload["payrolls"]
+        elif isinstance(payload, list):
+            payrolls = payload
+        else:
+            return jsonify({"success": False, "message": "JSON body must be an array or object with 'payrolls' key"}), 400
+
+        result = employee_service.save_payrolls_batch(payrolls)
+
+        if result.get("success"):
+            return jsonify(result), 200
+        else:
+            return jsonify(result), 400
+
+    @bp.route("/payrolls/filter", methods=["GET"])
+    @handle_api_errors
+    def get_payrolls_by_period():
+        """Get payroll records by period (YYYY-MM)"""
+        period = request.args.get('period')
+
+        if not period:
+            return jsonify({
+                "success": False,
+                "message": "period query parameter is required (format: YYYY-MM)"
+            }), 400
+
+        result = employee_service.get_payrolls_by_period(period)
+
+        if result.get("success"):
+            return jsonify(result), 200
+        else:
+            return jsonify(result), 400
+
     # ===============================
     # ATTENDANCE ENDPOINTS
     # ===============================
@@ -358,5 +412,36 @@ def create_firebase_employees_bp(employee_service, socketio=None) -> Blueprint:
         else:
             status_code = 404 if result.get("message") == "Attendance record not found" else 400
             return jsonify(result), status_code
+
+    @bp.route("/save_attendance_batch", methods=["PUT"])
+    @handle_api_errors
+    def save_attendance_batch():
+        """
+        Save multiple attendance records in batch
+        Expected payload: array of attendance records or { records: [...] }
+        """
+        payload = request.get_json(silent=True)
+        # Accept both array directly or { records: [...] } format
+        if isinstance(payload, dict) and "records" in payload:
+            records = payload["records"]
+        elif isinstance(payload, list):
+            records = payload
+        else:
+            return jsonify({"success": False, "message": "JSON body must be an array or object with 'records' key"}), 400
+
+        result = employee_service.save_attendance_batch(records)
+
+        if result.get("success"):
+            # Broadcast update via SocketIO if available
+            if socketio:
+                try:
+                    socketio.emit('attendance_batch_saved', {
+                        "savedCount": result.get("savedCount")
+                    }, namespace='/employees')
+                except:
+                    pass
+            return jsonify(result), 200
+        else:
+            return jsonify(result), 400
 
     return bp
