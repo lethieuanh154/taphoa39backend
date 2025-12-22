@@ -20,7 +20,7 @@ def get_all():
     if response.status_code == 200:
         data = response.json()
         raw_items = data.get('Data', [])
-        filtered_items = [item for item in raw_items if not item.get('isDeleted', False)]
+        filtered_items = [item for item in raw_items if not item.get('isDeleted', False) and item.get('isActive', True)]
         print(f"Total products : {len(filtered_items)}")
         return filtered_items
     else:
