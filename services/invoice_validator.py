@@ -1,6 +1,6 @@
 """
 Invoice Validator Module
-Validates mathematical correctness of extracted invoice data
+Validates extracted invoice data - reads values from PDF, no recalculation
 """
 import logging
 from typing import List, Tuple
@@ -13,7 +13,8 @@ logger = logging.getLogger(__name__)
 
 class InvoiceValidator:
     """
-    Validates invoice data for mathematical correctness
+    Validates invoice data extracted from PDF
+    Only checks for missing/invalid data, does NOT recalculate values
     """
 
     def __init__(self, tolerance: float = None):
@@ -27,7 +28,7 @@ class InvoiceValidator:
 
     def validate(self, invoice: ProcessedInvoice) -> Tuple[bool, List[ValidationError]]:
         """
-        Validate all aspects of an invoice
+        Validate invoice data - check for missing/invalid fields only
 
         Args:
             invoice: ProcessedInvoice to validate
@@ -37,21 +38,21 @@ class InvoiceValidator:
         """
         errors: List[ValidationError] = []
 
-        # Validate each item
-        item_errors = self._validate_items(invoice)
-        errors.extend(item_errors)
+        # Validate required metadata
+        metadata_errors = self._validate_metadata(invoice)
+        errors.extend(metadata_errors)
 
-        # Validate totals
-        total_errors = self._validate_totals(invoice)
-        errors.extend(total_errors)
+        # Validate seller info
+        seller_errors = self._validate_seller(invoice)
+        errors.extend(seller_errors)
 
-        # Validate VAT
-        vat_errors = self._validate_vat(invoice)
-        errors.extend(vat_errors)
+        # Validate items exist
+        items_errors = self._validate_items(invoice)
+        errors.extend(items_errors)
 
-        # Validate final payment
-        payment_errors = self._validate_payment(invoice)
-        errors.extend(payment_errors)
+        # Validate summary has values
+        summary_errors = self._validate_summary(invoice)
+        errors.extend(summary_errors)
 
         # Log validation result
         is_valid = len([e for e in errors if e.severity == "error"]) == 0
@@ -62,126 +63,104 @@ class InvoiceValidator:
 
         return is_valid, errors
 
-    def _validate_items(self, invoice: ProcessedInvoice) -> List[ValidationError]:
-        """Validate each line item: amount = quantity × unit_price"""
+    def _validate_metadata(self, invoice: ProcessedInvoice) -> List[ValidationError]:
+        """Validate required metadata fields"""
         errors = []
 
-        for idx, item in enumerate(invoice.items):
-            expected_amount = item.quantity * item.unit_price
-            actual_amount = item.amount
-
-            if not self._is_close(expected_amount, actual_amount):
-                errors.append(ValidationError(
-                    field=f"items[{idx}].amount",
-                    message=f"Item {item.stt}: Thành tiền không đúng. "
-                            f"Cần: {expected_amount:,.0f}, Thực tế: {actual_amount:,.0f}",
-                    severity="error",
-                    expected_value=expected_amount,
-                    actual_value=actual_amount
-                ))
-                logger.warning(
-                    f"Item {idx} amount mismatch: "
-                    f"{item.quantity} × {item.unit_price} = {expected_amount}, "
-                    f"got {actual_amount}"
-                )
-
-        return errors
-
-    def _validate_totals(self, invoice: ProcessedInvoice) -> List[ValidationError]:
-        """Validate: total_amount_before_vat = sum of all item amounts"""
-        errors = []
-
-        sum_amounts = sum(item.amount for item in invoice.items)
-        declared_total = invoice.summary.total_amount_before_vat
-
-        if not self._is_close(sum_amounts, declared_total):
+        if not invoice.invoice_metadata.invoice_no:
             errors.append(ValidationError(
-                field="summary.total_amount_before_vat",
-                message=f"Tổng tiền hàng không khớp. "
-                        f"Tổng các dòng: {sum_amounts:,.0f}, "
-                        f"Khai báo: {declared_total:,.0f}",
-                severity="error",
-                expected_value=sum_amounts,
-                actual_value=declared_total
+                field="invoice_metadata.invoice_no",
+                message="Số hóa đơn không được để trống",
+                severity="error"
             ))
-            logger.warning(
-                f"Total before VAT mismatch: sum={sum_amounts}, declared={declared_total}"
-            )
+
+        if not invoice.invoice_metadata.invoice_date:
+            errors.append(ValidationError(
+                field="invoice_metadata.invoice_date",
+                message="Ngày hóa đơn không được để trống",
+                severity="error"
+            ))
 
         return errors
 
-    def _validate_vat(self, invoice: ProcessedInvoice) -> List[ValidationError]:
-        """Validate VAT calculation"""
+    def _validate_seller(self, invoice: ProcessedInvoice) -> List[ValidationError]:
+        """Validate seller information"""
         errors = []
 
-        # Parse VAT rate
-        vat_rate_str = invoice.summary.vat_rate
-        try:
-            vat_rate = float(vat_rate_str.replace("%", "").strip())
-        except ValueError:
+        if not invoice.seller.company_name:
             errors.append(ValidationError(
-                field="summary.vat_rate",
-                message=f"Thuế suất không hợp lệ: {vat_rate_str}",
+                field="seller.company_name",
+                message="Tên công ty bán không được để trống",
+                severity="error"
+            ))
+
+        if not invoice.seller.tax_code:
+            errors.append(ValidationError(
+                field="seller.tax_code",
+                message="Mã số thuế bên bán không được để trống",
+                severity="error"
+            ))
+
+        return errors
+
+    def _validate_items(self, invoice: ProcessedInvoice) -> List[ValidationError]:
+        """Validate items list"""
+        errors = []
+
+        if not invoice.items or len(invoice.items) == 0:
+            errors.append(ValidationError(
+                field="items",
+                message="Hóa đơn phải có ít nhất một mặt hàng",
                 severity="error"
             ))
             return errors
 
-        # Validate VAT rate is in allowed list
-        if vat_rate not in config.VAT_RATES:
-            errors.append(ValidationError(
-                field="summary.vat_rate",
-                message=f"Thuế suất {vat_rate}% không phổ biến. "
-                        f"Các mức thông dụng: {config.VAT_RATES}",
-                severity="warning"
-            ))
+        # Check each item has required fields
+        for idx, item in enumerate(invoice.items):
+            if not item.description:
+                errors.append(ValidationError(
+                    field=f"items[{idx}].description",
+                    message=f"Dòng {idx + 1}: Tên hàng hóa không được để trống",
+                    severity="warning"
+                ))
 
-        # Calculate expected VAT
-        base_amount = invoice.summary.total_amount_before_vat
-        expected_vat = base_amount * vat_rate / 100
-        actual_vat = invoice.summary.vat_amount
-
-        # Allow for rounding (VAT can be rounded)
-        if not self._is_close(expected_vat, actual_vat, tolerance=10):
-            errors.append(ValidationError(
-                field="summary.vat_amount",
-                message=f"Tiền thuế VAT không đúng. "
-                        f"Cần: {expected_vat:,.0f}, Thực tế: {actual_vat:,.0f}",
-                severity="error",
-                expected_value=expected_vat,
-                actual_value=actual_vat
-            ))
-            logger.warning(
-                f"VAT mismatch: {base_amount} × {vat_rate}% = {expected_vat}, "
-                f"got {actual_vat}"
-            )
+            if item.quantity <= 0:
+                errors.append(ValidationError(
+                    field=f"items[{idx}].quantity",
+                    message=f"Dòng {idx + 1}: Số lượng phải lớn hơn 0",
+                    severity="warning"
+                ))
 
         return errors
 
-    def _validate_payment(self, invoice: ProcessedInvoice) -> List[ValidationError]:
-        """Validate: total_payment = total_before_vat + vat_amount"""
+    def _validate_summary(self, invoice: ProcessedInvoice) -> List[ValidationError]:
+        """Validate summary - check values exist, do NOT recalculate"""
         errors = []
 
-        expected_payment = (
-            invoice.summary.total_amount_before_vat +
-            invoice.summary.vat_amount
-        )
-        actual_payment = invoice.summary.total_payment
+        # Check total_amount_before_vat exists
+        if invoice.summary.total_amount_before_vat <= 0:
+            errors.append(ValidationError(
+                field="summary.total_amount_before_vat",
+                message="Tổng tiền hàng chưa được trích xuất",
+                severity="warning"
+            ))
 
-        if not self._is_close(expected_payment, actual_payment):
+        # Check total_payment exists
+        if invoice.summary.total_payment <= 0:
             errors.append(ValidationError(
                 field="summary.total_payment",
-                message=f"Tổng thanh toán không đúng. "
-                        f"Cần: {expected_payment:,.0f}, Thực tế: {actual_payment:,.0f}",
-                severity="error",
-                expected_value=expected_payment,
-                actual_value=actual_payment
+                message="Tổng tiền thanh toán chưa được trích xuất",
+                severity="warning"
             ))
-            logger.warning(
-                f"Total payment mismatch: "
-                f"{invoice.summary.total_amount_before_vat} + "
-                f"{invoice.summary.vat_amount} = {expected_payment}, "
-                f"got {actual_payment}"
-            )
+
+        # Check VAT rate format
+        vat_rate_str = invoice.summary.vat_rate
+        if not vat_rate_str or vat_rate_str == "":
+            errors.append(ValidationError(
+                field="summary.vat_rate",
+                message="Thuế suất chưa được trích xuất",
+                severity="warning"
+            ))
 
         return errors
 
