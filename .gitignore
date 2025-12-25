@@ -41,3 +41,5 @@ build/
 
 .angular/
 .claude/
+GEMINI.md
+EMPLOYEE_API_DOCS.md
