@@ -24,10 +24,15 @@ def create_firebase_products_bp(product_service, socketio) -> Blueprint:
         for item in result.get('updated_products', []):
             pid = item.get("Id")
             new_onhand = item.get("new_OnHand")
+            update_type = item.get("updateType", "OnHand")
             converted_onhand = to_number(new_onhand)
             if not pid or converted_onhand is None:
                 continue
-            updates_for_broadcast.append({"Id": str(pid), "OnHand": converted_onhand})
+            # ✅ Broadcast với đúng field: OnHand hoặc OnHandNV
+            if update_type == "OnHandNV":
+                updates_for_broadcast.append({"Id": str(pid), "OnHandNV": converted_onhand, "updateType": "OnHandNV"})
+            else:
+                updates_for_broadcast.append({"Id": str(pid), "OnHand": converted_onhand, "updateType": "OnHand"})
 
         if updates_for_broadcast:
             broadcast_products_onhand_updated(socketio, updates_for_broadcast)

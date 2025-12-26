@@ -12,8 +12,8 @@ class InvoiceProcessingConfig:
 
     # Gemini API
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-    GEMINI_FLASH_MODEL = os.getenv("GEMINI_FLASH_MODEL", "gemini-3-flash-preview")
-    GEMINI_PRO_MODEL = os.getenv("GEMINI_PRO_MODEL", "gemini-3-pro-preview")
+    GEMINI_FLASH_MODEL = os.getenv("GEMINI_FLASH_MODEL", "gemini-3-flash")
+    GEMINI_PRO_MODEL = os.getenv("GEMINI_PRO_MODEL", "gemini-3-flash")
 
     # OCR
     OCR_LANGUAGES = os.getenv("OCR_LANGUAGES", "vi,en").split(",")

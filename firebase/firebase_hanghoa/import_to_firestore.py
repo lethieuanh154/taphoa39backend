@@ -42,14 +42,29 @@ def update_products_from_banhang_app_to_firestore(update_payload):
             if not doc.exists:
                 return None
             product_doc = doc.to_dict() or {}
-            current_onhand = product_doc.get("OnHand", 0) or 0
+
+            # ✅ Xác định loại update: OnHand (KV) hoặc OnHandNV (NV)
+            update_type = item.get("updateType", "OnHand")
+            is_nv_update = update_type == "OnHandNV"
+
+            # Lấy giá trị current tương ứng
+            if is_nv_update:
+                current_value = product_doc.get("OnHandNV", 0) or 0
+            else:
+                current_value = product_doc.get("OnHand", 0) or 0
 
             # Determine explicit target if provided
-            target_onhand = None
-            for key in ("OnHand", "onHand", "onhand"):
-                if key in item:
-                    target_onhand = _parse_int(item.get(key))
-                    break
+            target_value = None
+            if is_nv_update:
+                for key in ("OnHandNV", "onHandNV", "onhandnv"):
+                    if key in item:
+                        target_value = _parse_int(item.get(key))
+                        break
+            else:
+                for key in ("OnHand", "onHand", "onhand"):
+                    if key in item:
+                        target_value = _parse_int(item.get(key))
+                        break
 
             minus_value = _parse_int(item.get("minus", 0)) or 0
 
@@ -61,27 +76,37 @@ def update_products_from_banhang_app_to_firestore(update_payload):
                     return {
                         "Id": str(item.get("productId") or item.get("Id") or item.get("id")),
                         "skipped": True,
+                        "updateType": update_type,
                     }
 
-            if target_onhand is None:
-                # Compute target using current_onhand inside transaction for atomicity
-                target_onhand = int(current_onhand) - int(minus_value)
+            if target_value is None:
+                # Compute target using current value inside transaction for atomicity
+                target_value = int(current_value) - int(minus_value)
 
-            # Update product OnHand
-            transaction.update(doc_ref, {"OnHand": target_onhand})
+            # ✅ Update product OnHand hoặc OnHandNV tùy theo loại
+            if is_nv_update:
+                transaction.update(doc_ref, {"OnHandNV": target_value})
+            else:
+                transaction.update(doc_ref, {"OnHand": target_value})
 
             # Create processed marker if available — use transaction.set
             if proc_ref is not None:
                 try:
-                    transaction.set(proc_ref, {"applied": True, "productId": str(item.get("productId") or item.get("Id") or item.get("id")), "minus": minus_value})
+                    transaction.set(proc_ref, {
+                        "applied": True,
+                        "productId": str(item.get("productId") or item.get("Id") or item.get("id")),
+                        "minus": minus_value,
+                        "updateType": update_type
+                    })
                 except Exception:
                     # best-effort: ignore set errors inside transaction wrapper
                     pass
 
             return {
                 "Id": str(item.get("productId") or item.get("Id") or item.get("id")),
-                "old_OnHand": current_onhand,
-                "new_OnHand": target_onhand,
+                "old_OnHand": current_value,
+                "new_OnHand": target_value,
+                "updateType": update_type,
             }
 
         for item in update_payload:

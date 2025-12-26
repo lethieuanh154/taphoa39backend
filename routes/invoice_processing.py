@@ -1,6 +1,7 @@
 """
 Flask Blueprint for Invoice Processing API
-Hybrid AI Flow: EasyOCR -> Gemini Flash -> Validate -> Gemini Pro (if needed)
+Direct PDF reading with Gemini Flash/Pro (OCR disabled)
+Flow: Gemini Flash -> Validate -> Gemini Pro (if needed)
 """
 import time
 import logging
@@ -13,7 +14,6 @@ from models.invoice import (
     ProcessingLogEntry,
     ValidationError
 )
-from services.ocr_engine import ocr_engine
 from services.ai_extractor import ai_extractor
 from services.invoice_validator import invoice_validator
 from services.config import config
@@ -37,8 +37,9 @@ def create_invoice_processing_bp() -> Blueprint:
         """Health check endpoint"""
         return jsonify({
             "status": "healthy",
-            "ocr_available": ocr_engine.is_available,
-            "version": "1.0.0"
+            "ocr_available": False,  # OCR disabled, using Gemini Vision
+            "gemini_direct": True,
+            "version": "2.0.0"
         })
 
     @bp.route("/process-invoice", methods=["POST"])
@@ -46,11 +47,10 @@ def create_invoice_processing_bp() -> Blueprint:
         """
         Process invoice PDF and extract structured data
 
-        Hybrid Flow:
-        1. OCR: Extract text from PDF using EasyOCR
-        2. Flash: Extract structured data using Gemini Flash
-        3. Validate: Check mathematical correctness
-        4. Pro (if needed): Use Gemini Pro to correct errors
+        Direct Gemini Flow (no OCR):
+        1. Flash: Read PDF directly with Gemini Flash Vision
+        2. Validate: Check for missing/invalid fields
+        3. Pro (if needed): Use Gemini Pro Vision for better accuracy
 
         Returns:
             ProcessingResult as JSON
@@ -59,7 +59,7 @@ def create_invoice_processing_bp() -> Blueprint:
         processing_log: List[ProcessingLogEntry] = []
 
         logger.info("=" * 60)
-        logger.info("Starting invoice processing request")
+        logger.info("Starting invoice processing request (Direct Gemini)")
 
         # ============================================================
         # STEP 0: Validate request
@@ -105,75 +105,43 @@ def create_invoice_processing_bp() -> Blueprint:
         logger.info(f"Processing file: {file.filename} ({file_size / 1024:.1f}KB)")
 
         # ============================================================
-        # STEP 1: OCR - Extract text from PDF
+        # STEP 1: Gemini Flash - Read PDF directly
         # ============================================================
-        ocr_log = ProcessingLogEntry(
-            step="ocr",
-            status="processing",
-            message="Đang trích xuất text từ PDF..."
-        )
-        processing_log.append(ocr_log)
-
-        ocr_start = time.time()
-
-        if not ocr_engine.is_available:
-            ocr_log.status = "error"
-            ocr_log.message = "OCR Engine không khả dụng"
-            logger.error("OCR Engine not available")
-            return jsonify(ProcessingResult(
-                success=False,
-                error="OCR Engine không khả dụng. Vui lòng kiểm tra cài đặt.",
-                processing_log=processing_log
-            ).model_dump()), 500
-
-        ocr_result = ocr_engine.extract_text_from_pdf(file_bytes)
-        ocr_duration = int((time.time() - ocr_start) * 1000)
-
-        ocr_log.duration_ms = ocr_duration
-
-        if not ocr_result.text:
-            ocr_log.status = "error"
-            ocr_log.message = "Không trích xuất được text từ PDF"
-            logger.error("OCR extraction returned empty text")
-            return jsonify(ProcessingResult(
-                success=False,
-                error="Không thể đọc được nội dung PDF. Vui lòng kiểm tra file.",
-                processing_log=processing_log
-            ).model_dump()), 400
-
-        ocr_log.status = "completed"
-        ocr_log.message = f"Đã trích xuất {len(ocr_result.text)} ký tự từ {ocr_result.page_count} trang"
-        ocr_log.details = f"Confidence: {ocr_result.confidence:.1%}"
-
-        logger.info(
-            f"OCR completed in {ocr_duration}ms: "
-            f"{len(ocr_result.text)} chars, {ocr_result.page_count} pages"
-        )
-
-        # ============================================================
-        # STEP 2: AI Flash - Extract structured data
-        # ============================================================
-        flash_invoice, flash_duration = ai_extractor.extract_with_flash(
-            ocr_result.text,
+        flash_invoice, flash_duration = ai_extractor.extract_from_pdf_with_flash(
+            file_bytes,
             processing_log
         )
 
         if flash_invoice is None:
-            logger.error("Flash extraction failed")
-            return jsonify(ProcessingResult(
-                success=False,
-                error="Không thể trích xuất thông tin từ hóa đơn",
-                processing_time_ms=int((time.time() - total_start_time) * 1000),
-                processing_log=processing_log
-            ).model_dump()), 500
+            logger.warning("Flash extraction failed, trying Pro...")
+
+            # Try with Pro if Flash fails
+            pro_invoice, pro_duration = ai_extractor.extract_from_pdf_with_pro(
+                file_bytes,
+                None,
+                [],
+                processing_log
+            )
+
+            if pro_invoice is None:
+                logger.error("Both Flash and Pro extraction failed")
+                return jsonify(ProcessingResult(
+                    success=False,
+                    error="Không thể trích xuất thông tin từ hóa đơn",
+                    processing_time_ms=int((time.time() - total_start_time) * 1000),
+                    processing_log=processing_log
+                ).model_dump()), 500
+
+            # Use Pro result
+            flash_invoice = pro_invoice
 
         # ============================================================
-        # STEP 3: Validate - Check mathematical correctness
+        # STEP 2: Validate - Check for missing/invalid fields
         # ============================================================
         validate_log = ProcessingLogEntry(
             step="validate",
             status="processing",
-            message="Đang kiểm tra tính toán..."
+            message="Đang kiểm tra dữ liệu..."
         )
         processing_log.append(validate_log)
 
@@ -184,27 +152,27 @@ def create_invoice_processing_bp() -> Blueprint:
         validate_log.duration_ms = validate_duration
         validate_log.status = "completed"
         validate_log.message = (
-            "Kiểm tra hoàn tất - Không có lỗi" if is_valid
+            "Kiểm tra hoàn tất - Dữ liệu hợp lệ" if is_valid
             else f"Phát hiện {len(validation_errors)} vấn đề"
         )
 
         logger.info(f"Validation completed in {validate_duration}ms: {'PASS' if is_valid else 'FAIL'}")
 
         # ============================================================
-        # STEP 4: AI Pro (if needed) - Correct errors
+        # STEP 3: Gemini Pro (if needed) - Re-read for better accuracy
         # ============================================================
         final_invoice = flash_invoice
         processing_method = "flash"
 
         if not is_valid:
-            # Get error messages for Pro correction
+            # Get error messages for Pro
             error_messages = invoice_validator.get_error_messages(validation_errors)
 
             if error_messages:
-                logger.info(f"Validation errors found, invoking Gemini Pro for correction")
+                logger.info(f"Validation errors found, invoking Gemini Pro")
 
-                pro_invoice, pro_duration = ai_extractor.correct_with_pro(
-                    ocr_result.text,
+                pro_invoice, pro_duration = ai_extractor.extract_from_pdf_with_pro(
+                    file_bytes,
                     flash_invoice,
                     error_messages,
                     processing_log
@@ -222,10 +190,10 @@ def create_invoice_processing_bp() -> Blueprint:
                     else:
                         logger.info("Pro result not better, keeping Flash result")
                 else:
-                    logger.warning("Pro correction failed, keeping Flash result")
+                    logger.warning("Pro extraction failed, keeping Flash result")
 
         # ============================================================
-        # STEP 5: Return result
+        # STEP 4: Return result
         # ============================================================
         total_duration = int((time.time() - total_start_time) * 1000)
 

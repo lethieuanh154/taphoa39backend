@@ -1,13 +1,14 @@
 """
 AI Extractor Module
 Handles invoice data extraction using Gemini Flash and Pro models
-Implements Hybrid Flow: Flash -> Validate -> Pro (if needed)
+Direct PDF reading with Gemini Vision (no OCR needed)
 Supports Gemini 3 Preview models
 """
 import json
 import re
 import time
 import logging
+import base64
 from typing import Optional, Tuple, List
 
 import google.generativeai as genai
@@ -27,7 +28,58 @@ def normalize_model_name(model_name: str) -> str:
         return model_name[7:]  # Remove 'models/' prefix
     return model_name
 
-# Prompt template for invoice extraction
+# Prompt template for direct PDF extraction (no OCR)
+INVOICE_PDF_EXTRACTION_PROMPT = """Bạn là một AI chuyên trích xuất thông tin từ hóa đơn VAT Việt Nam.
+
+Hãy đọc file PDF hóa đơn đính kèm và trích xuất thông tin, trả về JSON với cấu trúc sau (chỉ trả về JSON, không có text khác):
+
+{
+  "invoice_metadata": {
+    "invoice_date": "dd/mm/yyyy",
+    "invoice_no": "số hóa đơn",
+    "invoice_serial": "ký hiệu hóa đơn",
+    "tax_authority_code": "mã cơ quan thuế"
+  },
+  "seller": {
+    "company_name": "tên công ty bán hàng",
+    "tax_code": "mã số thuế người bán",
+    "address": "địa chỉ người bán"
+  },
+  "buyer": {
+    "company_name": "tên công ty mua hàng",
+    "tax_code": "mã số thuế người mua",
+    "address": "địa chỉ người mua"
+  },
+  "items": [
+    {
+      "stt": 1,
+      "description": "tên hàng hóa/dịch vụ",
+      "unit": "đơn vị tính",
+      "quantity": 0,
+      "unit_price": 0,
+      "amount": 0
+    }
+  ],
+  "summary": {
+    "total_amount_before_vat": 0,
+    "vat_rate": "10%",
+    "vat_amount": 0,
+    "total_payment": 0,
+    "total_payment_in_words": "bằng chữ"
+  }
+}
+
+LƯU Ý QUAN TRỌNG:
+1. ĐỌC CHÍNH XÁC các giá trị từ hóa đơn, KHÔNG tính toán lại
+2. Tất cả giá trị số tiền phải là số nguyên (không có dấu phẩy, dấu chấm)
+3. quantity có thể là số thập phân
+4. unit_price và amount phải là số nguyên
+5. Đọc đúng các giá trị: total_amount_before_vat, vat_amount, total_payment từ hóa đơn
+6. Nếu không tìm thấy thông tin, để trống hoặc 0
+7. vat_rate phải có dạng "X%" (ví dụ: "10%", "8%", "5%", "0%")
+"""
+
+# Prompt template for OCR text extraction (legacy, kept for fallback)
 INVOICE_EXTRACTION_PROMPT = """Bạn là một AI chuyên trích xuất thông tin từ hóa đơn VAT Việt Nam.
 
 Dữ liệu OCR từ hóa đơn:
@@ -168,6 +220,166 @@ class AIExtractor:
         except Exception as e:
             logger.error(f"Failed to list models: {e}")
             return []
+
+    def extract_from_pdf_with_flash(
+        self,
+        pdf_bytes: bytes,
+        processing_log: List[ProcessingLogEntry]
+    ) -> Tuple[Optional[ProcessedInvoice], int]:
+        """
+        Extract invoice data directly from PDF using Gemini Flash Vision
+
+        Args:
+            pdf_bytes: PDF file content as bytes
+            processing_log: List to append log entries
+
+        Returns:
+            Tuple of (ProcessedInvoice or None, duration_ms)
+        """
+        self._ensure_initialized()
+
+        log_entry = ProcessingLogEntry(
+            step="flash",
+            status="processing",
+            message="Đang đọc PDF với Gemini Flash..."
+        )
+        processing_log.append(log_entry)
+
+        start_time = time.time()
+
+        try:
+            # Upload PDF to Gemini
+            logger.debug(f"Uploading PDF to Gemini, size: {len(pdf_bytes)} bytes")
+
+            # Create file part for multimodal input
+            pdf_part = {
+                "mime_type": "application/pdf",
+                "data": base64.b64encode(pdf_bytes).decode('utf-8')
+            }
+
+            # Send to Gemini Flash with PDF
+            response = self._flash_model.generate_content([
+                INVOICE_PDF_EXTRACTION_PROMPT,
+                pdf_part
+            ])
+            response_text = response.text.strip()
+
+            # Parse JSON response
+            invoice = self._parse_response(response_text)
+
+            elapsed = int((time.time() - start_time) * 1000)
+
+            if invoice is None:
+                log_entry.status = "error"
+                log_entry.message = "Không thể parse JSON từ response"
+                log_entry.duration_ms = elapsed
+                log_entry.details = f"Response: {response_text[:200]}..."
+                logger.error(f"Flash PDF parse failed, response: {response_text[:500]}")
+                return None, elapsed
+
+            log_entry.status = "completed"
+            log_entry.message = "Đọc PDF Flash hoàn tất"
+            log_entry.duration_ms = elapsed
+            log_entry.details = f"Extracted {len(invoice.items)} items"
+
+            logger.info(f"Flash PDF extraction completed in {elapsed}ms")
+            return invoice, elapsed
+
+        except Exception as e:
+            elapsed = int((time.time() - start_time) * 1000)
+            log_entry.status = "error"
+            log_entry.message = f"Lỗi Flash: {str(e)}"
+            log_entry.duration_ms = elapsed
+
+            logger.exception(f"Flash PDF extraction failed: {e}")
+            return None, elapsed
+
+    def extract_from_pdf_with_pro(
+        self,
+        pdf_bytes: bytes,
+        previous_result: Optional[ProcessedInvoice],
+        validation_errors: List[str],
+        processing_log: List[ProcessingLogEntry]
+    ) -> Tuple[Optional[ProcessedInvoice], int]:
+        """
+        Extract/correct invoice data from PDF using Gemini Pro Vision
+
+        Args:
+            pdf_bytes: PDF file content as bytes
+            previous_result: Previous extraction result (if any)
+            validation_errors: List of validation error messages
+            processing_log: List to append log entries
+
+        Returns:
+            Tuple of (ProcessedInvoice or None, duration_ms)
+        """
+        self._ensure_initialized()
+
+        log_entry = ProcessingLogEntry(
+            step="pro",
+            status="processing",
+            message="Đang đọc PDF với Gemini Pro..."
+        )
+        processing_log.append(log_entry)
+
+        start_time = time.time()
+
+        try:
+            # Create file part for multimodal input
+            pdf_part = {
+                "mime_type": "application/pdf",
+                "data": base64.b64encode(pdf_bytes).decode('utf-8')
+            }
+
+            # Build prompt with error context if available
+            if previous_result and validation_errors:
+                previous_json = previous_result.model_dump_json(indent=2)
+                errors_text = "\n".join(f"- {e}" for e in validation_errors)
+                prompt = f"""{INVOICE_PDF_EXTRACTION_PROMPT}
+
+Kết quả trước đó có vấn đề:
+{errors_text}
+
+Hãy đọc lại PDF và trích xuất chính xác."""
+            else:
+                prompt = INVOICE_PDF_EXTRACTION_PROMPT
+
+            # Send to Gemini Pro with PDF
+            response = self._pro_model.generate_content([
+                prompt,
+                pdf_part
+            ])
+            response_text = response.text.strip()
+
+            # Parse JSON response
+            invoice = self._parse_response(response_text)
+
+            elapsed = int((time.time() - start_time) * 1000)
+
+            if invoice is None:
+                log_entry.status = "error"
+                log_entry.message = "Không thể parse JSON từ response"
+                log_entry.duration_ms = elapsed
+                log_entry.details = f"Response: {response_text[:200]}..."
+                logger.error(f"Pro PDF parse failed, response: {response_text[:500]}")
+                return None, elapsed
+
+            log_entry.status = "completed"
+            log_entry.message = "Đọc PDF Pro hoàn tất"
+            log_entry.duration_ms = elapsed
+            log_entry.details = f"Extracted {len(invoice.items)} items"
+
+            logger.info(f"Pro PDF extraction completed in {elapsed}ms")
+            return invoice, elapsed
+
+        except Exception as e:
+            elapsed = int((time.time() - start_time) * 1000)
+            log_entry.status = "error"
+            log_entry.message = f"Lỗi Pro: {str(e)}"
+            log_entry.duration_ms = elapsed
+
+            logger.exception(f"Pro PDF extraction failed: {e}")
+            return None, elapsed
 
     def extract_with_flash(
         self,
