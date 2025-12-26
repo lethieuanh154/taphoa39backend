@@ -4,6 +4,7 @@ __pycache__
 *.pyo
 banhang-service-account.json
 hoadon-service-account.json
+/scripts
 # Ignore environment files
 .env
 /*.sh
