@@ -312,12 +312,17 @@ class FirestoreCustomerService:
         total_invoiced = len(invoices)
         total_revenue = 0.0
         total_debt = 0.0
+        total_profit = 0.0
 
         for invoice in invoices:
-            total_revenue += self._to_float(invoice.get("totalPrice"))
+            invoice_price = self._to_float(invoice.get("totalPrice"))
+            invoice_cost = self._to_float(invoice.get("totalCost"))
+            total_revenue += invoice_price
             total_debt += self._resolve_invoice_debt(invoice)
+            total_profit += (invoice_price - invoice_cost)
 
-        total_point = total_revenue / total_invoiced if total_invoiced else 0.0
+        # TotalPoint = tổng lợi nhuận (profit) từ tất cả invoices
+        total_point = total_profit
 
         updates = {
             "Debt": round(total_debt, 2),
@@ -397,12 +402,17 @@ class FirestoreCustomerService:
             total_invoiced = len(invoices)
             total_revenue = 0.0
             total_debt = 0.0
+            total_profit = 0.0
 
             for invoice in invoices:
-                total_revenue += _to_number(invoice.get("totalPrice"))
+                invoice_price = _to_number(invoice.get("totalPrice"))
+                invoice_cost = _to_number(invoice.get("totalCost"))
+                total_revenue += invoice_price
                 total_debt += self._resolve_invoice_debt(invoice)
+                total_profit += (invoice_price - invoice_cost)
 
-            total_point = total_revenue / total_invoiced if total_invoiced else 0.0
+            # TotalPoint = tổng lợi nhuận (profit) từ tất cả invoices
+            total_point = total_profit
 
             updates = {
                 "Debt": round(total_debt, 2),
