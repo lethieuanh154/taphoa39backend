@@ -70,19 +70,59 @@ class TaxInvoiceXMLParser:
             logger.info(f"XML root tag: {root_tag}")
 
             # Try multiple possible structures
-            # Structure 1: Single invoice - HoaDonDienTu as root (common format)
-            if root_tag in ('HoaDonDienTu', 'HDon', 'Invoice'):
+            # Structure 1: HDon với DLHDon bên trong (format mới từ GDT)
+            # <HDon><DLHDon><TTChung>...</TTChung><NDHDon>...</NDHDon></DLHDon></HDon>
+            if root_tag == 'HDon':
+                # Tìm DLHDon hoặc parse trực tiếp
+                dlhdon = None
+                for elem in root:
+                    tag = elem.tag.split('}')[-1] if '}' in elem.tag else elem.tag
+                    if tag == 'DLHDon':
+                        dlhdon = elem
+                        break
+
+                if dlhdon is not None:
+                    # Parse từ DLHDon (chứa TTChung và NDHDon)
+                    invoice = TaxInvoiceXMLParser._parse_single_invoice(dlhdon)
+                    if invoice:
+                        invoices.append(invoice)
+                else:
+                    # Không có DLHDon, parse trực tiếp từ HDon
+                    invoice = TaxInvoiceXMLParser._parse_single_invoice(root)
+                    if invoice:
+                        invoices.append(invoice)
+
+            # Structure 2: HoaDonDienTu hoặc Invoice as root
+            elif root_tag in ('HoaDonDienTu', 'Invoice'):
                 invoice = TaxInvoiceXMLParser._parse_single_invoice(root)
                 if invoice:
                     invoices.append(invoice)
 
-            # Structure 2: Multiple invoices (DLHDon or similar container)
+            # Structure 3: Container with multiple invoices (DLHDon as root, or list)
             else:
                 # Find all invoice elements
                 found_any = False
+
+                # Tìm các HDon hoặc DLHDon elements
                 for elem in root.iter():
                     tag = elem.tag.split('}')[-1] if '}' in elem.tag else elem.tag
-                    if tag in ('HoaDonDienTu', 'HDon', 'Invoice'):
+
+                    # Nếu tìm thấy HDon, check xem có DLHDon bên trong không
+                    if tag == 'HDon':
+                        found_any = True
+                        dlhdon = None
+                        for child in elem:
+                            child_tag = child.tag.split('}')[-1] if '}' in child.tag else child.tag
+                            if child_tag == 'DLHDon':
+                                dlhdon = child
+                                break
+
+                        target = dlhdon if dlhdon is not None else elem
+                        invoice = TaxInvoiceXMLParser._parse_single_invoice(target)
+                        if invoice:
+                            invoices.append(invoice)
+
+                    elif tag in ('HoaDonDienTu', 'Invoice', 'DLHDon'):
                         found_any = True
                         invoice = TaxInvoiceXMLParser._parse_single_invoice(elem)
                         if invoice:
@@ -110,7 +150,14 @@ class TaxInvoiceXMLParser:
 
     @staticmethod
     def _parse_single_invoice(hdon_element) -> Optional[Dict]:
-        """Parse một hóa đơn từ element HDon hoặc HoaDonDienTu"""
+        """
+        Parse một hóa đơn từ element HDon hoặc HoaDonDienTu
+
+        Cấu trúc XML phổ biến:
+        1. <HDon> với các section: TTChung, NBan, NMua, TToan
+        2. <HoaDonDienTu> với các section tương tự
+        3. Flat structure với tất cả fields ở root level
+        """
         try:
             invoice = {}
 
@@ -125,59 +172,183 @@ class TaxInvoiceXMLParser:
                                 return elem.text.strip()
                 return ''
 
-            # Helper để tìm trong BenBan (seller) section
-            def find_in_seller(parent, *paths):
-                # First try to find BenBan element
+            # Helper để tìm trong section cụ thể (TTChung, NBan, TToan, etc.)
+            def find_in_section(parent, section_names, *paths):
+                """
+                Tìm trong section cụ thể trước, sau đó fallback to toàn bộ document
+
+                Xử lý cấu trúc lồng nhau như:
+                <DLHDon>
+                    <TTChung>...</TTChung>
+                    <NDHDon>
+                        <NBan>...</NBan>
+                        <NMua>...</NMua>
+                        <TToan>...</TToan>
+                    </NDHDon>
+                </DLHDon>
+                """
+                # Tìm section trực tiếp hoặc trong NDHDon
                 for elem in parent.iter():
                     tag = elem.tag.split('}')[-1] if '}' in elem.tag else elem.tag
-                    if tag in ('BenBan', 'NBan', 'NguoiBan'):
-                        return find_text(elem, *paths)
-                # Fallback to searching whole document
+                    if tag in section_names:
+                        result = find_text(elem, *paths)
+                        if result:
+                            return result
+                    # Nếu là NDHDon, tìm section bên trong
+                    elif tag == 'NDHDon':
+                        for child in elem.iter():
+                            child_tag = child.tag.split('}')[-1] if '}' in child.tag else child.tag
+                            if child_tag in section_names:
+                                result = find_text(child, *paths)
+                                if result:
+                                    return result
+                # Fallback: tìm trong toàn bộ document
                 return find_text(parent, *paths)
 
-            # Số hóa đơn - thử nhiều tag names
-            invoice['invoiceNo'] = find_text(
+            # Helper để tìm trong NBan/BenBan (người bán/seller section)
+            def find_in_seller(parent, *paths):
+                return find_in_section(
+                    parent,
+                    ('NBan', 'BenBan', 'NguoiBan', 'Seller', 'NCC'),
+                    *paths
+                )
+
+            # Helper để tìm trong TTChung (thông tin chung)
+            def find_in_ttchung(parent, *paths):
+                return find_in_section(
+                    parent,
+                    ('TTChung', 'ThongTinChung', 'GeneralInfo', 'Header'),
+                    *paths
+                )
+
+            # Helper để tìm trong TToan (thanh toán)
+            def find_in_ttoan(parent, *paths):
+                return find_in_section(
+                    parent,
+                    ('TToan', 'ThanhToan', 'TongHop', 'Summary', 'Payment'),
+                    *paths
+                )
+
+            # ================================================================
+            # 1. SỐ HÓA ĐƠN - tìm trong TTChung trước
+            # ================================================================
+            invoice['invoiceNo'] = find_in_ttchung(
                 hdon_element,
-                'SoHoaDon', 'SHDon', 'So', 'InvoiceNo', 'InvoiceNumber'
+                'SHDon', 'SoHoaDon', 'So', 'InvoiceNo', 'InvoiceNumber', 'KHMSHDon'
             )
 
-            # Ngày lập
-            date_str = find_text(
+            # Nếu không tìm thấy, thử tìm ở root
+            if not invoice['invoiceNo']:
+                invoice['invoiceNo'] = find_text(
+                    hdon_element,
+                    'SHDon', 'SoHoaDon', 'So', 'InvoiceNo', 'InvoiceNumber'
+                )
+
+            # ================================================================
+            # 2. KÝ HIỆU HÓA ĐƠN (invoice symbol/serial)
+            # ================================================================
+            invoice['invoiceSymbol'] = find_in_ttchung(
                 hdon_element,
-                'NgayLap', 'NLap', 'Ngay', 'InvoiceDate', 'Date'
+                'KHHDon', 'KyHieu', 'KyHieuHoaDon', 'SerialNo', 'Symbol', 'MauSo'
             )
+
+            # ================================================================
+            # 3. NGÀY LẬP - tìm trong TTChung trước
+            # ================================================================
+            date_str = find_in_ttchung(
+                hdon_element,
+                'NLap', 'NgayLap', 'Ngay', 'InvoiceDate', 'Date', 'TDLap'
+            )
+            if not date_str:
+                date_str = find_text(
+                    hdon_element,
+                    'NLap', 'NgayLap', 'Ngay', 'InvoiceDate', 'Date'
+                )
             invoice['invoiceDate'] = TaxInvoiceXMLParser._normalize_date(date_str)
 
-            # Thông tin người bán - tìm trong BenBan section trước
+            # ================================================================
+            # 4. THÔNG TIN NGƯỜI BÁN - tìm trong NBan section
+            # ================================================================
             invoice['sellerTaxCode'] = find_in_seller(
                 hdon_element,
-                'MaSoThue', 'MST', 'TaxCode', 'SellerTaxCode'
+                'MST', 'MaSoThue', 'TaxCode', 'SellerTaxCode', 'MSTNBan'
             )
             invoice['sellerName'] = find_in_seller(
                 hdon_element,
-                'TenDonVi', 'Ten', 'TenNguoiBan', 'TenCty', 'CompanyName', 'SellerName'
+                'Ten', 'TenDonVi', 'TenNguoiBan', 'TenCty', 'CompanyName',
+                'SellerName', 'TenNBan', 'TenNCC'
+            )
+            invoice['sellerAddress'] = find_in_seller(
+                hdon_element,
+                'DChi', 'DiaChi', 'Address', 'DChiNBan'
             )
 
-            # Tổng tiền - thử TongTienThanhToan trước (tổng sau thuế)
-            total_str = find_text(
+            # ================================================================
+            # 5. THÔNG TIN NGƯỜI MUA (optional)
+            # ================================================================
+            invoice['buyerTaxCode'] = find_in_section(
                 hdon_element,
-                'TongTienThanhToan', 'TgTTTBSo', 'TongTien', 'TgTCThue',
-                'TgTTTBQT', 'TTCKTMai', 'TotalAmount', 'GrandTotal'
+                ('NMua', 'BenMua', 'NguoiMua', 'Buyer'),
+                'MST', 'MaSoThue', 'TaxCode', 'MSTNMua'
             )
-            invoice['totalAmount'] = TaxInvoiceXMLParser._parse_amount(total_str)
+            invoice['buyerName'] = find_in_section(
+                hdon_element,
+                ('NMua', 'BenMua', 'NguoiMua', 'Buyer'),
+                'Ten', 'TenDonVi', 'TenNguoiMua', 'TenNMua', 'BuyerName'
+            )
 
-            # Thuế GTGT
-            vat_str = find_text(
+            # ================================================================
+            # 6. TIỀN HÀNG TRƯỚC THUẾ - TgTCThue
+            # ================================================================
+            before_vat_str = find_in_ttoan(
                 hdon_element,
-                'TienThueGTGT', 'TgThue', 'TienThue', 'TThue',
-                'TgTThue', 'VatAmount', 'TaxAmount'
+                'TgTCThue', 'TgTHang', 'TienHang', 'TotalBeforeVat',
+                'SubTotal', 'THTTLTSuat'
             )
+            if not before_vat_str:
+                before_vat_str = find_text(
+                    hdon_element,
+                    'TgTCThue', 'TgTHang', 'TienHang', 'TotalBeforeVat'
+                )
+            invoice['totalBeforeVat'] = TaxInvoiceXMLParser._parse_amount(before_vat_str)
+
+            # ================================================================
+            # 7. THUẾ GTGT - TgTThue (không phải TgThue)
+            # ================================================================
+            vat_str = find_in_ttoan(
+                hdon_element,
+                'TgTThue', 'TgThue', 'TienThueGTGT', 'TienThue', 'TThue',
+                'VatAmount', 'TaxAmount'
+            )
+            if not vat_str:
+                vat_str = find_text(
+                    hdon_element,
+                    'TgTThue', 'TgThue', 'TienThueGTGT', 'TienThue', 'VatAmount'
+                )
             invoice['vatAmount'] = TaxInvoiceXMLParser._parse_amount(vat_str)
 
+            # ================================================================
+            # 8. TỔNG TIỀN THANH TOÁN - TgTTTBSo
+            # ================================================================
+            total_str = find_in_ttoan(
+                hdon_element,
+                'TgTTTBSo', 'TongTienThanhToan', 'TongTien',
+                'TgTTTBQT', 'TTCKTMai', 'TotalAmount', 'GrandTotal'
+            )
+            if not total_str:
+                total_str = find_text(
+                    hdon_element,
+                    'TgTTTBSo', 'TongTienThanhToan', 'TongTien', 'TotalAmount'
+                )
+            invoice['totalAmount'] = TaxInvoiceXMLParser._parse_amount(total_str)
+
             # Log để debug
-            logger.info(f"Parsed invoice: no={invoice['invoiceNo']}, date={invoice['invoiceDate']}, "
-                       f"seller={invoice['sellerName']}, tax={invoice['sellerTaxCode']}, "
-                       f"total={invoice['totalAmount']}, vat={invoice['vatAmount']}")
+            logger.info(
+                f"Parsed invoice: no={invoice['invoiceNo']}, symbol={invoice.get('invoiceSymbol', '')}, "
+                f"date={invoice['invoiceDate']}, seller={invoice['sellerName']}, "
+                f"tax={invoice['sellerTaxCode']}, beforeVat={invoice.get('totalBeforeVat', 0)}, "
+                f"vat={invoice['vatAmount']}, total={invoice['totalAmount']}"
+            )
 
             # Validate required fields
             if not invoice['invoiceNo']:
