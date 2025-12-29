@@ -2,7 +2,7 @@
 AI Extractor Module
 Handles invoice data extraction using Gemini Flash and Pro models
 Direct PDF reading with Gemini Vision (no OCR needed)
-Supports Gemini 3 Preview models
+Updated to use new google.genai SDK (replacing deprecated google.generativeai)
 """
 import json
 import re
@@ -11,7 +11,8 @@ import logging
 import base64
 from typing import Optional, Tuple, List
 
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 
 from .config import config
 from models.invoice import ProcessedInvoice, ProcessingLogEntry
@@ -27,6 +28,7 @@ def normalize_model_name(model_name: str) -> str:
     if model_name.startswith("models/"):
         return model_name[7:]  # Remove 'models/' prefix
     return model_name
+
 
 # Prompt template for direct PDF extraction (no OCR)
 INVOICE_PDF_EXTRACTION_PROMPT = """Bạn là một AI chuyên trích xuất thông tin từ hóa đơn VAT Việt Nam.
@@ -164,15 +166,18 @@ class AIExtractor:
     """
     AI-powered invoice data extractor
     Uses Gemini Flash for speed, Pro for accuracy when needed
+    Updated to use new google.genai SDK
     """
 
     def __init__(self):
-        self._flash_model = None
-        self._pro_model = None
+        self._client = None
+        self._flash_model_name = None
+        self._pro_model_name = None
+        self._generation_config = None
         self._initialized = False
 
     def _ensure_initialized(self):
-        """Lazy initialization of Gemini models"""
+        """Lazy initialization of Gemini client"""
         if self._initialized:
             return
 
@@ -180,41 +185,33 @@ class AIExtractor:
             logger.error("GEMINI_API_KEY not configured")
             raise ValueError("GEMINI_API_KEY is required")
 
-        logger.info("Initializing Gemini AI models...")
-        genai.configure(api_key=config.GEMINI_API_KEY)
+        logger.info("Initializing Gemini AI client (new SDK)...")
+
+        # Initialize client with API key
+        self._client = genai.Client(api_key=config.GEMINI_API_KEY)
 
         # Normalize model names (remove 'models/' prefix if present)
-        flash_model_name = normalize_model_name(config.GEMINI_FLASH_MODEL)
-        pro_model_name = normalize_model_name(config.GEMINI_PRO_MODEL)
+        self._flash_model_name = normalize_model_name(config.GEMINI_FLASH_MODEL)
+        self._pro_model_name = normalize_model_name(config.GEMINI_PRO_MODEL)
 
-        # Generation config optimized for Gemini 3
-        generation_config = {
-            "temperature": 0.1,
-            "top_p": 0.95,
-            "max_output_tokens": 8192,
-        }
-
-        # Initialize Flash model (fast, for first pass)
-        self._flash_model = genai.GenerativeModel(
-            model_name=flash_model_name,
-            generation_config=generation_config
+        # Generation config optimized for Gemini
+        self._generation_config = types.GenerateContentConfig(
+            temperature=0.1,
+            top_p=0.95,
+            max_output_tokens=8192,
         )
-        logger.info(f"Flash model initialized: {flash_model_name}")
 
-        # Initialize Pro model (accurate, for corrections)
-        self._pro_model = genai.GenerativeModel(
-            model_name=pro_model_name,
-            generation_config=generation_config
-        )
-        logger.info(f"Pro model initialized: {pro_model_name}")
+        logger.info(f"Flash model: {self._flash_model_name}")
+        logger.info(f"Pro model: {self._pro_model_name}")
 
         self._initialized = True
 
     def _list_available_models(self) -> List[str]:
         """List available Gemini models for debugging"""
         try:
-            models = genai.list_models()
-            available = [m.name for m in models if 'generateContent' in m.supported_generation_methods]
+            self._ensure_initialized()
+            models = self._client.models.list()
+            available = [m.name for m in models]
             logger.info(f"Available models: {available}")
             return available
         except Exception as e:
@@ -248,20 +245,20 @@ class AIExtractor:
         start_time = time.time()
 
         try:
-            # Upload PDF to Gemini
-            logger.debug(f"Uploading PDF to Gemini, size: {len(pdf_bytes)} bytes")
+            logger.debug(f"Processing PDF with Gemini Flash, size: {len(pdf_bytes)} bytes")
 
-            # Create file part for multimodal input
-            pdf_part = {
-                "mime_type": "application/pdf",
-                "data": base64.b64encode(pdf_bytes).decode('utf-8')
-            }
+            # Create PDF part for multimodal input
+            pdf_part = types.Part.from_bytes(
+                data=pdf_bytes,
+                mime_type="application/pdf"
+            )
 
             # Send to Gemini Flash with PDF
-            response = self._flash_model.generate_content([
-                INVOICE_PDF_EXTRACTION_PROMPT,
-                pdf_part
-            ])
+            response = self._client.models.generate_content(
+                model=self._flash_model_name,
+                contents=[INVOICE_PDF_EXTRACTION_PROMPT, pdf_part],
+                config=self._generation_config
+            )
             response_text = response.text.strip()
 
             # Parse JSON response
@@ -325,11 +322,11 @@ class AIExtractor:
         start_time = time.time()
 
         try:
-            # Create file part for multimodal input
-            pdf_part = {
-                "mime_type": "application/pdf",
-                "data": base64.b64encode(pdf_bytes).decode('utf-8')
-            }
+            # Create PDF part for multimodal input
+            pdf_part = types.Part.from_bytes(
+                data=pdf_bytes,
+                mime_type="application/pdf"
+            )
 
             # Build prompt with error context if available
             if previous_result and validation_errors:
@@ -345,10 +342,11 @@ Hãy đọc lại PDF và trích xuất chính xác."""
                 prompt = INVOICE_PDF_EXTRACTION_PROMPT
 
             # Send to Gemini Pro with PDF
-            response = self._pro_model.generate_content([
-                prompt,
-                pdf_part
-            ])
+            response = self._client.models.generate_content(
+                model=self._pro_model_name,
+                contents=[prompt, pdf_part],
+                config=self._generation_config
+            )
             response_text = response.text.strip()
 
             # Parse JSON response
@@ -387,7 +385,7 @@ Hãy đọc lại PDF và trích xuất chính xác."""
         processing_log: List[ProcessingLogEntry]
     ) -> Tuple[Optional[ProcessedInvoice], int]:
         """
-        Extract invoice data using Gemini Flash model
+        Extract invoice data using Gemini Flash model (from OCR text)
 
         Args:
             ocr_text: Text extracted from PDF via OCR
@@ -411,7 +409,11 @@ Hãy đọc lại PDF và trích xuất chính xác."""
             prompt = INVOICE_EXTRACTION_PROMPT.format(ocr_text=ocr_text)
             logger.debug(f"Sending to Gemini Flash, prompt length: {len(prompt)}")
 
-            response = self._flash_model.generate_content(prompt)
+            response = self._client.models.generate_content(
+                model=self._flash_model_name,
+                contents=prompt,
+                config=self._generation_config
+            )
             response_text = response.text.strip()
 
             # Parse JSON response
@@ -478,7 +480,11 @@ Hãy đọc lại PDF và trích xuất chính xác."""
             )
             logger.debug(f"Sending to Gemini Pro, prompt length: {len(prompt)}")
 
-            response = self._pro_model.generate_content(prompt)
+            response = self._client.models.generate_content(
+                model=self._pro_model_name,
+                contents=prompt,
+                config=self._generation_config
+            )
             response_text = response.text.strip()
 
             # Parse JSON response

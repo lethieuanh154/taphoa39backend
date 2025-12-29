@@ -2,7 +2,10 @@
 INVOICE SERVICE V2 - SCALABLE VERSION
 Thiết kế cho 100.000+ hóa đơn với pagination và optimized queries
 
-Collection: invoices (unified - thay thế tax_invoices + internal_invoices)
+Collections:
+- tax_invoices: Hóa đơn từ trang thuế (hoadondientu.gdt.gov.vn)
+- internal_invoices: Hóa đơn từ AI/PDF parsing
+- invoice_reconciliation: Kết quả đối chiếu
 """
 
 import logging
@@ -11,13 +14,15 @@ from typing import Dict, List, Optional, Tuple, Any
 from google.cloud.firestore_v1.base_query import FieldFilter
 from firebase_admin import firestore
 
+from firebase.init_firebase import init_firestore
+
 logger = logging.getLogger(__name__)
 
 
 class InvoiceServiceV2:
     """
     Scalable Invoice Service với:
-    - Unified collection (invoices)
+    - 2 collection riêng biệt: tax_invoices, internal_invoices
     - Pagination support
     - Optimized queries với composite indexes
     - Supplier caching
@@ -26,7 +31,10 @@ class InvoiceServiceV2:
     # Constants
     DEFAULT_PAGE_SIZE = 50
     MAX_PAGE_SIZE = 100
-    COLLECTION_INVOICES = 'invoices'
+    # Sử dụng các collection hiện có
+    COLLECTION_TAX_INVOICES = 'tax_invoices'
+    COLLECTION_INTERNAL_INVOICES = 'internal_invoices'
+    COLLECTION_RECONCILIATION = 'invoice_reconciliation'
     COLLECTION_SUPPLIERS = 'suppliers'
     COLLECTION_SYNC_LOGS = 'sync_logs'
 
@@ -41,12 +49,76 @@ class InvoiceServiceV2:
     STATUS_MISMATCH = 'MISMATCH'
 
     def __init__(self):
-        self.db = firestore.client()
-        logger.info("InvoiceServiceV2 initialized")
+        self._db = None
+        logger.info("InvoiceServiceV2 initialized (lazy)")
+
+    @property
+    def db(self):
+        """Lazy initialization của Firestore client - sử dụng named app"""
+        if self._db is None:
+            # Sử dụng FIREBASE_SERVICE_ACCOUNT_SUPPLIES_INVOICES (project: taphoa39-supplies-invoices)
+            self._db = init_firestore("FIREBASE_SERVICE_ACCOUNT_SUPPLIES_INVOICES")
+            logger.info("InvoiceServiceV2 Firestore client initialized")
+        return self._db
 
     # =========================================================================
     # QUERY METHODS (với pagination)
     # =========================================================================
+
+    def _get_collection_name(self, source: Optional[str]) -> str:
+        """Lấy tên collection dựa trên source"""
+        if source == self.SOURCE_TAX_PORTAL:
+            return self.COLLECTION_TAX_INVOICES
+        elif source == self.SOURCE_AI_PDF:
+            return self.COLLECTION_INTERNAL_INVOICES
+        else:
+            # Default to tax_invoices nếu không chỉ định
+            return self.COLLECTION_TAX_INVOICES
+
+    def _normalize_invoice_data(self, data: Dict, source: str) -> Dict:
+        """
+        Chuẩn hóa data từ các collection khác nhau thành format thống nhất
+
+        tax_invoices fields: invoiceNo, invoiceDate, sellerTaxCode, sellerName, totalAmount, vatAmount
+        internal_invoices fields: invoiceNo, invoiceDate, supplierTaxCode, supplierName, totalAmount, vatAmount
+        """
+        normalized = {
+            'invoiceNo': data.get('invoiceNo', ''),
+            'totalAmount': float(data.get('totalAmount', 0)),
+            'vatAmount': float(data.get('vatAmount', 0)),
+            'source': source,
+        }
+
+        # Map invoiceDate -> issueDate (có thể là string hoặc Timestamp)
+        invoice_date = data.get('invoiceDate', '')
+        if invoice_date:
+            if hasattr(invoice_date, 'isoformat'):
+                # Đây là Timestamp/datetime
+                normalized['issueDate'] = invoice_date.isoformat()
+            else:
+                # Đây là string
+                normalized['issueDate'] = invoice_date
+        else:
+            normalized['issueDate'] = ''
+
+        # Map supplier fields dựa trên source
+        if source == self.SOURCE_TAX_PORTAL:
+            normalized['supplierTaxCode'] = data.get('sellerTaxCode', '')
+            normalized['supplierName'] = data.get('sellerName', '')
+        else:
+            normalized['supplierTaxCode'] = data.get('supplierTaxCode', '')
+            normalized['supplierName'] = data.get('supplierName', '')
+
+        # Thêm các field khác nếu có
+        normalized['invoiceKey'] = data.get('invoiceKey', '')
+        normalized['reconcileStatus'] = data.get('reconcileStatus', self.STATUS_PENDING)
+
+        # Các field bổ sung từ internal_invoices (AI)
+        if source == self.SOURCE_AI_PDF:
+            normalized['confidence'] = data.get('confidence', data.get('ocrConfidence', 0))
+            normalized['items'] = data.get('items', [])
+
+        return normalized
 
     def get_invoices(
         self,
@@ -65,11 +137,11 @@ class InvoiceServiceV2:
         Query hóa đơn với filter và pagination
 
         Args:
-            source: 'TAX_PORTAL' | 'AI_PDF' | None (all)
+            source: 'TAX_PORTAL' | 'AI_PDF' (REQUIRED - phải chỉ định source)
             year: Năm (e.g., 2024)
             month_key: Tháng (e.g., '2024-12')
-            from_date: Từ ngày (YYYY-MM-DD)
-            to_date: Đến ngày (YYYY-MM-DD)
+            from_date: Từ ngày (YYYY-MM-DD hoặc dd/mm/yyyy)
+            to_date: Đến ngày (YYYY-MM-DD hoặc dd/mm/yyyy)
             supplier_tax_code: MST nhà cung cấp
             reconcile_status: Trạng thái đối chiếu
             page_size: Số records/trang (max 100)
@@ -85,7 +157,7 @@ class InvoiceServiceV2:
                     'firstDocId': str,
                     'lastDocId': str,
                     'pageSize': int,
-                    'totalEstimate': int  # Ước tính (không chính xác 100%)
+                    'count': int
                 }
             }
         """
@@ -93,40 +165,102 @@ class InvoiceServiceV2:
             # Validate page_size
             page_size = min(page_size, self.MAX_PAGE_SIZE)
 
-            # Build query
-            query = self.db.collection(self.COLLECTION_INVOICES)
+            # Xác định collection dựa trên source
+            collection_name = self._get_collection_name(source)
+            logger.info(f"Querying collection: {collection_name} with source: {source}")
+            logger.info(f"Filters: year={year}, month_key={month_key}, from_date={from_date}, to_date={to_date}, supplier={supplier_tax_code}")
 
-            # Apply filters
-            if source:
-                query = query.where(filter=FieldFilter('source', '==', source))
+            # Convert year/month_key to from_date/to_date nếu chưa có
+            if not from_date and not to_date:
+                if month_key:
+                    # month_key format: "2024-12"
+                    try:
+                        year_part, month_part = month_key.split('-')
+                        year_int = int(year_part)
+                        month_int = int(month_part)
+                        # Ngày đầu tháng
+                        from_date = f"{year_int}-{month_int:02d}-01"
+                        # Ngày cuối tháng
+                        if month_int == 12:
+                            to_date = f"{year_int}-12-31"
+                        else:
+                            next_month = datetime(year_int, month_int + 1, 1)
+                            last_day = next_month - timedelta(days=1)
+                            to_date = last_day.strftime('%Y-%m-%d')
+                        logger.info(f"Converted month_key={month_key} to from_date={from_date}, to_date={to_date}")
+                    except Exception as e:
+                        logger.error(f"Error parsing month_key: {e}")
+                elif year:
+                    # Filter theo năm
+                    from_date = f"{year}-01-01"
+                    to_date = f"{year}-12-31"
+                    logger.info(f"Converted year={year} to from_date={from_date}, to_date={to_date}")
 
+            # Build query - KHÔNG có filter trước, chỉ limit
+            query = self.db.collection(collection_name)
+
+            # Field mapping cho supplier tax code
+            tax_code_field = 'sellerTaxCode' if source == self.SOURCE_TAX_PORTAL else 'supplierTaxCode'
+
+            # Apply supplier filter
             if supplier_tax_code:
-                query = query.where(filter=FieldFilter('supplierTaxCode', '==', supplier_tax_code))
+                query = query.where(filter=FieldFilter(tax_code_field, '==', supplier_tax_code))
 
-            if reconcile_status:
-                query = query.where(filter=FieldFilter('reconcileStatus', '==', reconcile_status))
+            # Date filters - QUAN TRỌNG: Cần detect format date trong Firestore
+            # Firestore có thể lưu dạng: "2024-12-29", "29/12/2024", hoặc Timestamp
+            # LƯU Ý: Nếu format là DD/MM/YYYY, string comparison KHÔNG CHÍNH XÁC
+            # => Sử dụng client-side filtering cho format DD/MM/YYYY
+            use_client_side_date_filter = False
+            parsed_from_date = None
+            parsed_to_date = None
 
-            # Date filters (mutually exclusive priority)
-            if month_key:
-                query = query.where(filter=FieldFilter('monthKey', '==', month_key))
-            elif year:
-                query = query.where(filter=FieldFilter('year', '==', year))
-            elif from_date or to_date:
-                if from_date:
-                    from_dt = datetime.strptime(from_date, '%Y-%m-%d')
-                    query = query.where(filter=FieldFilter('issueDate', '>=', from_dt))
-                if to_date:
-                    to_dt = datetime.strptime(to_date, '%Y-%m-%d')
-                    # Add 1 day to include the end date
-                    to_dt = to_dt + timedelta(days=1)
-                    query = query.where(filter=FieldFilter('issueDate', '<', to_dt))
+            if from_date or to_date:
+                # Detect format của invoiceDate trong collection
+                date_format = self._detect_date_format_in_collection(collection_name)
+                logger.info(f"Detected date format in {collection_name}: {date_format}")
 
-            # Order by issueDate descending
-            query = query.order_by('issueDate', direction=firestore.Query.DESCENDING)
+                if date_format == 'TIMESTAMP':
+                    # Query với Timestamp - convert string to datetime
+                    if from_date:
+                        parsed_from = self._parse_date(from_date)
+                        if parsed_from:
+                            query = query.where(filter=FieldFilter('invoiceDate', '>=', parsed_from))
+                            logger.info(f"Applied from_date filter (Timestamp): invoiceDate >= {parsed_from}")
+                    if to_date:
+                        parsed_to = self._parse_date(to_date)
+                        if parsed_to:
+                            # Add 1 day để include cả ngày to_date
+                            parsed_to = parsed_to.replace(hour=23, minute=59, second=59)
+                            query = query.where(filter=FieldFilter('invoiceDate', '<=', parsed_to))
+                            logger.info(f"Applied to_date filter (Timestamp): invoiceDate <= {parsed_to}")
+                elif date_format == 'YYYY-MM-DD':
+                    # Query với string YYYY-MM-DD - string comparison works correctly
+                    if from_date:
+                        normalized_from = self._normalize_date_for_query(from_date, 'YYYY-MM-DD')
+                        if normalized_from:
+                            query = query.where(filter=FieldFilter('invoiceDate', '>=', normalized_from))
+                            logger.info(f"Applied from_date filter (YYYY-MM-DD): invoiceDate >= {normalized_from}")
+                    if to_date:
+                        normalized_to = self._normalize_date_for_query(to_date, 'YYYY-MM-DD')
+                        if normalized_to:
+                            query = query.where(filter=FieldFilter('invoiceDate', '<=', normalized_to))
+                            logger.info(f"Applied to_date filter (YYYY-MM-DD): invoiceDate <= {normalized_to}")
+                else:
+                    # Format DD/MM/YYYY - string comparison KHÔNG CHÍNH XÁC
+                    # => Không apply filter ở Firestore, sẽ filter ở client-side
+                    logger.warning(f"Date format DD/MM/YYYY detected - using client-side filtering")
+                    use_client_side_date_filter = True
+                    parsed_from_date = self._parse_date(from_date) if from_date else None
+                    parsed_to_date = self._parse_date(to_date) if to_date else None
+                    if parsed_to_date:
+                        parsed_to_date = parsed_to_date.replace(hour=23, minute=59, second=59)
+
+            # Order by invoiceDate descending
+            query = query.order_by('invoiceDate', direction=firestore.Query.DESCENDING)
 
             # Apply cursor for pagination
             if cursor_doc_id:
-                cursor_doc = self.db.collection(self.COLLECTION_INVOICES).document(cursor_doc_id).get()
+                cursor_doc = self.db.collection(collection_name).document(cursor_doc_id).get()
                 if cursor_doc.exists:
                     if direction == 'next':
                         query = query.start_after(cursor_doc)
@@ -138,32 +272,38 @@ class InvoiceServiceV2:
 
             # Execute query
             docs = list(query.stream())
+            logger.info(f"Found {len(docs)} documents in {collection_name}")
 
             # Check pagination
             has_next = len(docs) > page_size
             if has_next:
                 docs = docs[:page_size]
 
-            # Convert to dict
+            # Convert to dict với normalized format
             invoices = []
             first_doc_id = None
             last_doc_id = None
 
             for i, doc in enumerate(docs):
                 data = doc.to_dict()
-                data['id'] = doc.id
 
-                # Convert Timestamp to ISO string
-                if 'issueDate' in data and data['issueDate']:
-                    data['issueDate'] = data['issueDate'].isoformat()
-                if 'createdAt' in data and data['createdAt']:
-                    data['createdAt'] = data['createdAt'].isoformat()
-                if 'updatedAt' in data and data['updatedAt']:
-                    data['updatedAt'] = data['updatedAt'].isoformat()
+                # Client-side date filtering (cho DD/MM/YYYY format)
+                if use_client_side_date_filter:
+                    invoice_date_str = data.get('invoiceDate', '')
+                    invoice_date = self._parse_date(invoice_date_str) if invoice_date_str else None
+                    if invoice_date:
+                        if parsed_from_date and invoice_date < parsed_from_date:
+                            continue
+                        if parsed_to_date and invoice_date > parsed_to_date:
+                            continue
 
-                invoices.append(data)
+                # Normalize data to unified format
+                normalized = self._normalize_invoice_data(data, source or self.SOURCE_TAX_PORTAL)
+                normalized['id'] = doc.id
 
-                if i == 0:
+                invoices.append(normalized)
+
+                if first_doc_id is None:
                     first_doc_id = doc.id
                 last_doc_id = doc.id
 
@@ -181,6 +321,8 @@ class InvoiceServiceV2:
 
         except Exception as e:
             logger.error(f"Error querying invoices: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return {
                 'invoices': [],
                 'pagination': {
@@ -193,6 +335,81 @@ class InvoiceServiceV2:
                 },
                 'error': str(e)
             }
+
+    def _detect_date_format_in_collection(self, collection_name: str) -> str:
+        """
+        Detect format của invoiceDate trong collection
+        Returns: 'YYYY-MM-DD', 'DD/MM/YYYY', hoặc 'TIMESTAMP'
+        """
+        try:
+            # Lấy 1 document mẫu
+            docs = list(self.db.collection(collection_name).limit(1).stream())
+            if not docs:
+                return 'YYYY-MM-DD'  # Default
+
+            data = docs[0].to_dict()
+            invoice_date = data.get('invoiceDate')
+
+            if invoice_date is None:
+                return 'YYYY-MM-DD'
+
+            # Check if Timestamp
+            if hasattr(invoice_date, 'isoformat'):
+                return 'TIMESTAMP'
+
+            # Check string format
+            if isinstance(invoice_date, str):
+                if '/' in invoice_date:
+                    return 'DD/MM/YYYY'
+                elif '-' in invoice_date and len(invoice_date) == 10:
+                    return 'YYYY-MM-DD'
+
+            return 'YYYY-MM-DD'
+
+        except Exception as e:
+            logger.error(f"Error detecting date format: {e}")
+            return 'YYYY-MM-DD'
+
+    def _normalize_date_for_query(self, date_str: str, target_format: str = 'YYYY-MM-DD') -> Optional[str]:
+        """
+        Normalize date string to format used in Firestore
+        Input có thể là: YYYY-MM-DD hoặc dd/mm/yyyy
+        Output: format phù hợp với Firestore data
+
+        Args:
+            date_str: Input date string
+            target_format: 'YYYY-MM-DD' hoặc 'DD/MM/YYYY'
+        """
+        if not date_str:
+            return None
+
+        # Parse input date
+        parsed_date = None
+
+        # Try YYYY-MM-DD format
+        if len(date_str) == 10 and date_str[4] == '-':
+            try:
+                parsed_date = datetime.strptime(date_str, '%Y-%m-%d')
+            except:
+                pass
+
+        # Try dd/mm/yyyy format
+        if not parsed_date and '/' in date_str:
+            parts = date_str.split('/')
+            if len(parts) == 3:
+                try:
+                    parsed_date = datetime.strptime(date_str, '%d/%m/%Y')
+                except:
+                    pass
+
+        if not parsed_date:
+            return date_str
+
+        # Output to target format
+        if target_format == 'DD/MM/YYYY':
+            return parsed_date.strftime('%d/%m/%Y')
+        else:
+            return parsed_date.strftime('%Y-%m-%d')
 
     def get_invoices_default(self, source: Optional[str] = None) -> Dict:
         """
@@ -221,25 +438,29 @@ class InvoiceServiceV2:
             (success, message, doc_id)
         """
         try:
-            # Đảm bảo invoiceNo luôn là string để giữ nguyên số 0 đầu (VD: '00000001')
+            # Xác định collection dựa trên source
+            collection_name = self._get_collection_name(source)
+
+            # Đảm bảo invoiceNo luôn là string
             invoice_no = str(invoice_data.get('invoiceNo', '')).strip()
-            supplier_tax_code = str(invoice_data.get('supplierTaxCode', '') or \
-                               invoice_data.get('supplier', {}).get('taxCode', '')).strip()
+
+            # Lấy supplier tax code - khác nhau giữa 2 loại
+            if source == self.SOURCE_TAX_PORTAL:
+                supplier_tax_code = str(invoice_data.get('sellerTaxCode', '') or
+                                       invoice_data.get('supplierTaxCode', '')).strip()
+            else:
+                supplier_tax_code = str(invoice_data.get('supplierTaxCode', '') or
+                                       invoice_data.get('supplier', {}).get('taxCode', '')).strip()
 
             if not invoice_no or not supplier_tax_code:
                 return False, "Thiếu số hóa đơn hoặc MST nhà cung cấp", None
 
-            # Chuẩn hóa số hóa đơn để compare (loại bỏ số 0 đầu)
-            normalized_invoice_no = self._normalize_invoice_no(invoice_no)
+            # Create invoice key for duplicate check
+            invoice_key = f"{invoice_no}|{supplier_tax_code}"
 
-            # Create invoice key for duplicate check (dùng số đã chuẩn hóa)
-            invoice_key = f"{normalized_invoice_no}|{supplier_tax_code}"
-
-            # Check duplicate
-            existing = self.db.collection(self.COLLECTION_INVOICES).where(
+            # Check duplicate trong collection tương ứng
+            existing = self.db.collection(collection_name).where(
                 filter=FieldFilter('invoiceKey', '==', invoice_key)
-            ).where(
-                filter=FieldFilter('source', '==', source)
             ).limit(1).get()
 
             if len(list(existing)) > 0:
@@ -247,59 +468,29 @@ class InvoiceServiceV2:
 
             # Parse date
             issue_date_str = invoice_data.get('invoiceDate', '') or invoice_data.get('issueDate', '')
-            issue_date = self._parse_date(issue_date_str)
 
-            # Extract supplier info
-            supplier = invoice_data.get('supplier', {})
-            supplier_name = supplier.get('name', '') or invoice_data.get('supplierName', '')
-            supplier_address = supplier.get('address', '') or invoice_data.get('supplierAddress', '')
+            # Build document data dựa trên collection
+            if source == self.SOURCE_TAX_PORTAL:
+                # Schema cho tax_invoices
+                supplier_name = invoice_data.get('sellerName', '') or invoice_data.get('supplierName', '')
+                doc_data = {
+                    'invoiceNo': invoice_no,
+                    'invoiceDate': issue_date_str,
+                    'sellerTaxCode': supplier_tax_code,
+                    'sellerName': supplier_name,
+                    'totalAmount': float(invoice_data.get('totalAmount', 0)),
+                    'vatAmount': float(invoice_data.get('vatAmount', 0)),
+                    'source': 'gdt',  # General Department of Taxation
+                    'invoiceKey': invoice_key,
+                    'importedAt': datetime.utcnow()
+                }
+            else:
+                # Schema cho internal_invoices (AI/PDF)
+                supplier = invoice_data.get('supplier', {})
+                supplier_name = supplier.get('name', '') or invoice_data.get('supplierName', '')
+                supplier_address = supplier.get('address', '') or invoice_data.get('supplierAddress', '')
 
-            # Extract buyer info
-            buyer = invoice_data.get('buyer', {})
-            buyer_name = buyer.get('name', '') or invoice_data.get('buyerName', '')
-            buyer_tax_code = buyer.get('taxCode', '') or invoice_data.get('buyerTaxCode', '')
-
-            # Build document
-            doc_data = {
-                # Keys
-                'invoiceKey': invoice_key,
-                'invoiceNo': invoice_no,  # Giữ nguyên số hóa đơn gốc (VD: '00084538')
-                'normalizedInvoiceNo': normalized_invoice_no,  # Số đã chuẩn hóa để compare (VD: '84538')
-                'invoiceSymbol': invoice_data.get('invoiceSymbol', ''),
-
-                # Supplier
-                'supplierName': supplier_name,
-                'supplierTaxCode': supplier_tax_code,
-                'supplierAddress': supplier_address,
-
-                # Buyer
-                'buyerName': buyer_name,
-                'buyerTaxCode': buyer_tax_code,
-
-                # Dates (indexed fields)
-                'issueDate': issue_date,
-                'issueDateKey': issue_date.strftime('%Y-%m-%d') if issue_date else '',
-                'monthKey': issue_date.strftime('%Y-%m') if issue_date else '',
-                'year': issue_date.year if issue_date else 0,
-
-                # Amounts
-                'totalBeforeVat': float(invoice_data.get('totalBeforeVat', 0)),
-                'vatRate': float(invoice_data.get('vatRate', 0)),
-                'vatAmount': float(invoice_data.get('vatAmount', 0)),
-                'totalAmount': float(invoice_data.get('totalAmount', 0)),
-
-                # Source & Status
-                'source': source,
-                'reconcileStatus': self.STATUS_PENDING,
-                'matchedInvoiceId': None,
-
-                # Metadata
-                'createdAt': datetime.utcnow(),
-                'updatedAt': datetime.utcnow()
-            }
-
-            # Add items for AI_PDF source
-            if source == self.SOURCE_AI_PDF:
+                # Chuẩn hóa items
                 items = []
                 for item in invoice_data.get('items', []):
                     items.append({
@@ -309,16 +500,36 @@ class InvoiceServiceV2:
                         'unitPrice': float(item.get('unitPrice', 0)),
                         'amount': float(item.get('amount', 0))
                     })
-                doc_data['items'] = items
+
+                doc_data = {
+                    'invoiceNo': invoice_no,
+                    'invoiceSymbol': invoice_data.get('invoiceSymbol', ''),
+                    'invoiceDate': issue_date_str,
+                    'invoiceKey': invoice_key,
+                    'supplier': {
+                        'name': supplier_name,
+                        'taxCode': supplier_tax_code,
+                        'address': supplier_address
+                    },
+                    'supplierTaxCode': supplier_tax_code,
+                    'supplierName': supplier_name,
+                    'buyer': invoice_data.get('buyer', {}),
+                    'items': items,
+                    'totalBeforeVat': float(invoice_data.get('totalBeforeVat', 0)),
+                    'vatRate': float(invoice_data.get('vatRate', 0)),
+                    'vatAmount': float(invoice_data.get('vatAmount', 0)),
+                    'totalAmount': float(invoice_data.get('totalAmount', 0)),
+                    'source': 'ai_pdf',
+                    'aiModel': 'gemini-3-flash',
+                    'confidence': float(invoice_data.get('confidence', 0)),
+                    'createdAt': datetime.utcnow()
+                }
 
             # Save to Firestore
-            doc_ref = self.db.collection(self.COLLECTION_INVOICES).add(doc_data)
+            doc_ref = self.db.collection(collection_name).add(doc_data)
             doc_id = doc_ref[1].id
 
-            # Update supplier stats (async in production)
-            self._update_supplier_stats(supplier_tax_code, supplier_name, supplier_address)
-
-            logger.info(f"Created invoice: {invoice_no} | source={source}")
+            logger.info(f"Created invoice: {invoice_no} | source={source} | collection={collection_name}")
             return True, "Tạo hóa đơn thành công", doc_id
 
         except Exception as e:
@@ -453,24 +664,25 @@ class InvoiceServiceV2:
     # DELETE METHODS
     # =========================================================================
 
-    def delete_invoice(self, doc_id: str) -> bool:
+    def delete_invoice(self, doc_id: str, source: str) -> bool:
         """Xóa 1 hóa đơn"""
         try:
-            self.db.collection(self.COLLECTION_INVOICES).document(doc_id).delete()
-            logger.info(f"Deleted invoice: {doc_id}")
+            collection_name = self._get_collection_name(source)
+            self.db.collection(collection_name).document(doc_id).delete()
+            logger.info(f"Deleted invoice: {doc_id} from {collection_name}")
             return True
         except Exception as e:
             logger.error(f"Error deleting invoice: {e}")
             return False
 
     def clear_invoices_by_source(self, source: str) -> Dict:
-        """Xóa tất cả hóa đơn theo nguồn"""
+        """Xóa tất cả hóa đơn theo nguồn (xóa toàn bộ collection tương ứng)"""
         try:
-            query = self.db.collection(self.COLLECTION_INVOICES).where(
-                filter=FieldFilter('source', '==', source)
-            )
+            collection_name = self._get_collection_name(source)
+            logger.info(f"Clearing all documents in collection: {collection_name}")
 
-            docs = query.stream()
+            # Lấy tất cả documents trong collection
+            docs = self.db.collection(collection_name).stream()
             deleted_count = 0
             batch = self.db.batch()
             batch_count = 0
@@ -489,6 +701,7 @@ class InvoiceServiceV2:
                 batch.commit()
 
             self._log_sync_action('DELETE', source, deleted_count, deleted_count, 0, 0)
+            logger.info(f"Deleted {deleted_count} documents from {collection_name}")
 
             return {'success': True, 'deleted': deleted_count}
 
@@ -497,7 +710,7 @@ class InvoiceServiceV2:
             return {'success': False, 'deleted': 0, 'error': str(e)}
 
     def clear_all_invoices(self) -> Dict:
-        """Xóa tất cả hóa đơn"""
+        """Xóa tất cả hóa đơn từ cả 2 collection"""
         tax_result = self.clear_invoices_by_source(self.SOURCE_TAX_PORTAL)
         ai_result = self.clear_invoices_by_source(self.SOURCE_AI_PDF)
 
@@ -529,41 +742,39 @@ class InvoiceServiceV2:
             }
         """
         try:
-            base_query = self.db.collection(self.COLLECTION_INVOICES)
+            # Đếm số lượng trong từng collection
+            tax_query = self.db.collection(self.COLLECTION_TAX_INVOICES)
+            ai_query = self.db.collection(self.COLLECTION_INTERNAL_INVOICES)
 
-            if month_key:
-                base_query = base_query.where(filter=FieldFilter('monthKey', '==', month_key))
-            elif year:
-                base_query = base_query.where(filter=FieldFilter('year', '==', year))
+            # Note: Firestore count() aggregation không hỗ trợ filter phức tạp
+            # Nên đếm bằng cách stream documents
+            tax_docs = list(tax_query.stream())
+            ai_docs = list(ai_query.stream())
 
-            # Count by source
-            tax_docs = base_query.where(
-                filter=FieldFilter('source', '==', self.SOURCE_TAX_PORTAL)
-            ).count().get()
+            # Lấy kết quả đối chiếu từ invoice_reconciliation
+            recon_query = self.db.collection(self.COLLECTION_RECONCILIATION)
+            recon_docs = list(recon_query.stream())
 
-            ai_docs = base_query.where(
-                filter=FieldFilter('source', '==', self.SOURCE_AI_PDF)
-            ).count().get()
+            matched_count = 0
+            unmatched_count = 0
+            mismatch_count = 0
 
-            # Count by status
-            matched_docs = base_query.where(
-                filter=FieldFilter('reconcileStatus', '==', self.STATUS_MATCHED)
-            ).count().get()
-
-            unmatched_docs = base_query.where(
-                filter=FieldFilter('reconcileStatus', '==', self.STATUS_UNMATCHED)
-            ).count().get()
-
-            mismatch_docs = base_query.where(
-                filter=FieldFilter('reconcileStatus', '==', self.STATUS_MISMATCH)
-            ).count().get()
+            for doc in recon_docs:
+                data = doc.to_dict()
+                status = data.get('status', '')
+                if status == 'MATCH':
+                    matched_count += 1
+                elif status == 'MISSING_INTERNAL' or status == 'MISSING_TAX':
+                    unmatched_count += 1
+                elif status == 'MISMATCH':
+                    mismatch_count += 1
 
             return {
-                'taxPortalCount': tax_docs[0][0].value if tax_docs else 0,
-                'aiPdfCount': ai_docs[0][0].value if ai_docs else 0,
-                'matchedCount': matched_docs[0][0].value if matched_docs else 0,
-                'unmatchedCount': unmatched_docs[0][0].value if unmatched_docs else 0,
-                'mismatchCount': mismatch_docs[0][0].value if mismatch_docs else 0
+                'taxPortalCount': len(tax_docs),
+                'aiPdfCount': len(ai_docs),
+                'matchedCount': matched_count,
+                'unmatchedCount': unmatched_count,
+                'mismatchCount': mismatch_count
             }
 
         except Exception as e:
@@ -579,112 +790,164 @@ class InvoiceServiceV2:
 
     def run_reconciliation(self, month_key: Optional[str] = None) -> Dict:
         """
-        Chạy đối chiếu tự động
+        Chạy đối chiếu tự động - sử dụng logic từ supplies_invoice_service
 
         Algorithm:
-        1. Lấy tất cả hóa đơn TAX_PORTAL theo month_key
-        2. Với mỗi hóa đơn, tìm match trong AI_PDF bằng invoiceKey
-        3. So sánh totalAmount và vatAmount
-        4. Update reconcileStatus
+        1. Lấy tất cả hóa đơn từ tax_invoices
+        2. Lấy tất cả hóa đơn từ internal_invoices
+        3. So khớp theo invoiceKey (invoiceNo|taxCode)
+        4. Lưu kết quả vào invoice_reconciliation
         """
         try:
-            # Get TAX_PORTAL invoices
-            tax_query = self.db.collection(self.COLLECTION_INVOICES).where(
-                filter=FieldFilter('source', '==', self.SOURCE_TAX_PORTAL)
-            )
-            if month_key:
-                tax_query = tax_query.where(filter=FieldFilter('monthKey', '==', month_key))
+            # Get TAX invoices
+            tax_docs = list(self.db.collection(self.COLLECTION_TAX_INVOICES).stream())
+            logger.info(f"Found {len(tax_docs)} tax_invoices for reconciliation")
 
-            tax_docs = list(tax_query.stream())
-            logger.info(f"Found {len(tax_docs)} TAX_PORTAL invoices for reconciliation")
+            # Get AI/Internal invoices
+            internal_docs = list(self.db.collection(self.COLLECTION_INTERNAL_INVOICES).stream())
+            logger.info(f"Found {len(internal_docs)} internal_invoices for reconciliation")
 
-            matched = 0
-            unmatched = 0
-            mismatch = 0
-            batch = self.db.batch()
-            batch_count = 0
+            # Build maps for quick lookup
+            # Key: invoiceNo|taxCode
+            tax_map = {}
+            for doc in tax_docs:
+                data = doc.to_dict()
+                data['id'] = doc.id
+                key = data.get('invoiceKey', f"{data.get('invoiceNo', '')}|{data.get('sellerTaxCode', '')}")
+                tax_map[key] = data
 
-            for tax_doc in tax_docs:
-                tax_data = tax_doc.to_dict()
-                invoice_key = tax_data.get('invoiceKey', '')
+            internal_map = {}
+            for doc in internal_docs:
+                data = doc.to_dict()
+                data['id'] = doc.id
+                key = data.get('invoiceKey', f"{data.get('invoiceNo', '')}|{data.get('supplierTaxCode', '')}")
+                internal_map[key] = data
 
-                # Find matching AI_PDF invoice
-                ai_query = self.db.collection(self.COLLECTION_INVOICES).where(
-                    filter=FieldFilter('source', '==', self.SOURCE_AI_PDF)
-                ).where(
-                    filter=FieldFilter('invoiceKey', '==', invoice_key)
-                ).limit(1)
+            # Get all unique keys
+            all_keys = set(tax_map.keys()) | set(internal_map.keys())
 
-                ai_docs = list(ai_query.stream())
+            # Reconcile each invoice
+            reconciliations = []
+            summary = {
+                'totalTax': len(tax_docs),
+                'totalInternal': len(internal_docs),
+                'matched': 0,
+                'missingInternal': 0,
+                'missingTax': 0,
+                'mismatch': 0
+            }
 
-                if not ai_docs:
-                    # No match found
-                    batch.update(tax_doc.reference, {
-                        'reconcileStatus': self.STATUS_UNMATCHED,
-                        'updatedAt': datetime.utcnow()
-                    })
-                    unmatched += 1
-                else:
-                    ai_doc = ai_docs[0]
-                    ai_data = ai_doc.to_dict()
+            for key in all_keys:
+                tax_inv = tax_map.get(key)
+                internal_inv = internal_map.get(key)
 
-                    # Compare amounts
-                    tax_total = tax_data.get('totalAmount', 0)
-                    ai_total = ai_data.get('totalAmount', 0)
-                    tax_vat = tax_data.get('vatAmount', 0)
-                    ai_vat = ai_data.get('vatAmount', 0)
+                recon_record = {
+                    'invoiceKey': key,
+                    'taxInvoiceId': tax_inv['id'] if tax_inv else None,
+                    'internalInvoiceId': internal_inv['id'] if internal_inv else None,
+                    'status': None,
+                    'fieldDiffs': [],  # Chi tiết sai lệch từng field
+                    'checkedAt': datetime.utcnow()
+                }
 
-                    # Allow 1 VND tolerance
-                    if abs(tax_total - ai_total) <= 1 and abs(tax_vat - ai_vat) <= 1:
-                        status = self.STATUS_MATCHED
-                        matched += 1
+                if tax_inv and internal_inv:
+                    # So sánh TẤT CẢ fields quan trọng
+                    field_diffs = self._compare_invoice_fields(tax_inv, internal_inv)
+
+                    if not field_diffs:
+                        recon_record['status'] = 'MATCH'
+                        summary['matched'] += 1
                     else:
-                        status = self.STATUS_MISMATCH
-                        mismatch += 1
+                        recon_record['status'] = 'MISMATCH'
+                        recon_record['fieldDiffs'] = field_diffs
+                        summary['mismatch'] += 1
 
-                    # Update both documents
-                    batch.update(tax_doc.reference, {
-                        'reconcileStatus': status,
-                        'matchedInvoiceId': ai_doc.id,
-                        'updatedAt': datetime.utcnow()
-                    })
-                    batch.update(ai_doc.reference, {
-                        'reconcileStatus': status,
-                        'matchedInvoiceId': tax_doc.id,
-                        'updatedAt': datetime.utcnow()
-                    })
-                    batch_count += 1
+                elif tax_inv and not internal_inv:
+                    recon_record['status'] = 'MISSING_INTERNAL'
+                    summary['missingInternal'] += 1
 
-                batch_count += 1
-                if batch_count >= 250:  # Half of 500 because we update 2 docs
-                    batch.commit()
-                    batch = self.db.batch()
-                    batch_count = 0
+                elif not tax_inv and internal_inv:
+                    recon_record['status'] = 'MISSING_TAX'
+                    summary['missingTax'] += 1
 
-            if batch_count > 0:
-                batch.commit()
+                # Add invoice data for UI display
+                if tax_inv:
+                    recon_record['taxData'] = {
+                        'invoiceNo': tax_inv.get('invoiceNo', ''),
+                        'invoiceSymbol': tax_inv.get('invoiceSymbol', ''),
+                        'invoiceDate': tax_inv.get('invoiceDate', ''),
+                        'sellerName': tax_inv.get('sellerName', ''),
+                        'sellerTaxCode': tax_inv.get('sellerTaxCode', ''),
+                        'totalBeforeVat': tax_inv.get('totalBeforeVat', 0),
+                        'vatRate': tax_inv.get('vatRate', 0),
+                        'vatAmount': tax_inv.get('vatAmount', 0),
+                        'totalAmount': tax_inv.get('totalAmount', 0)
+                    }
 
-            # Find AI invoices without TAX match
-            ai_unmatched_query = self.db.collection(self.COLLECTION_INVOICES).where(
-                filter=FieldFilter('source', '==', self.SOURCE_AI_PDF)
-            ).where(
-                filter=FieldFilter('reconcileStatus', '==', self.STATUS_PENDING)
-            )
-            if month_key:
-                ai_unmatched_query = ai_unmatched_query.where(
-                    filter=FieldFilter('monthKey', '==', month_key)
-                )
+                if internal_inv:
+                    # Lấy supplier info từ nested object hoặc flat fields
+                    supplier = internal_inv.get('supplier', {})
+                    recon_record['internalData'] = {
+                        'invoiceNo': internal_inv.get('invoiceNo', ''),
+                        'invoiceSymbol': internal_inv.get('invoiceSymbol', ''),
+                        'invoiceDate': internal_inv.get('invoiceDate', ''),
+                        'supplierName': supplier.get('name', '') or internal_inv.get('supplierName', ''),
+                        'supplierTaxCode': supplier.get('taxCode', '') or internal_inv.get('supplierTaxCode', ''),
+                        'supplierAddress': supplier.get('address', '') or internal_inv.get('supplierAddress', ''),
+                        'totalBeforeVat': internal_inv.get('totalBeforeVat', 0),
+                        'vatRate': internal_inv.get('vatRate', 0),
+                        'vatAmount': internal_inv.get('vatAmount', 0),
+                        'totalAmount': internal_inv.get('totalAmount', 0)
+                    }
 
-            ai_unmatched_docs = list(ai_unmatched_query.stream())
+                reconciliations.append(recon_record)
+
+            # Save reconciliation results to Firestore
+            self._save_reconciliation_results(reconciliations, month_key)
+
+            self._log_sync_action('RECONCILE', 'ALL', len(all_keys), summary['matched'], summary['mismatch'], summary['missingInternal'] + summary['missingTax'])
+
+            logger.info(f"Reconciliation complete: {summary}")
+
+            return {
+                'success': True,
+                'processed': len(all_keys),
+                'matched': summary['matched'],
+                'unmatched': summary['missingInternal'] + summary['missingTax'],
+                'mismatch': summary['mismatch'],
+                'summary': summary
+            }
+
+        except Exception as e:
+            logger.error(f"Error running reconciliation: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return {
+                'success': False,
+                'error': str(e)
+            }
+
+    def _save_reconciliation_results(self, reconciliations: List[Dict], month_key: Optional[str] = None):
+        """Lưu kết quả đối chiếu vào Firestore"""
+        try:
+            # Xóa kết quả cũ
+            period_key = month_key or 'all'
+
+            old_docs = self.db.collection(self.COLLECTION_RECONCILIATION).where(
+                filter=FieldFilter('periodKey', '==', period_key)
+            ).stream()
+
+            for doc in old_docs:
+                doc.reference.delete()
+
+            # Lưu kết quả mới
             batch = self.db.batch()
             batch_count = 0
 
-            for doc in ai_unmatched_docs:
-                batch.update(doc.reference, {
-                    'reconcileStatus': self.STATUS_UNMATCHED,
-                    'updatedAt': datetime.utcnow()
-                })
-                unmatched += 1
+            for recon in reconciliations:
+                recon['periodKey'] = period_key
+                doc_ref = self.db.collection(self.COLLECTION_RECONCILIATION).document()
+                batch.set(doc_ref, recon)
                 batch_count += 1
 
                 if batch_count >= 500:
@@ -695,26 +958,136 @@ class InvoiceServiceV2:
             if batch_count > 0:
                 batch.commit()
 
-            self._log_sync_action('RECONCILE', 'ALL', len(tax_docs), matched, mismatch, unmatched)
-
-            return {
-                'success': True,
-                'processed': len(tax_docs),
-                'matched': matched,
-                'unmatched': unmatched,
-                'mismatch': mismatch
-            }
+            logger.info(f"Saved {len(reconciliations)} reconciliation records")
 
         except Exception as e:
-            logger.error(f"Error running reconciliation: {e}")
-            return {
-                'success': False,
-                'error': str(e)
-            }
+            logger.error(f"Error saving reconciliation results: {e}")
 
     # =========================================================================
     # UTILITY METHODS
     # =========================================================================
+
+    def _compare_invoice_fields(self, tax_inv: Dict, internal_inv: Dict) -> List[Dict]:
+        """
+        So sánh chi tiết TẤT CẢ fields giữa hóa đơn từ trang thuế và hóa đơn từ AI
+
+        Returns:
+            List of diffs: [
+                {
+                    'field': 'totalAmount',
+                    'fieldLabel': 'Tổng tiền',
+                    'taxValue': 22000000,
+                    'internalValue': 11000000,
+                    'diff': 11000000,
+                    'diffType': 'number'  # 'number', 'string', 'date'
+                },
+                ...
+            ]
+        """
+        diffs = []
+
+        # Lấy supplier info từ internal_inv
+        supplier = internal_inv.get('supplier', {})
+        internal_supplier_name = supplier.get('name', '') or internal_inv.get('supplierName', '')
+        internal_supplier_tax_code = supplier.get('taxCode', '') or internal_inv.get('supplierTaxCode', '')
+
+        # Định nghĩa các fields cần so sánh
+        # Format: (tax_field, internal_field, label, diff_type, tolerance)
+        fields_to_compare = [
+            # Số tiền - cho phép sai số 1đ
+            ('totalAmount', 'totalAmount', 'Tổng tiền thanh toán', 'number', 1),
+            ('vatAmount', 'vatAmount', 'Tiền thuế GTGT', 'number', 1),
+            ('totalBeforeVat', 'totalBeforeVat', 'Tổng tiền trước thuế', 'number', 1),
+
+            # Thông tin hóa đơn - so sánh chính xác
+            ('invoiceNo', 'invoiceNo', 'Số hóa đơn', 'string', 0),
+            ('invoiceSymbol', 'invoiceSymbol', 'Ký hiệu hóa đơn', 'string', 0),
+            ('invoiceDate', 'invoiceDate', 'Ngày hóa đơn', 'date', 0),
+
+            # VAT rate
+            ('vatRate', 'vatRate', 'Thuế suất (%)', 'number', 0),
+        ]
+
+        for tax_field, internal_field, label, diff_type, tolerance in fields_to_compare:
+            tax_value = tax_inv.get(tax_field)
+            internal_value = internal_inv.get(internal_field)
+
+            # Xử lý None values
+            if tax_value is None:
+                tax_value = 0 if diff_type == 'number' else ''
+            if internal_value is None:
+                internal_value = 0 if diff_type == 'number' else ''
+
+            # So sánh dựa trên loại
+            has_diff = False
+            diff_value = None
+
+            if diff_type == 'number':
+                tax_num = float(tax_value) if tax_value else 0
+                internal_num = float(internal_value) if internal_value else 0
+                diff_value = tax_num - internal_num
+                has_diff = abs(diff_value) > tolerance
+            elif diff_type == 'string':
+                tax_str = str(tax_value).strip().lower()
+                internal_str = str(internal_value).strip().lower()
+                # Normalize số hóa đơn (bỏ số 0 đầu)
+                if tax_field == 'invoiceNo':
+                    tax_str = tax_str.lstrip('0') or '0'
+                    internal_str = internal_str.lstrip('0') or '0'
+                has_diff = tax_str != internal_str
+                diff_value = f"'{tax_value}' vs '{internal_value}'"
+            elif diff_type == 'date':
+                # Normalize dates trước khi so sánh
+                tax_date = self._normalize_date_string(str(tax_value))
+                internal_date = self._normalize_date_string(str(internal_value))
+                has_diff = tax_date != internal_date
+                diff_value = f"'{tax_value}' vs '{internal_value}'"
+
+            if has_diff:
+                diffs.append({
+                    'field': tax_field,
+                    'fieldLabel': label,
+                    'taxValue': tax_value,
+                    'internalValue': internal_value,
+                    'diff': diff_value,
+                    'diffType': diff_type
+                })
+
+        # So sánh supplier name (field names khác nhau giữa 2 nguồn)
+        tax_supplier_name = str(tax_inv.get('sellerName', '')).strip()
+        if tax_supplier_name.lower() != internal_supplier_name.lower():
+            diffs.append({
+                'field': 'supplierName',
+                'fieldLabel': 'Tên nhà cung cấp',
+                'taxValue': tax_supplier_name,
+                'internalValue': internal_supplier_name,
+                'diff': f"'{tax_supplier_name}' vs '{internal_supplier_name}'",
+                'diffType': 'string'
+            })
+
+        # So sánh supplier tax code
+        tax_supplier_tax_code = str(tax_inv.get('sellerTaxCode', '')).strip()
+        if tax_supplier_tax_code != internal_supplier_tax_code:
+            diffs.append({
+                'field': 'supplierTaxCode',
+                'fieldLabel': 'MST nhà cung cấp',
+                'taxValue': tax_supplier_tax_code,
+                'internalValue': internal_supplier_tax_code,
+                'diff': f"'{tax_supplier_tax_code}' vs '{internal_supplier_tax_code}'",
+                'diffType': 'string'
+            })
+
+        return diffs
+
+    def _normalize_date_string(self, date_str: str) -> str:
+        """Normalize date string to YYYY-MM-DD for comparison"""
+        if not date_str:
+            return ''
+
+        parsed = self._parse_date(date_str)
+        if parsed:
+            return parsed.strftime('%Y-%m-%d')
+        return date_str
 
     def _parse_date(self, date_str: str) -> Optional[datetime]:
         """Parse date string to datetime"""

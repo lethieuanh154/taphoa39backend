@@ -25,6 +25,7 @@ from routes.firebase_websocket import register_namespaces
 from routes.auth_routes import auth_bp
 from routes.invoice_processing import create_invoice_processing_bp
 from routes.supplies_invoice_routes import create_supplies_invoice_routes
+from routes.invoice_routes_v2 import create_invoice_routes_v2
 
 # SocketIO middleware removed — websockets are no longer used.
 
@@ -77,6 +78,7 @@ def _build_app() -> Flask:
     app.register_blueprint(create_firebase_employees_bp(employee_service, socketio))
     app.register_blueprint(create_invoice_processing_bp())
     app.register_blueprint(create_supplies_invoice_routes())
+    app.register_blueprint(create_invoice_routes_v2())
 
     # Attach socketio to app for external use if needed
     app.socketio = socketio

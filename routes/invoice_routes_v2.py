@@ -233,12 +233,19 @@ def create_invoice_routes_v2():
             for inv in all_invoices:
                 unified_invoices.append({
                     'invoiceNo': inv.get('invoiceNo', ''),
+                    'invoiceSymbol': inv.get('invoiceSymbol', ''),
                     'invoiceDate': inv.get('invoiceDate', ''),
                     'supplierName': inv.get('sellerName', ''),
                     'supplierTaxCode': inv.get('sellerTaxCode', ''),
+                    'supplierAddress': inv.get('sellerAddress', ''),
+                    'buyerName': inv.get('buyerName', ''),
+                    'buyerTaxCode': inv.get('buyerTaxCode', ''),
+                    'totalBeforeVat': inv.get('totalBeforeVat', 0),
                     'totalAmount': inv.get('totalAmount', 0),
                     'vatAmount': inv.get('vatAmount', 0)
                 })
+
+            logger.info(f"Parsed {len(unified_invoices)} invoices from XML files")
 
             result = service.batch_import_invoices(
                 unified_invoices,
@@ -334,6 +341,70 @@ def create_invoice_routes_v2():
                 'error': str(e)
             }), 500
 
+    @bp.route('/reconciliation/results', methods=['GET'])
+    def get_reconciliation_results():
+        """
+        Lấy danh sách kết quả đối chiếu với chi tiết sai lệch
+
+        Query params:
+            - status: MATCH | MISMATCH | MISSING_INTERNAL | MISSING_TAX (optional)
+            - limit: số records (default 50)
+
+        Response:
+            {
+                "results": [
+                    {
+                        "invoiceKey": "00000001|0101234567",
+                        "status": "MISMATCH",
+                        "taxData": {...},
+                        "internalData": {...},
+                        "fieldDiffs": [
+                            {
+                                "field": "totalAmount",
+                                "fieldLabel": "Tổng tiền thanh toán",
+                                "taxValue": 22000000,
+                                "internalValue": 11000000,
+                                "diff": 11000000,
+                                "diffType": "number"
+                            }
+                        ]
+                    }
+                ],
+                "count": 1
+            }
+        """
+        try:
+            from google.cloud.firestore_v1.base_query import FieldFilter
+
+            status = request.args.get('status')
+            limit = request.args.get('limit', 50, type=int)
+
+            query = service.db.collection(service.COLLECTION_RECONCILIATION)
+
+            if status:
+                query = query.where(filter=FieldFilter('status', '==', status))
+
+            query = query.limit(limit)
+            docs = list(query.stream())
+
+            results = []
+            for doc in docs:
+                data = doc.to_dict()
+                # Convert datetime to string for JSON
+                if 'checkedAt' in data and hasattr(data['checkedAt'], 'isoformat'):
+                    data['checkedAt'] = data['checkedAt'].isoformat()
+                data['id'] = doc.id
+                results.append(data)
+
+            return jsonify({
+                'results': results,
+                'count': len(results)
+            })
+
+        except Exception as e:
+            logger.exception(f"Error getting reconciliation results: {e}")
+            return jsonify({'error': str(e)}), 500
+
     # =========================================================================
     # DELETE ENDPOINTS
     # =========================================================================
@@ -387,10 +458,95 @@ def create_invoice_routes_v2():
     @bp.route('/health', methods=['GET'])
     def health_check():
         """Health check"""
+        # Lấy project ID từ Firestore client
+        try:
+            project_id = service.db.project
+        except:
+            project_id = 'unknown'
+
         return jsonify({
             'status': 'healthy',
             'service': 'invoices_v2',
-            'version': '2.0.0'
+            'version': '2.0.0',
+            'firebaseProject': project_id
         })
+
+    @bp.route('/debug', methods=['GET'])
+    def debug_data():
+        """
+        Debug endpoint - xem cấu trúc data thực tế trong Firestore
+        Giúp xác định vấn đề format date hoặc field names
+
+        Query params:
+            - collection: tax_invoices | internal_invoices
+            - limit: số document muốn xem (default 3)
+        """
+        try:
+            collection_name = request.args.get('collection', 'tax_invoices')
+            limit = request.args.get('limit', 3, type=int)
+
+            # Lấy vài document mẫu
+            docs = list(service.db.collection(collection_name).limit(limit).stream())
+
+            sample_docs = []
+            for doc in docs:
+                data = doc.to_dict()
+                # Convert Timestamp to string for JSON serialization
+                sample = {'_id': doc.id}
+                for key, value in data.items():
+                    if hasattr(value, 'isoformat'):
+                        sample[key] = f"[Timestamp] {value.isoformat()}"
+                    elif hasattr(value, '__class__'):
+                        sample[key] = f"[{value.__class__.__name__}] {str(value)}"
+                    else:
+                        sample[key] = value
+                sample_docs.append(sample)
+
+            # Đếm tổng số document
+            total_count = len(list(service.db.collection(collection_name).stream()))
+
+            return jsonify({
+                'collection': collection_name,
+                'totalCount': total_count,
+                'sampleCount': len(sample_docs),
+                'samples': sample_docs,
+                'note': 'Kiểm tra format của invoiceDate để debug query'
+            })
+
+        except Exception as e:
+            logger.exception(f"Error in debug: {e}")
+            return jsonify({'error': str(e)}), 500
+
+    @bp.route('/all', methods=['GET'])
+    def get_all_invoices():
+        """
+        Get all invoices WITHOUT date filter (for debugging)
+        Chỉ dùng để debug - kiểm tra xem có lấy được data không
+
+        Query params:
+            - source: TAX_PORTAL | AI_PDF
+            - limit: số document (default 50)
+        """
+        try:
+            source = request.args.get('source', 'TAX_PORTAL')
+            limit = request.args.get('limit', 50, type=int)
+
+            # Query trực tiếp không filter
+            result = service.get_invoices(
+                source=source,
+                page_size=limit
+                # Không có from_date, to_date, year, month_key
+            )
+
+            return jsonify({
+                'debug': True,
+                'message': 'Query without date filter',
+                'source': source,
+                **result
+            })
+
+        except Exception as e:
+            logger.exception(f"Error in get_all_invoices: {e}")
+            return jsonify({'error': str(e)}), 500
 
     return bp

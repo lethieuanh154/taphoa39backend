@@ -1,0 +1,21 @@
+{
+  "indexes": [
+    {
+      "collectionGroup": "tax_invoices",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "sellerTaxCode", "order": "ASCENDING" },
+        { "fieldPath": "invoiceDate", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "internal_invoices",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "supplierTaxCode", "order": "ASCENDING" },
+        { "fieldPath": "invoiceDate", "order": "DESCENDING" }
+      ]
+    }
+  ],
+  "fieldOverrides": []
+}
