@@ -658,8 +658,8 @@ class SuppliesInvoiceService:
                     recon_record['taxData'] = {
                         'invoiceNo': tax_inv['invoiceNo'],
                         'invoiceDate': tax_inv['invoiceDate'],
-                        'sellerName': tax_inv['sellerName'],
-                        'sellerTaxCode': tax_inv['sellerTaxCode'],
+                        'supplierName': tax_inv['supplierName'],
+                        'supplierTaxCode': tax_inv['supplierTaxCode'],
                         'totalAmount': tax_inv['totalAmount'],
                         'vatAmount': tax_inv['vatAmount']
                     }

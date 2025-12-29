@@ -471,21 +471,60 @@ class InvoiceServiceV2:
 
             # Build document data dựa trên collection
             if source == self.SOURCE_TAX_PORTAL:
-                # Schema cho tax_invoices
+                # Schema for tax_invoices, aligned with internal_invoices as per user request
                 supplier_name = invoice_data.get('sellerName', '') or invoice_data.get('supplierName', '')
+                supplier_address = invoice_data.get('sellerAddress', '') or invoice_data.get('supplierAddress', '')
+
+                buyer_data = {
+                    'name': invoice_data.get('buyerName', ''),
+                    'taxCode': invoice_data.get('buyerTaxCode', ''),
+                }
+
+                items = []
+                vat_rates_in_items = []
+                for item_data in invoice_data.get('items', []):
+                    items.append({
+                        'name': item_data.get('itemName', ''),
+                        'unit': item_data.get('unitName', ''),
+                        'quantity': float(item_data.get('quantity', 0)),
+                        'unitPrice': float(item_data.get('unitPrice', 0)),
+                        'amount': float(item_data.get('totalAmount', 0)),
+                    })
+                    if item_data.get('vatRate'):
+                        vat_rates_in_items.append(item_data.get('vatRate'))
+                
+                root_vat_rate = 0.0
+                if vat_rates_in_items:
+                    try:
+                        vat_rate_str = str(vat_rates_in_items[0]).replace('%', '').strip()
+                        if vat_rate_str:
+                            root_vat_rate = float(vat_rate_str)
+                    except (ValueError, TypeError):
+                        pass
+
                 doc_data = {
                     'invoiceNo': invoice_no,
+                    'invoiceSymbol': invoice_data.get('invoiceSymbol', ''),
                     'invoiceDate': issue_date_str,
-                    'sellerTaxCode': supplier_tax_code,
-                    'sellerName': supplier_name,
-                    'totalAmount': float(invoice_data.get('totalAmount', 0)),
-                    'vatAmount': float(invoice_data.get('vatAmount', 0)),
-                    'source': 'gdt',  # General Department of Taxation
                     'invoiceKey': invoice_key,
-                    'importedAt': datetime.utcnow()
+                    'supplier': {
+                        'name': supplier_name,
+                        'taxCode': supplier_tax_code,
+                        'address': supplier_address
+                    },
+                    'supplierTaxCode': supplier_tax_code,
+                    'supplierName': supplier_name,
+                    'buyer': buyer_data,
+                    'items': items,
+                    'totalBeforeVat': float(invoice_data.get('totalBeforeVat', 0)),
+                    'vatRate': root_vat_rate,
+                    'vatAmount': float(invoice_data.get('vatAmount', 0)),
+                    'totalAmount': float(invoice_data.get('totalAmount', 0)),
+                    'source': 'gdt',
+                    'createdAt': datetime.utcnow()
                 }
             else:
-                # Schema cho internal_invoices (AI/PDF)
+                # Schema for internal_invoices (AI/PDF)
                 supplier = invoice_data.get('supplier', {})
                 supplier_name = supplier.get('name', '') or invoice_data.get('supplierName', '')
                 supplier_address = supplier.get('address', '') or invoice_data.get('supplierAddress', '')
@@ -876,8 +915,8 @@ class InvoiceServiceV2:
                         'invoiceNo': tax_inv.get('invoiceNo', ''),
                         'invoiceSymbol': tax_inv.get('invoiceSymbol', ''),
                         'invoiceDate': tax_inv.get('invoiceDate', ''),
-                        'sellerName': tax_inv.get('sellerName', ''),
-                        'sellerTaxCode': tax_inv.get('sellerTaxCode', ''),
+                        'supplierName': tax_inv.get('supplierName', ''),
+                        'supplierTaxCode': tax_inv.get('supplierTaxCode', ''),
                         'totalBeforeVat': tax_inv.get('totalBeforeVat', 0),
                         'vatRate': tax_inv.get('vatRate', 0),
                         'vatAmount': tax_inv.get('vatAmount', 0),
@@ -986,11 +1025,16 @@ class InvoiceServiceV2:
         """
         diffs = []
 
-        # Lấy supplier info từ internal_inv
-        supplier = internal_inv.get('supplier', {})
-        internal_supplier_name = supplier.get('name', '') or internal_inv.get('supplierName', '')
-        internal_supplier_tax_code = supplier.get('taxCode', '') or internal_inv.get('supplierTaxCode', '')
+        # Helper to get supplier info from a unified invoice object
+        def get_supplier_info(inv: Dict) -> Tuple[str, str]:
+            supplier_obj = inv.get('supplier', {})
+            name = supplier_obj.get('name', '') or inv.get('supplierName', '')
+            tax_code = supplier_obj.get('taxCode', '') or inv.get('supplierTaxCode', '')
+            return name, tax_code
 
+        tax_supplier_name, tax_supplier_tax_code = get_supplier_info(tax_inv)
+        internal_supplier_name, internal_supplier_tax_code = get_supplier_info(internal_inv)
+        
         # Định nghĩa các fields cần so sánh
         # Format: (tax_field, internal_field, label, diff_type, tolerance)
         fields_to_compare = [
@@ -1054,7 +1098,6 @@ class InvoiceServiceV2:
                 })
 
         # So sánh supplier name (field names khác nhau giữa 2 nguồn)
-        tax_supplier_name = str(tax_inv.get('sellerName', '')).strip()
         if tax_supplier_name.lower() != internal_supplier_name.lower():
             diffs.append({
                 'field': 'supplierName',
@@ -1066,7 +1109,6 @@ class InvoiceServiceV2:
             })
 
         # So sánh supplier tax code
-        tax_supplier_tax_code = str(tax_inv.get('sellerTaxCode', '')).strip()
         if tax_supplier_tax_code != internal_supplier_tax_code:
             diffs.append({
                 'field': 'supplierTaxCode',

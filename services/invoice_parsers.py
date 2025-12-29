@@ -276,11 +276,19 @@ class TaxInvoiceXMLParser:
             invoice['sellerName'] = find_in_seller(
                 hdon_element,
                 'Ten', 'TenDonVi', 'TenNguoiBan', 'TenCty', 'CompanyName',
-                'SellerName', 'TenNBan', 'TenNCC'
+                'SellerName', 'TenNBan', 'TenNCC','supplierName'
             )
             invoice['sellerAddress'] = find_in_seller(
                 hdon_element,
                 'DChi', 'DiaChi', 'Address', 'DChiNBan'
+            )
+            invoice['sellerPhone'] = find_in_seller(
+                hdon_element,
+                'SDThoai', 'DThoai', 'Phone', 'SellerPhone'
+            )
+            invoice['sellerEmail'] = find_in_seller(
+                hdon_element,
+                'DCTDTu', 'Email', 'SellerEmail'
             )
 
             # ================================================================
@@ -295,6 +303,16 @@ class TaxInvoiceXMLParser:
                 hdon_element,
                 ('NMua', 'BenMua', 'NguoiMua', 'Buyer'),
                 'Ten', 'TenDonVi', 'TenNguoiMua', 'TenNMua', 'BuyerName'
+            )
+            invoice['buyerAddress'] = find_in_section(
+                hdon_element,
+                ('NMua', 'BenMua', 'NguoiMua', 'Buyer'),
+                'DChi', 'DiaChi', 'Address', 'DChiNMua'
+            )
+            invoice['buyerCode'] = find_in_section(
+                hdon_element,
+                ('NMua', 'BenMua', 'NguoiMua', 'Buyer'),
+                'MKHang', 'MaKH', 'BuyerCode'
             )
 
             # ================================================================
@@ -341,6 +359,40 @@ class TaxInvoiceXMLParser:
                     'TgTTTBSo', 'TongTienThanhToan', 'TongTien', 'TotalAmount'
                 )
             invoice['totalAmount'] = TaxInvoiceXMLParser._parse_amount(total_str)
+            
+            invoice['totalAmountInWords'] = find_in_ttoan(
+                hdon_element,
+                'TgTTTBChu', 'VietBangChu', 'InWords'
+            )
+
+            # ================================================================
+            # 9. DANH SÁCH HÀNG HÓA, DỊCH VỤ (items)
+            # ================================================================
+            invoice['items'] = []
+            dshhdv_element = None
+            for elem in hdon_element.iter():
+                tag = elem.tag.split('}')[-1] if '}' in elem.tag else elem.tag
+                if tag == 'DSHHDV':
+                    dshhdv_element = elem
+                    break
+            
+            if dshhdv_element is not None:
+                for hhdv_element in dshhdv_element.iter():
+                    tag = hhdv_element.tag.split('}')[-1] if '}' in hhdv_element.tag else hhdv_element.tag
+                    if tag != 'HHDV':
+                        continue
+
+                    item = {
+                        'lineNumber': find_text(hhdv_element, 'STT'),
+                        'itemName': find_text(hhdv_element, 'THHDV', 'TenHang'),
+                        'unitName': find_text(hhdv_element, 'DVTinh', 'DonViTinh'),
+                        'quantity': TaxInvoiceXMLParser._parse_amount(find_text(hhdv_element, 'SLuong', 'SoLuong')),
+                        'unitPrice': TaxInvoiceXMLParser._parse_amount(find_text(hhdv_element, 'DGia', 'DonGia')),
+                        'totalAmount': TaxInvoiceXMLParser._parse_amount(find_text(hhdv_element, 'ThTien', 'ThanhTien')),
+                        'vatRate': find_text(hhdv_element, 'TSuat', 'ThueSuat')
+                    }
+                    invoice['items'].append(item)
+
 
             # Log để debug
             logger.info(

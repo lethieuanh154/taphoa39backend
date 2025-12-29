@@ -235,14 +235,21 @@ def create_invoice_routes_v2():
                     'invoiceNo': inv.get('invoiceNo', ''),
                     'invoiceSymbol': inv.get('invoiceSymbol', ''),
                     'invoiceDate': inv.get('invoiceDate', ''),
-                    'supplierName': inv.get('sellerName', ''),
+                    'sellerName': inv.get('sellerName', ''),
                     'supplierTaxCode': inv.get('sellerTaxCode', ''),
-                    'supplierAddress': inv.get('sellerAddress', ''),
+                    'sellerTaxCode': inv.get('sellerTaxCode', ''),
+                    'sellerAddress': inv.get('sellerAddress', ''),
+                    'sellerPhone': inv.get('sellerPhone', ''),
+                    'sellerEmail': inv.get('sellerEmail', ''),
                     'buyerName': inv.get('buyerName', ''),
                     'buyerTaxCode': inv.get('buyerTaxCode', ''),
+                    'buyerAddress': inv.get('buyerAddress', ''),
+                    'buyerCode': inv.get('buyerCode', ''),
                     'totalBeforeVat': inv.get('totalBeforeVat', 0),
                     'totalAmount': inv.get('totalAmount', 0),
-                    'vatAmount': inv.get('vatAmount', 0)
+                    'vatAmount': inv.get('vatAmount', 0),
+                    'totalAmountInWords': inv.get('totalAmountInWords', ''),
+                    'items': inv.get('items', [])
                 })
 
             logger.info(f"Parsed {len(unified_invoices)} invoices from XML files")
