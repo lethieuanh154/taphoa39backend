@@ -412,6 +412,46 @@ def create_invoice_routes_v2():
             logger.exception(f"Error getting reconciliation results: {e}")
             return jsonify({'error': str(e)}), 500
 
+    @bp.route('/reconciliation/results/<result_id>', methods=['DELETE'])
+    def delete_reconciliation_result(result_id: str):
+        """
+        Xóa một kết quả đối chiếu
+
+        Path params:
+            - result_id: ID của document trong invoice_reconciliation
+
+        Response:
+            {
+                "success": true,
+                "message": "Đã xóa kết quả đối chiếu"
+            }
+        """
+        try:
+            doc_ref = service.db.collection(service.COLLECTION_RECONCILIATION).document(result_id)
+            doc = doc_ref.get()
+
+            if not doc.exists:
+                return jsonify({
+                    'success': False,
+                    'message': 'Không tìm thấy kết quả đối chiếu'
+                }), 404
+
+            # Xóa document
+            doc_ref.delete()
+            logger.info(f"Deleted reconciliation result: {result_id}")
+
+            return jsonify({
+                'success': True,
+                'message': 'Đã xóa kết quả đối chiếu'
+            })
+
+        except Exception as e:
+            logger.exception(f"Error deleting reconciliation result: {e}")
+            return jsonify({
+                'success': False,
+                'message': str(e)
+            }), 500
+
     # =========================================================================
     # DELETE ENDPOINTS
     # =========================================================================

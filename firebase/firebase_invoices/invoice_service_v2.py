@@ -36,7 +36,6 @@ class InvoiceServiceV2:
     COLLECTION_INTERNAL_INVOICES = 'internal_invoices'
     COLLECTION_RECONCILIATION = 'invoice_reconciliation'
     COLLECTION_SUPPLIERS = 'suppliers'
-    COLLECTION_SYNC_LOGS = 'sync_logs'
 
     # Source types
     SOURCE_TAX_PORTAL = 'TAX_PORTAL'
@@ -79,8 +78,7 @@ class InvoiceServiceV2:
         """
         Chuẩn hóa data từ các collection khác nhau thành format thống nhất
 
-        tax_invoices fields: invoiceNo, invoiceDate, sellerTaxCode, sellerName, totalAmount, vatAmount
-        internal_invoices fields: invoiceNo, invoiceDate, supplierTaxCode, supplierName, totalAmount, vatAmount
+        Cả 2 collection đều sử dụng supplier object: supplier.name, supplier.taxCode, supplier.address
         """
         normalized = {
             'invoiceNo': data.get('invoiceNo', ''),
@@ -101,22 +99,24 @@ class InvoiceServiceV2:
         else:
             normalized['issueDate'] = ''
 
-        # Map supplier fields dựa trên source
-        if source == self.SOURCE_TAX_PORTAL:
-            normalized['supplierTaxCode'] = data.get('sellerTaxCode', '')
-            normalized['supplierName'] = data.get('sellerName', '')
-        else:
-            normalized['supplierTaxCode'] = data.get('supplierTaxCode', '')
-            normalized['supplierName'] = data.get('supplierName', '')
+        # Lấy supplier info từ nested object (chuẩn mới)
+        # Fallback đến flat fields để backward compatible với data cũ
+        supplier = data.get('supplier', {})
+        normalized['supplierTaxCode'] = supplier.get('taxCode', '') or data.get('supplierTaxCode', '') or data.get('sellerTaxCode', '')
+        normalized['supplierName'] = supplier.get('name', '') or data.get('supplierName', '') or data.get('sellerName', '')
+        normalized['supplierAddress'] = supplier.get('address', '') or data.get('supplierAddress', '') or data.get('sellerAddress', '')
 
         # Thêm các field khác nếu có
         normalized['invoiceKey'] = data.get('invoiceKey', '')
         normalized['reconcileStatus'] = data.get('reconcileStatus', self.STATUS_PENDING)
 
-        # Các field bổ sung từ internal_invoices (AI)
-        if source == self.SOURCE_AI_PDF:
-            normalized['confidence'] = data.get('confidence', data.get('ocrConfidence', 0))
-            normalized['items'] = data.get('items', [])
+        # Các field bổ sung
+        normalized['confidence'] = data.get('confidence', data.get('ocrConfidence', 0))
+        normalized['items'] = data.get('items', [])
+        normalized['buyer'] = data.get('buyer', {})
+        normalized['invoiceSymbol'] = data.get('invoiceSymbol', '')
+        normalized['totalBeforeVat'] = float(data.get('totalBeforeVat', 0))
+        normalized['vatRate'] = float(data.get('vatRate', 0))
 
         return normalized
 
@@ -199,12 +199,13 @@ class InvoiceServiceV2:
             # Build query - KHÔNG có filter trước, chỉ limit
             query = self.db.collection(collection_name)
 
-            # Field mapping cho supplier tax code
-            tax_code_field = 'sellerTaxCode' if source == self.SOURCE_TAX_PORTAL else 'supplierTaxCode'
+            # Supplier filter - sẽ áp dụng client-side để backward compatible với data cũ
+            # Vì data cũ có thể dùng flat fields (supplierTaxCode, sellerTaxCode)
+            # và data mới dùng nested field (supplier.taxCode)
+            use_client_side_supplier_filter = bool(supplier_tax_code)
 
-            # Apply supplier filter
-            if supplier_tax_code:
-                query = query.where(filter=FieldFilter(tax_code_field, '==', supplier_tax_code))
+            # Reconcile status filter - client-side vì field này có thể không tồn tại trong tất cả documents
+            use_client_side_status_filter = bool(reconcile_status)
 
             # Date filters - QUAN TRỌNG: Cần detect format date trong Firestore
             # Firestore có thể lưu dạng: "2024-12-29", "29/12/2024", hoặc Timestamp
@@ -296,6 +297,24 @@ class InvoiceServiceV2:
                             continue
                         if parsed_to_date and invoice_date > parsed_to_date:
                             continue
+
+                # Client-side supplier filtering (backward compatible với cả data cũ và mới)
+                if use_client_side_supplier_filter:
+                    # Lấy taxCode từ nested object hoặc flat fields
+                    supplier_obj = data.get('supplier', {})
+                    doc_tax_code = (
+                        supplier_obj.get('taxCode', '') or
+                        data.get('supplierTaxCode', '') or
+                        data.get('sellerTaxCode', '')
+                    )
+                    if doc_tax_code != supplier_tax_code:
+                        continue
+
+                # Client-side reconcileStatus filtering
+                if use_client_side_status_filter:
+                    doc_status = data.get('reconcileStatus', self.STATUS_PENDING)
+                    if doc_status != reconcile_status:
+                        continue
 
                 # Normalize data to unified format
                 normalized = self._normalize_invoice_data(data, source or self.SOURCE_TAX_PORTAL)
@@ -512,8 +531,6 @@ class InvoiceServiceV2:
                         'taxCode': supplier_tax_code,
                         'address': supplier_address
                     },
-                    'supplierTaxCode': supplier_tax_code,
-                    'supplierName': supplier_name,
                     'buyer': buyer_data,
                     'items': items,
                     'totalBeforeVat': float(invoice_data.get('totalBeforeVat', 0)),
@@ -550,8 +567,6 @@ class InvoiceServiceV2:
                         'taxCode': supplier_tax_code,
                         'address': supplier_address
                     },
-                    'supplierTaxCode': supplier_tax_code,
-                    'supplierName': supplier_name,
                     'buyer': invoice_data.get('buyer', {}),
                     'items': items,
                     'totalBeforeVat': float(invoice_data.get('totalBeforeVat', 0)),
@@ -615,9 +630,6 @@ class InvoiceServiceV2:
                 failed += 1
                 errors.append(f"{inv.get('invoiceNo', 'N/A')}: {msg}")
 
-        # Log sync action
-        self._log_sync_action('IMPORT', source, len(invoices), imported, failed, duplicates)
-
         return {
             'success': failed == 0,
             'imported': imported,
@@ -632,7 +644,8 @@ class InvoiceServiceV2:
 
     def get_suppliers(self, search: Optional[str] = None, limit: int = 50) -> List[Dict]:
         """
-        Lấy danh sách nhà cung cấp (cho dropdown/autocomplete)
+        Lấy danh sách nhà cung cấp unique từ cả 2 collection invoices
+        (Không dùng collection suppliers riêng nữa, lấy trực tiếp từ invoices)
 
         Args:
             search: Tìm theo tên hoặc MST
@@ -642,35 +655,92 @@ class InvoiceServiceV2:
             List of suppliers
         """
         try:
-            query = self.db.collection(self.COLLECTION_SUPPLIERS)
+            suppliers_map = {}  # taxCode -> {name, taxCode, address, invoiceCount}
 
-            # Note: Firestore không hỗ trợ LIKE query
-            # Nếu cần search, phải dùng Algolia hoặc client-side filter
-
-            query = query.order_by('invoiceCount', direction=firestore.Query.DESCENDING)
-            query = query.limit(limit)
-
-            docs = query.stream()
-            suppliers = []
-
-            for doc in docs:
+            # Lấy từ tax_invoices
+            tax_docs = self.db.collection(self.COLLECTION_TAX_INVOICES).stream()
+            for doc in tax_docs:
                 data = doc.to_dict()
-                data['id'] = doc.id
+                supplier_obj = data.get('supplier', {})
+                tax_code = (
+                    supplier_obj.get('taxCode', '') or
+                    data.get('supplierTaxCode', '') or
+                    data.get('sellerTaxCode', '')
+                )
+                name = (
+                    supplier_obj.get('name', '') or
+                    data.get('supplierName', '') or
+                    data.get('sellerName', '')
+                )
+                address = (
+                    supplier_obj.get('address', '') or
+                    data.get('supplierAddress', '') or
+                    data.get('sellerAddress', '')
+                )
 
-                # Client-side filter (không optimal nhưng OK cho supplier list nhỏ)
-                if search:
-                    search_lower = search.lower()
-                    name_match = search_lower in data.get('name', '').lower()
-                    code_match = search_lower in data.get('taxCode', '').lower()
-                    if not (name_match or code_match):
-                        continue
+                if tax_code:
+                    if tax_code in suppliers_map:
+                        suppliers_map[tax_code]['invoiceCount'] += 1
+                    else:
+                        suppliers_map[tax_code] = {
+                            'taxCode': tax_code,
+                            'name': name,
+                            'address': address,
+                            'invoiceCount': 1
+                        }
 
-                suppliers.append(data)
+            # Lấy từ internal_invoices
+            internal_docs = self.db.collection(self.COLLECTION_INTERNAL_INVOICES).stream()
+            for doc in internal_docs:
+                data = doc.to_dict()
+                supplier_obj = data.get('supplier', {})
+                tax_code = (
+                    supplier_obj.get('taxCode', '') or
+                    data.get('supplierTaxCode', '')
+                )
+                name = (
+                    supplier_obj.get('name', '') or
+                    data.get('supplierName', '')
+                )
+                address = (
+                    supplier_obj.get('address', '') or
+                    data.get('supplierAddress', '')
+                )
 
+                if tax_code:
+                    if tax_code in suppliers_map:
+                        suppliers_map[tax_code]['invoiceCount'] += 1
+                    else:
+                        suppliers_map[tax_code] = {
+                            'taxCode': tax_code,
+                            'name': name,
+                            'address': address,
+                            'invoiceCount': 1
+                        }
+
+            # Convert to list và sort theo invoiceCount
+            suppliers = list(suppliers_map.values())
+            suppliers.sort(key=lambda x: x['invoiceCount'], reverse=True)
+
+            # Client-side filter
+            if search:
+                search_lower = search.lower()
+                suppliers = [
+                    s for s in suppliers
+                    if search_lower in s.get('name', '').lower() or
+                       search_lower in s.get('taxCode', '').lower()
+                ]
+
+            # Limit
+            suppliers = suppliers[:limit]
+
+            logger.info(f"Found {len(suppliers)} unique suppliers from invoices")
             return suppliers
 
         except Exception as e:
             logger.error(f"Error getting suppliers: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return []
 
     def _update_supplier_stats(self, tax_code: str, name: str, address: str = ''):
@@ -739,7 +809,6 @@ class InvoiceServiceV2:
             if batch_count > 0:
                 batch.commit()
 
-            self._log_sync_action('DELETE', source, deleted_count, deleted_count, 0, 0)
             logger.info(f"Deleted {deleted_count} documents from {collection_name}")
 
             return {'success': True, 'deleted': deleted_count}
@@ -911,12 +980,22 @@ class InvoiceServiceV2:
 
                 # Add invoice data for UI display
                 if tax_inv:
+                    # Lấy supplier info từ nhiều nguồn có thể: sellerName, supplierName, hoặc nested supplier
+                    tax_supplier = tax_inv.get('supplier', {})
                     recon_record['taxData'] = {
                         'invoiceNo': tax_inv.get('invoiceNo', ''),
                         'invoiceSymbol': tax_inv.get('invoiceSymbol', ''),
                         'invoiceDate': tax_inv.get('invoiceDate', ''),
-                        'supplierName': tax_inv.get('supplierName', ''),
-                        'supplierTaxCode': tax_inv.get('supplierTaxCode', ''),
+                        'supplierName': (
+                            tax_supplier.get('name', '') or
+                            tax_inv.get('sellerName', '') or
+                            tax_inv.get('supplierName', '')
+                        ),
+                        'supplierTaxCode': (
+                            tax_supplier.get('taxCode', '') or
+                            tax_inv.get('sellerTaxCode', '') or
+                            tax_inv.get('supplierTaxCode', '')
+                        ),
                         'totalBeforeVat': tax_inv.get('totalBeforeVat', 0),
                         'vatRate': tax_inv.get('vatRate', 0),
                         'vatAmount': tax_inv.get('vatAmount', 0),
@@ -944,7 +1023,8 @@ class InvoiceServiceV2:
             # Save reconciliation results to Firestore
             self._save_reconciliation_results(reconciliations, month_key)
 
-            self._log_sync_action('RECONCILE', 'ALL', len(all_keys), summary['matched'], summary['mismatch'], summary['missingInternal'] + summary['missingTax'])
+            # CẬP NHẬT reconcileStatus trong invoice documents
+            self._update_invoice_reconcile_status(reconciliations)
 
             logger.info(f"Reconciliation complete: {summary}")
 
@@ -1001,6 +1081,70 @@ class InvoiceServiceV2:
 
         except Exception as e:
             logger.error(f"Error saving reconciliation results: {e}")
+
+    def _update_invoice_reconcile_status(self, reconciliations: List[Dict]):
+        """
+        Cập nhật reconcileStatus trong invoice documents sau khi đối chiếu
+        Để filter theo trạng thái hoạt động và cột TT hiển thị đúng màu
+        """
+        try:
+            # Map status từ reconciliation sang invoice
+            # MATCH, MISMATCH -> giữ nguyên
+            # MISSING_INTERNAL -> chỉ có tax invoice, status = UNMATCHED
+            # MISSING_TAX -> chỉ có internal invoice, status = UNMATCHED
+            status_map = {
+                'MATCH': 'MATCHED',
+                'MISMATCH': 'MISMATCH',
+                'MISSING_INTERNAL': 'UNMATCHED',
+                'MISSING_TAX': 'UNMATCHED'
+            }
+
+            batch = self.db.batch()
+            batch_count = 0
+            updated_count = 0
+
+            for recon in reconciliations:
+                status = recon.get('status')
+                invoice_status = status_map.get(status, 'PENDING')
+
+                # Cập nhật tax_invoices
+                if recon.get('taxInvoiceId'):
+                    doc_ref = self.db.collection(self.COLLECTION_TAX_INVOICES).document(recon['taxInvoiceId'])
+                    batch.update(doc_ref, {
+                        'reconcileStatus': invoice_status,
+                        'matchedInvoiceId': recon.get('internalInvoiceId'),
+                        'reconciledAt': datetime.utcnow()
+                    })
+                    batch_count += 1
+                    updated_count += 1
+
+                # Cập nhật internal_invoices
+                if recon.get('internalInvoiceId'):
+                    doc_ref = self.db.collection(self.COLLECTION_INTERNAL_INVOICES).document(recon['internalInvoiceId'])
+                    batch.update(doc_ref, {
+                        'reconcileStatus': invoice_status,
+                        'matchedInvoiceId': recon.get('taxInvoiceId'),
+                        'reconciledAt': datetime.utcnow()
+                    })
+                    batch_count += 1
+                    updated_count += 1
+
+                # Commit batch every 500 operations
+                if batch_count >= 500:
+                    batch.commit()
+                    batch = self.db.batch()
+                    batch_count = 0
+
+            # Commit remaining
+            if batch_count > 0:
+                batch.commit()
+
+            logger.info(f"Updated reconcileStatus for {updated_count} invoice documents")
+
+        except Exception as e:
+            logger.error(f"Error updating invoice reconcile status: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
 
     # =========================================================================
     # UTILITY METHODS
@@ -1165,28 +1309,6 @@ class InvoiceServiceV2:
         # Loại bỏ số 0 đầu để compare
         return invoice_no.lstrip('0') or '0'
 
-    def _log_sync_action(
-        self,
-        action: str,
-        source: str,
-        total: int,
-        success: int,
-        fail: int,
-        duplicate: int
-    ):
-        """Log sync action for audit trail"""
-        try:
-            self.db.collection(self.COLLECTION_SYNC_LOGS).add({
-                'action': action,
-                'source': source,
-                'totalProcessed': total,
-                'successCount': success,
-                'failCount': fail,
-                'duplicateCount': duplicate,
-                'createdAt': datetime.utcnow()
-            })
-        except Exception as e:
-            logger.error(f"Error logging sync action: {e}")
 
 
 # Singleton instance
