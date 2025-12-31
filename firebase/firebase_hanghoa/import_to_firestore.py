@@ -6,9 +6,9 @@ load_dotenv()
 
 COLLECTION_NAME = "products"
 
-# service_account_json = os.environ.get("FIREBASE_SERVICE_ACCOUNT_HANGHOA")
+# service_account_json = os.environ.get("FIREBASE_SERVICE_ACCOUNT_PRODUCT")
 # if not service_account_json:
-#     raise Exception("Missing FIREBASE_SERVICE_ACCOUNT_HANGHOA environment variable.")
+#     raise Exception("Missing FIREBASE_SERVICE_ACCOUNT_PRODUCT environment variable.")
 
 # # Chuyển chuỗi JSON thành dict và tạo credential
 # cred_dict = json.loads(service_account_json)
@@ -17,7 +17,7 @@ COLLECTION_NAME = "products"
 # cred = credentials.Certificate(cred_dict)
 # firebase_admin.initialize_app(cred)
 # db = firestore.client()
-db = init_firestore("FIREBASE_SERVICE_ACCOUNT_HANGHOA")
+db = init_firestore("FIREBASE_SERVICE_ACCOUNT_PRODUCT")
 
 def _parse_int(value):
     try:

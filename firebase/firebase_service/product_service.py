@@ -29,7 +29,7 @@ API_HEADERS = {
 COLLECTION_NAME = "products"
 
 # Sử dụng init_firestore thay vì khởi tạo trực tiếp
-db = init_firestore("FIREBASE_SERVICE_ACCOUNT_HANGHOA", app_name="hanghoa_app")
+db = init_firestore("FIREBASE_SERVICE_ACCOUNT_PRODUCT", app_name="product_app")
 
 
 
