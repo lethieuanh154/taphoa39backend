@@ -408,7 +408,17 @@ class FirestoreProductService:
             else:
                 print("  ℹ️ Không có sản phẩm nào cần cập nhật")
 
-            # Step 5: Invalidate cache
+            # Step 5: Sync clones with updated original products
+            clone_sync_time = 0
+            clones_updated = 0
+            if to_upsert:
+                print("  🔄 Đồng bộ clones với products gốc đã cập nhật...")
+                clone_sync_start = time.time()
+                clones_updated = self._sync_clones_with_originals(to_upsert)
+                clone_sync_time = time.time() - clone_sync_start
+                print(f"  ✅ Đã cập nhật {clones_updated} clones trong {clone_sync_time:.2f}s")
+
+            # Step 6: Invalidate cache
             print("  🗑️ Xóa cache...")
             self.invalidate_all_product_caches()
             for doc_id, _ in to_upsert:
@@ -419,6 +429,7 @@ class FirestoreProductService:
             print(f"\n✅ Đồng bộ hoàn tất trong {total_time:.2f}s:")
             print(f"   - Tổng sản phẩm từ KiotViet: {len(api_items)}")
             print(f"   - Cập nhật/thêm mới: {len(to_upsert)}")
+            print(f"   - Clones cập nhật: {clones_updated}")
             print(f"   - Không thay đổi: {unchanged_count}")
             print(f"   - Inactive: {inactive_count}")
             print(f"   - Deleted: {deleted_count}")
@@ -430,6 +441,7 @@ class FirestoreProductService:
                 "stats": {
                     "total_api_items": len(api_items),
                     "updated_or_created": len(to_upsert),
+                    "clones_updated": clones_updated,
                     "unchanged": unchanged_count,
                     "inactive_included": inactive_count,
                     "deleted_included": deleted_count,
@@ -438,7 +450,8 @@ class FirestoreProductService:
                         "checksum_fetch": round(checksum_time, 2),
                         "api_fetch": round(api_time, 2),
                         "compare": round(compare_time, 2),
-                        "update": round(update_time, 2)
+                        "update": round(update_time, 2),
+                        "clone_sync": round(clone_sync_time, 2)
                     }
                 }
             }
@@ -453,6 +466,91 @@ class FirestoreProductService:
                 "error": str(exc),
                 "error_type": type(exc).__name__
             }
+
+    def _sync_clones_with_originals(self, updated_originals: List[tuple]) -> int:
+        """
+        Đồng bộ clones với products gốc đã được cập nhật.
+
+        Khi product gốc thay đổi BasePrice, Cost, các clones tương ứng cũng phải được cập nhật.
+        Clone được xác định bởi CloneSourceId = Id của product gốc.
+
+        Args:
+            updated_originals: List of (doc_id, product_dict) tuples đã được cập nhật
+
+        Returns:
+            Số lượng clones đã được cập nhật
+        """
+        if not updated_originals:
+            return 0
+
+        # Lấy tất cả source IDs của products đã cập nhật
+        source_ids = set()
+        source_data = {}  # Map source_id -> (BasePrice, Cost)
+
+        for doc_id, product_dict in updated_originals:
+            source_ids.add(str(doc_id))
+            source_data[str(doc_id)] = {
+                "BasePrice": product_dict.get("BasePrice", 0),
+                "Cost": product_dict.get("Cost", 0),
+            }
+
+        if not source_ids:
+            return 0
+
+        # Tìm tất cả clones có CloneSourceId trong source_ids
+        # Query Firestore cho products có isClone=True
+        clones_to_update = []
+
+        try:
+            # Query clones
+            clone_query = self.products_ref.where("isClone", "==", True).stream()
+
+            for doc in clone_query:
+                clone_data = doc.to_dict()
+                clone_source_id = str(clone_data.get("CloneSourceId", ""))
+
+                if clone_source_id in source_ids:
+                    # Clone này cần được cập nhật
+                    original_data = source_data[clone_source_id]
+
+                    # Kiểm tra xem có thay đổi không
+                    current_base_price = clone_data.get("BasePrice", 0)
+                    current_cost = clone_data.get("Cost", 0)
+                    new_base_price = original_data["BasePrice"]
+                    new_cost = original_data["Cost"]
+
+                    if current_base_price != new_base_price or current_cost != new_cost:
+                        clones_to_update.append({
+                            "doc_id": doc.id,
+                            "BasePrice": new_base_price,
+                            "Cost": new_cost,
+                            "SyncTimestamp": datetime.utcnow().isoformat()
+                        })
+
+            if not clones_to_update:
+                return 0
+
+            # Batch update clones
+            BATCH_SIZE = 500
+            updated_count = 0
+
+            for i in range(0, len(clones_to_update), BATCH_SIZE):
+                batch = db.batch()
+                for clone_update in clones_to_update[i:i + BATCH_SIZE]:
+                    doc_ref = self.products_ref.document(clone_update["doc_id"])
+                    batch.update(doc_ref, {
+                        "BasePrice": clone_update["BasePrice"],
+                        "Cost": clone_update["Cost"],
+                        "SyncTimestamp": clone_update["SyncTimestamp"]
+                    })
+                batch.commit()
+                updated_count += len(clones_to_update[i:i + BATCH_SIZE])
+
+            return updated_count
+
+        except Exception as e:
+            print(f"⚠️ Lỗi khi sync clones: {e}")
+            return 0
 
     def fetch_firestore_items(self):
         print("Đang tải dữ liệu từ Firestore...")
