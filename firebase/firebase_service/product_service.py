@@ -471,7 +471,7 @@ class FirestoreProductService:
         """
         Đồng bộ clones với products gốc đã được cập nhật.
 
-        Khi product gốc thay đổi BasePrice, Cost, các clones tương ứng cũng phải được cập nhật.
+        Khi product gốc thay đổi BasePrice, Cost, tax, các clones tương ứng cũng phải được cập nhật.
         Clone được xác định bởi CloneSourceId = Id của product gốc.
 
         Args:
@@ -485,28 +485,38 @@ class FirestoreProductService:
 
         # Lấy tất cả source IDs của products đã cập nhật
         source_ids = set()
-        source_data = {}  # Map source_id -> (BasePrice, Cost)
+        source_data = {}  # Map source_id -> (BasePrice, Cost, tax)
 
         for doc_id, product_dict in updated_originals:
             source_ids.add(str(doc_id))
             source_data[str(doc_id)] = {
                 "BasePrice": product_dict.get("BasePrice", 0),
                 "Cost": product_dict.get("Cost", 0),
+                "tax": product_dict.get("tax", "0%"),
             }
 
         if not source_ids:
             return 0
 
-        # Tìm tất cả clones có CloneSourceId trong source_ids
-        # Query Firestore cho products có isClone=True
+        # Tìm tất cả clones - scan all products và check isClone
+        # Không dùng query vì isClone có thể là string "true" hoặc boolean True
         clones_to_update = []
 
         try:
-            # Query clones
-            clone_query = self.products_ref.where("isClone", "==", True).stream()
+            # Scan all products để tìm clones
+            all_docs = self.products_ref.stream()
 
-            for doc in clone_query:
+            for doc in all_docs:
                 clone_data = doc.to_dict()
+
+                # Check isClone - có thể là boolean True hoặc string "true"
+                is_clone = clone_data.get("isClone", False)
+                if isinstance(is_clone, str):
+                    is_clone = is_clone.lower() == "true"
+
+                if not is_clone:
+                    continue
+
                 clone_source_id = str(clone_data.get("CloneSourceId", ""))
 
                 if clone_source_id in source_ids:
@@ -516,18 +526,23 @@ class FirestoreProductService:
                     # Kiểm tra xem có thay đổi không
                     current_base_price = clone_data.get("BasePrice", 0)
                     current_cost = clone_data.get("Cost", 0)
+                    current_tax = clone_data.get("tax", "0%")
                     new_base_price = original_data["BasePrice"]
                     new_cost = original_data["Cost"]
+                    new_tax = original_data["tax"]
 
-                    if current_base_price != new_base_price or current_cost != new_cost:
+                    if current_base_price != new_base_price or current_cost != new_cost or current_tax != new_tax:
                         clones_to_update.append({
                             "doc_id": doc.id,
                             "BasePrice": new_base_price,
                             "Cost": new_cost,
+                            "tax": new_tax,
                             "SyncTimestamp": datetime.utcnow().isoformat()
                         })
+                        print(f"    📝 Clone {doc.id}: BasePrice {current_base_price}->{new_base_price}, Cost {current_cost}->{new_cost}, tax {current_tax}->{new_tax}")
 
             if not clones_to_update:
+                print("    ℹ️ Không có clone nào cần cập nhật")
                 return 0
 
             # Batch update clones
@@ -541,6 +556,7 @@ class FirestoreProductService:
                     batch.update(doc_ref, {
                         "BasePrice": clone_update["BasePrice"],
                         "Cost": clone_update["Cost"],
+                        "tax": clone_update["tax"],
                         "SyncTimestamp": clone_update["SyncTimestamp"]
                     })
                 batch.commit()
@@ -549,7 +565,9 @@ class FirestoreProductService:
             return updated_count
 
         except Exception as e:
+            import traceback
             print(f"⚠️ Lỗi khi sync clones: {e}")
+            traceback.print_exc()
             return 0
 
     def fetch_firestore_items(self):

@@ -4,6 +4,53 @@ from typing import Any, List, Optional
 
 from dateutil.parser import isoparse
 
+# Mapping TaxIds -> tax value
+TAX_MAPPING = {
+    1: "0%",
+    2: "5%",
+    3: "8%",
+    4: "10%",
+}
+DEFAULT_TAX = "0%"
+
+
+def get_tax_value(tax_ids) -> str:
+    """
+    Chuyen doi TaxIds tu KiotViet sang gia tri tax.
+
+    Args:
+        tax_ids: Co the la list [1], [2], int, string "2", hoac None/""
+
+    Returns:
+        str: Gia tri tax ("0%", "5%", "8%", "10%")
+    """
+    # Xu ly None hoac string rong
+    if tax_ids is None or tax_ids == "" or tax_ids == []:
+        return DEFAULT_TAX
+
+    # Neu la list, lay phan tu dau tien
+    if isinstance(tax_ids, list):
+        if len(tax_ids) == 0:
+            return DEFAULT_TAX
+        tax_id = tax_ids[0]
+        # Kiem tra phan tu dau la rong
+        if tax_id == "" or tax_id is None:
+            return DEFAULT_TAX
+    else:
+        tax_id = tax_ids
+
+    # Xu ly string rong
+    if isinstance(tax_id, str) and tax_id.strip() == "":
+        return DEFAULT_TAX
+
+    # Chuyen sang int
+    try:
+        tax_id = int(tax_id)
+    except (TypeError, ValueError):
+        return DEFAULT_TAX
+
+    return TAX_MAPPING.get(tax_id, DEFAULT_TAX)
+
 
 @dataclass
 class Product:
@@ -31,6 +78,8 @@ class Product:
     NormalizedName: Optional[str] = None
     NormalizedCode: Optional[str] = None
     OrderTemplate: Optional[str] = None
+    TaxIds: Optional[List[int]] = None
+    tax: Optional[str] = None
 
     @staticmethod
     def from_dict(data: dict) -> "Product":
@@ -66,6 +115,18 @@ class Product:
             except (TypeError, ValueError):
                 return None
 
+        # Parse TaxIds va tu dong tinh tax
+        tax_ids_raw = data.get("TaxIds")
+        tax_ids = None
+        if tax_ids_raw is not None:
+            if isinstance(tax_ids_raw, list):
+                tax_ids = tax_ids_raw
+            else:
+                tax_ids = [tax_ids_raw]
+
+        # Tu dong tinh tax tu TaxIds
+        tax_value = get_tax_value(tax_ids)
+
         return Product(
             Id=safe_int(data.get("Id"), 0) or 0,
             Code=data.get("Code"),
@@ -91,4 +152,6 @@ class Product:
             NormalizedName=data.get("NormalizedName"),
             NormalizedCode=data.get("NormalizedCode"),
             OrderTemplate=data.get("OrderTemplate"),
+            TaxIds=tax_ids,
+            tax=tax_value,
         )
