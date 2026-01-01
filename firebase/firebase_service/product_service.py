@@ -485,14 +485,14 @@ class FirestoreProductService:
 
         # Lấy tất cả source IDs của products đã cập nhật
         source_ids = set()
-        source_data = {}  # Map source_id -> (BasePrice, Cost, tax)
+        source_data = {}  # Map source_id -> (BasePrice, Cost, Tax)
 
         for doc_id, product_dict in updated_originals:
             source_ids.add(str(doc_id))
             source_data[str(doc_id)] = {
                 "BasePrice": product_dict.get("BasePrice", 0),
                 "Cost": product_dict.get("Cost", 0),
-                "tax": product_dict.get("tax", "0%"),
+                "Tax": product_dict.get("Tax", 0),
             }
 
         if not source_ids:
@@ -526,20 +526,20 @@ class FirestoreProductService:
                     # Kiểm tra xem có thay đổi không
                     current_base_price = clone_data.get("BasePrice", 0)
                     current_cost = clone_data.get("Cost", 0)
-                    current_tax = clone_data.get("tax", "0%")
+                    current_tax = clone_data.get("Tax", 0)
                     new_base_price = original_data["BasePrice"]
                     new_cost = original_data["Cost"]
-                    new_tax = original_data["tax"]
+                    new_tax = original_data["Tax"]
 
                     if current_base_price != new_base_price or current_cost != new_cost or current_tax != new_tax:
                         clones_to_update.append({
                             "doc_id": doc.id,
                             "BasePrice": new_base_price,
                             "Cost": new_cost,
-                            "tax": new_tax,
+                            "Tax": new_tax,
                             "SyncTimestamp": datetime.utcnow().isoformat()
                         })
-                        print(f"    📝 Clone {doc.id}: BasePrice {current_base_price}->{new_base_price}, Cost {current_cost}->{new_cost}, tax {current_tax}->{new_tax}")
+                        print(f"    📝 Clone {doc.id}: BasePrice {current_base_price}->{new_base_price}, Cost {current_cost}->{new_cost}, Tax {current_tax}->{new_tax}")
 
             if not clones_to_update:
                 print("    ℹ️ Không có clone nào cần cập nhật")
@@ -556,7 +556,7 @@ class FirestoreProductService:
                     batch.update(doc_ref, {
                         "BasePrice": clone_update["BasePrice"],
                         "Cost": clone_update["Cost"],
-                        "tax": clone_update["tax"],
+                        "Tax": clone_update["Tax"],
                         "SyncTimestamp": clone_update["SyncTimestamp"]
                     })
                 batch.commit()

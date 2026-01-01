@@ -4,25 +4,26 @@ from typing import Any, List, Optional
 
 from dateutil.parser import isoparse
 
-# Mapping TaxIds -> tax value
+# Mapping TaxIds -> Tax value (number)
+# KiotViet TaxIds: 1=0%, 2=5%, 3=8%, 4=10%
 TAX_MAPPING = {
-    1: "0%",
-    2: "5%",
-    3: "8%",
-    4: "10%",
+    1: 0,
+    2: 5,
+    3: 8,
+    4: 10,
 }
-DEFAULT_TAX = "0%"
+DEFAULT_TAX = 0
 
 
-def get_tax_value(tax_ids) -> str:
+def get_tax_value(tax_ids) -> int:
     """
-    Chuyen doi TaxIds tu KiotViet sang gia tri tax.
+    Chuyen doi TaxIds tu KiotViet sang gia tri Tax (number).
 
     Args:
         tax_ids: Co the la list [1], [2], int, string "2", hoac None/""
 
     Returns:
-        str: Gia tri tax ("0%", "5%", "8%", "10%")
+        int: Gia tri Tax (0, 5, 8, 10)
     """
     # Xu ly None hoac string rong
     if tax_ids is None or tax_ids == "" or tax_ids == []:
@@ -79,7 +80,7 @@ class Product:
     NormalizedCode: Optional[str] = None
     OrderTemplate: Optional[str] = None
     TaxIds: Optional[List[int]] = None
-    tax: Optional[str] = None
+    Tax: Optional[int] = None  # Tax value as number (0, 5, 8, 10)
 
     @staticmethod
     def from_dict(data: dict) -> "Product":
@@ -115,7 +116,7 @@ class Product:
             except (TypeError, ValueError):
                 return None
 
-        # Parse TaxIds va tu dong tinh tax
+        # Parse TaxIds va tu dong tinh Tax
         tax_ids_raw = data.get("TaxIds")
         tax_ids = None
         if tax_ids_raw is not None:
@@ -124,8 +125,16 @@ class Product:
             else:
                 tax_ids = [tax_ids_raw]
 
-        # Tu dong tinh tax tu TaxIds
-        tax_value = get_tax_value(tax_ids)
+        # Tu dong tinh Tax tu TaxIds (number: 0, 5, 8, 10)
+        # Uu tien lay Tax tu data neu da co, neu khong thi tinh tu TaxIds
+        existing_tax = data.get("Tax")
+        if existing_tax is not None:
+            try:
+                tax_value = int(existing_tax)
+            except (TypeError, ValueError):
+                tax_value = get_tax_value(tax_ids)
+        else:
+            tax_value = get_tax_value(tax_ids)
 
         return Product(
             Id=safe_int(data.get("Id"), 0) or 0,
@@ -153,5 +162,5 @@ class Product:
             NormalizedCode=data.get("NormalizedCode"),
             OrderTemplate=data.get("OrderTemplate"),
             TaxIds=tax_ids,
-            tax=tax_value,
+            Tax=tax_value,
         )
