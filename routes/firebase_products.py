@@ -246,45 +246,48 @@ def create_firebase_products_bp(product_service, socketio) -> Blueprint:
 def _process_stock_for_new_product(product: dict) -> dict:
     """
     ✅ Helper function: Xử lý tồn kho cho sản phẩm mới.
-    
+
     Phân biệt:
     - OnHand: Tồn kho từ KiotViet API (/items/all) - tồn kho thực tế
     - OnHandNV: Tồn kho do user nhập khi tạo sản phẩm mới
-    
+
     Khi tạo sản phẩm mới từ frontend:
     - User nhập tồn kho -> lưu vào OnHandNV
     - OnHand = 0 (vì sản phẩm mới chưa có trên KiotViet)
-    
+
     Sau này khi sync từ KiotViet:
     - OnHand sẽ được cập nhật từ API KiotViet
     - OnHandNV giữ nguyên giá trị user đã nhập
     """
     if not isinstance(product, dict):
         return product
-    
+
     # Tạo bản copy để không thay đổi dict gốc
     result = dict(product)
-    
-    # Lấy giá trị tồn kho từ input (user nhập vào field OnHand hoặc stock)
-    # Frontend có thể gửi qua field "OnHand" hoặc "stock"
-    user_input_stock = result.get("OnHand") or result.get("stock") or 0
-    
+
+    # ✅ Ưu tiên lấy OnHandNV nếu frontend đã gửi sẵn
+    # Nếu không có thì fallback sang OnHand hoặc stock
+    if "OnHandNV" in result and result.get("OnHandNV") is not None:
+        user_input_stock = result.get("OnHandNV")
+    else:
+        user_input_stock = result.get("OnHand") or result.get("stock") or 0
+
     # Parse thành số
     try:
         stock_value = float(user_input_stock) if user_input_stock is not None else 0
     except (TypeError, ValueError):
         stock_value = 0
-    
+
     # ✅ Lưu tồn kho user nhập vào OnHandNV
     result["OnHandNV"] = stock_value
-    
+
     # ✅ OnHand = 0 (sản phẩm mới chưa có trên KiotViet)
     # Sau này khi sync từ KiotViet, OnHand sẽ được cập nhật
     result["OnHand"] = 0
-    
+
     # Xóa field "stock" nếu có (không cần lưu vào Firebase)
     result.pop("stock", None)
-    
+
     print(f"📦 Product {result.get('Id')}: User input stock={user_input_stock} -> OnHandNV={stock_value}, OnHand=0")
-    
+
     return result
