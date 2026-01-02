@@ -135,6 +135,8 @@ class FirestoreProductService:
         """
         Add multiple products to Firestore in batch.
         Uses Firestore batch writes for efficiency (max 500 per batch).
+
+        ✅ DUPLICATE CHECK: Kiểm tra trùng Code trước khi thêm để ngăn tạo products duplicate.
         """
         if not products:
             return {"status": "error", "message": "No products provided"}
@@ -143,9 +145,24 @@ class FirestoreProductService:
             return {"status": "error", "message": "Products must be a list"}
 
         try:
+            # ✅ Step 1: Lấy danh sách Codes hiện có trong Firestore để check duplicate
+            existing_codes = set()
+            try:
+                all_docs = self.products_ref.stream()
+                for doc in all_docs:
+                    doc_data = doc.to_dict()
+                    code = doc_data.get("Code", "")
+                    if code:
+                        existing_codes.add(code.upper())  # Normalize to uppercase
+                print(f"📋 Found {len(existing_codes)} existing product codes in Firestore")
+            except Exception as e:
+                print(f"⚠️ Could not fetch existing codes: {e}")
+                # Continue without duplicate check
+
             batch = db.batch()
             added_count = 0
             skipped_count = 0
+            duplicate_count = 0
             errors = []
 
             for idx, product_data in enumerate(products):
@@ -156,6 +173,18 @@ class FirestoreProductService:
                 product_id = product_data.get("Id") or product_data.get("id")
                 if not product_id:
                     errors.append({"index": idx, "error": "Missing Id"})
+                    continue
+
+                # ✅ Step 2: Check duplicate Code
+                product_code = product_data.get("Code", "")
+                if product_code and product_code.upper() in existing_codes:
+                    duplicate_count += 1
+                    errors.append({
+                        "index": idx,
+                        "error": f"Duplicate Code: {product_code}",
+                        "product_id": product_id
+                    })
+                    print(f"⚠️ Skipping duplicate product Code: {product_code}")
                     continue
 
                 # Check if should store (not deleted)
@@ -172,6 +201,10 @@ class FirestoreProductService:
                 batch.set(doc_ref, product_data)
                 added_count += 1
 
+                # ✅ Add to existing_codes để không bị duplicate trong cùng batch
+                if product_code:
+                    existing_codes.add(product_code.upper())
+
                 # Firestore batch limit is 500 operations
                 if added_count % 500 == 0:
                     batch.commit()
@@ -185,19 +218,25 @@ class FirestoreProductService:
             # Invalidate cache
             self.invalidate_all_product_caches()
 
-            print(f"✅ Added {added_count} products in batch, skipped {skipped_count}")
+            print(f"✅ Added {added_count} products in batch, skipped {skipped_count}, duplicates {duplicate_count}")
 
             result = {
                 "status": "success",
                 "message": f"Added {added_count} products successfully",
                 "added_count": added_count,
                 "skipped_count": skipped_count,
+                "duplicate_count": duplicate_count,
                 "total_requested": len(products)
             }
 
             if errors:
                 result["errors"] = errors
                 result["error_count"] = len(errors)
+
+            # ✅ Cảnh báo nếu tất cả đều bị duplicate
+            if duplicate_count > 0 and added_count == 0:
+                result["status"] = "warning"
+                result["message"] = f"All {duplicate_count} products already exist (duplicate Codes)"
 
             return result
 
