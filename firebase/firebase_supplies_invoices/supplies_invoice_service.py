@@ -248,6 +248,9 @@ class SuppliesInvoiceService:
                     'amount': float(item.get('amount', 0))
                 })
 
+            # Chuẩn hóa buyer
+            buyer = invoice_data.get('buyer', {})
+
             # Chuẩn hóa dữ liệu theo schema mới
             doc_data = {
                 # Thông tin cơ bản
@@ -266,7 +269,13 @@ class SuppliesInvoiceService:
                 'supplierName': supplier.get('name', ''),  # Để dễ query
 
                 # Người mua
-                'buyer': invoice_data.get('buyer', {}),
+                'buyer': {
+                    'name': buyer.get('name', ''),
+                    'taxCode': buyer.get('taxCode', ''),
+                    'address': buyer.get('address', '')
+                },
+                'buyerName': buyer.get('name', ''),  # Để dễ query
+                'buyerTaxCode': buyer.get('taxCode', ''),  # Để dễ query
 
                 # Chi tiết hàng hóa
                 'items': items,
@@ -419,6 +428,76 @@ class SuppliesInvoiceService:
         except Exception as e:
             logger.error(f"Error getting internal invoices: {e}")
             return []
+
+    def get_recent_ai_invoices(self, days: int = 1) -> List[Dict]:
+        """
+        Lấy danh sách hóa đơn AI được tạo trong N ngày gần đây
+        Dựa theo createdAt (thời điểm lưu vào Firestore)
+
+        Args:
+            days: Số ngày để lọc (mặc định 1 ngày)
+
+        Returns:
+            List[Dict]: Danh sách hóa đơn với đầy đủ thông tin items
+        """
+        try:
+            from datetime import timedelta
+
+            # Tính thời điểm bắt đầu (N ngày trước)
+            cutoff_time = datetime.utcnow() - timedelta(days=days)
+
+            query = self.db.collection('internal_invoices').where(
+                filter=FieldFilter('createdAt', '>=', cutoff_time)
+            ).order_by('createdAt', direction='DESCENDING')
+
+            docs = query.get()
+
+            invoices = []
+            for doc in docs:
+                data = doc.to_dict()
+                data['id'] = doc.id
+
+                # Convert datetime to ISO string for JSON serialization
+                if 'createdAt' in data and hasattr(data['createdAt'], 'isoformat'):
+                    data['createdAt'] = data['createdAt'].isoformat()
+
+                invoices.append(data)
+
+            logger.info(f"Retrieved {len(invoices)} recent AI invoices (last {days} days)")
+            return invoices
+
+        except Exception as e:
+            logger.error(f"Error getting recent AI invoices: {e}")
+            return []
+
+    def get_ai_invoice_by_id(self, doc_id: str) -> Optional[Dict]:
+        """
+        Lấy chi tiết 1 hóa đơn AI theo ID
+
+        Args:
+            doc_id: Document ID trong Firestore
+
+        Returns:
+            Dict hoặc None nếu không tìm thấy
+        """
+        try:
+            doc = self.db.collection('internal_invoices').document(doc_id).get()
+
+            if not doc.exists:
+                return None
+
+            data = doc.to_dict()
+            data['id'] = doc.id
+
+            # Convert datetime to ISO string
+            if 'createdAt' in data and hasattr(data['createdAt'], 'isoformat'):
+                data['createdAt'] = data['createdAt'].isoformat()
+
+            return data
+
+        except Exception as e:
+            logger.error(f"Error getting AI invoice by ID: {e}")
+            return None
 
     def delete_internal_invoice(self, doc_id: str) -> bool:
         """Xóa hóa đơn từ folder local"""

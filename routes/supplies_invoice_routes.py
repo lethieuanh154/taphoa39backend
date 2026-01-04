@@ -129,6 +129,76 @@ def create_supplies_invoice_routes() -> Blueprint:
                 'error': f'Lỗi server: {str(e)}'
             }), 500
 
+    @bp.route('/recent-ai-invoices', methods=['GET'])
+    def get_recent_ai_invoices():
+        """
+        Lấy danh sách hóa đơn AI đã lưu trong N ngày gần đây
+        Dùng cho dialog chọn hóa đơn đã xử lý trước đó
+
+        Query params:
+            - days: Số ngày (mặc định 1)
+
+        Response:
+            {
+                "success": true,
+                "invoices": [...],
+                "total": 5
+            }
+        """
+        try:
+            days = request.args.get('days', default=1, type=int)
+
+            # Giới hạn tối đa 30 ngày
+            if days > 30:
+                days = 30
+
+            invoices = service.get_recent_ai_invoices(days)
+
+            return jsonify({
+                'success': True,
+                'invoices': invoices,
+                'total': len(invoices)
+            })
+
+        except Exception as e:
+            logger.exception(f"Error getting recent AI invoices: {e}")
+            return jsonify({
+                'success': False,
+                'error': f'Lỗi server: {str(e)}'
+            }), 500
+
+    @bp.route('/ai-invoice/<doc_id>', methods=['GET'])
+    def get_ai_invoice_by_id(doc_id):
+        """
+        Lấy chi tiết 1 hóa đơn AI theo ID
+
+        Response:
+            {
+                "success": true,
+                "invoice": {...}
+            }
+        """
+        try:
+            invoice = service.get_ai_invoice_by_id(doc_id)
+
+            if invoice:
+                return jsonify({
+                    'success': True,
+                    'invoice': invoice
+                })
+            else:
+                return jsonify({
+                    'success': False,
+                    'error': 'Không tìm thấy hóa đơn'
+                }), 404
+
+        except Exception as e:
+            logger.exception(f"Error getting AI invoice: {e}")
+            return jsonify({
+                'success': False,
+                'error': f'Lỗi server: {str(e)}'
+            }), 500
+
     @bp.route('/save-ai-invoice', methods=['POST'])
     def save_ai_invoice():
         """
