@@ -1,6 +1,7 @@
 from dotenv import load_dotenv
 from firebase.init_firebase import init_firestore
 from google.cloud import firestore
+from datetime import datetime
 
 load_dotenv()
 
@@ -84,10 +85,12 @@ def update_products_from_banhang_app_to_firestore(update_payload):
                 target_value = int(current_value) - int(minus_value)
 
             # ✅ Update product OnHand hoặc OnHandNV tùy theo loại
+            # Cập nhật SyncTimestamp để realtime listener có thể bắt được thay đổi
+            sync_timestamp = datetime.utcnow().isoformat()
             if is_nv_update:
-                transaction.update(doc_ref, {"OnHandNV": target_value})
+                transaction.update(doc_ref, {"OnHandNV": target_value, "SyncTimestamp": sync_timestamp})
             else:
-                transaction.update(doc_ref, {"OnHand": target_value})
+                transaction.update(doc_ref, {"OnHand": target_value, "SyncTimestamp": sync_timestamp})
 
             # Create processed marker if available — use transaction.set
             if proc_ref is not None:
