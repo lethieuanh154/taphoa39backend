@@ -272,6 +272,13 @@ class FirestoreProductService:
             return {"status": "error", "message": str(e)}
 
     def update_product(self, product_id, updates):
+        # ✅ Debug log to see what's being sent to Firestore
+        print(f"📝 [update_product] Product {product_id}: Updating with fields: {list(updates.keys())}")
+        if "OnHand" in updates:
+            print(f"   ⚠️ OnHand will be updated to: {updates['OnHand']}")
+        if "OnHandNV" in updates:
+            print(f"   ✅ OnHandNV will be updated to: {updates['OnHandNV']}")
+
         doc_ref = self.products_ref.document(str(product_id))
         doc_ref.update(updates)
         self.cache.invalidate(product_id)

@@ -10,6 +10,7 @@ from routes.firebase_websocket import set_last_notify
 
 UPDATE_ID_KEYS: Tuple[str, ...] = ("Id", "id", "productId", "ProductId")
 ONHAND_KEYS: Tuple[str, ...] = ("OnHand", "onHand", "onhand")
+ONHANDNV_KEYS: Tuple[str, ...] = ("OnHandNV", "onHandNV", "onhandnv")
 
 
 def norm_id(data: Dict[str, Any]) -> Optional[Any]:
@@ -113,6 +114,14 @@ def apply_product_updates(product_service, normalized_items: Iterable[Dict[str, 
                     continue
                 updates["OnHand"] = converted
                 broadcast_fields["OnHand"] = converted
+            elif key in ONHANDNV_KEYS:
+                # ✅ Explicit handling for OnHandNV - normalize to "OnHandNV"
+                converted = to_number(value)
+                if converted is not None:
+                    updates["OnHandNV"] = converted
+                    broadcast_fields["OnHandNV"] = converted
+                    # Debug log
+                    print(f"📦 [apply_product_updates] Product {pid}: OnHandNV = {converted}")
             else:
                 updates[key] = value
                 broadcast_fields[key] = value
