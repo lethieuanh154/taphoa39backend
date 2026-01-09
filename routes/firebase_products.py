@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from flask import Blueprint, jsonify, request
 
 from firebase.firebase_hanghoa.import_to_firestore import update_products_from_banhang_app_to_firestore
@@ -239,6 +240,47 @@ def create_firebase_products_bp(product_service, socketio) -> Blueprint:
         """
         result = product_service.get_product_variants(product_id)
         return jsonify(result)
+
+    @bp.route("/products/modified-since", methods=["POST"])
+    @handle_api_errors
+    def fetch_products_modified_since():
+        """
+        Fetch products modified since a given timestamp.
+        Optimized endpoint to reduce Firestore reads by only fetching changed products.
+
+        Accepts JSON:
+        {
+            "since": "2024-01-15T10:30:00Z",  // ISO 8601 timestamp (required)
+            "include_inactive": true,         // Optional, default true
+            "include_deleted": false          // Optional, default false
+        }
+
+        Returns: List of products modified since the given timestamp
+        """
+        payload = request.get_json(silent=True) or {}
+
+        since_timestamp = payload.get("since")
+        if not since_timestamp:
+            return jsonify({"error": "Missing 'since' timestamp"}), 400
+
+        include_inactive = payload.get("include_inactive", True)
+        include_deleted = payload.get("include_deleted", False)
+
+        print(f"🔄 Fetching products modified since {since_timestamp}...")
+
+        products = product_service.read_products_modified_since(
+            since_timestamp=since_timestamp,
+            include_inactive=include_inactive,
+            include_deleted=include_deleted
+        )
+
+        print(f"✅ Found {len(products)} products modified since {since_timestamp}")
+        return jsonify({
+            "products": products,
+            "count": len(products),
+            "since": since_timestamp,
+            "fetched_at": datetime.now().isoformat()
+        })
 
     return bp
 

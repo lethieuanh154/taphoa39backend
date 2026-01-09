@@ -164,20 +164,51 @@ def broadcast_products_onhand_updated(socketio, updates: Iterable[Dict[str, Any]
     updates_list = list(updates)
     if not updates_list:
         return
-    # Emit only product IDs; clients should call GET /api/firebase/get/products/<id> or
-    # use `GET /api/firebase/products/latest` to refresh data.
+
+    if not socketio:
+        return
+
+    # ✅ NEW: Emit FULL product data for Hybrid WebSocket sync
+    # This allows clients to update their local cache immediately without fetching
+    from datetime import datetime
+    timestamp = datetime.now().isoformat()
+
+    products_data = []
     ids = []
     for item in updates_list:
         pid = item.get('Id') or item.get('productId')
         if pid is None:
             continue
         ids.append(str(pid))
+        products_data.append({
+            'Id': pid,
+            'OnHand': item.get('OnHand'),
+            'OnHandNV': item.get('OnHandNV'),
+            'BasePrice': item.get('BasePrice'),
+            'Cost': item.get('Cost'),
+            'ModifiedDate': item.get('ModifiedDate') or timestamp,
+            # Include any other fields that were updated
+            **{k: v for k, v in item.items() if k not in ['Id', 'productId']}
+        })
 
-    if not socketio:
-        return
+    # Emit full product data with timestamp for Initial Sync
+    socketio.emit('products_updated', {
+        'products': products_data,
+        'timestamp': timestamp,
+        'count': len(products_data)
+    }, namespace='/api/websocket/products')
+
+    # Also emit legacy event for backward compatibility
     socketio.emit('products_onhand_updated', ids, namespace='/api/websocket/products')
-    for pid in ids:
-        notify_product_onhand_updated(socketio, pid, {})
+
+    # Store last notify for Initial Sync when new clients connect
+    set_last_notify('/api/websocket/products', 'products_updated', {
+        'products': products_data,
+        'timestamp': timestamp,
+        'count': len(products_data)
+    })
+
+    print(f"📡 [WebSocket] Broadcast {len(products_data)} products updated at {timestamp}")
 
 
 def broadcast_customer_updates(socketio, results: Iterable[Dict[str, Any]]):

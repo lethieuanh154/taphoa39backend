@@ -880,6 +880,56 @@ class FirestoreProductService:
         except Exception:
             return False
 
+    def read_products_modified_since(self, since_timestamp: str, include_inactive: bool = True, include_deleted: bool = False) -> List[Dict]:
+        """
+        Đọc products đã được modified kể từ timestamp cho trước.
+        Sử dụng Firestore query với điều kiện ModifiedDate > since_timestamp.
+
+        Args:
+            since_timestamp: ISO 8601 timestamp string (e.g., "2024-01-15T10:30:00Z")
+            include_inactive: Bao gồm products không active
+            include_deleted: Bao gồm products đã xóa
+
+        Returns:
+            List of products modified since the given timestamp
+        """
+        print(f"🔄 read_products_modified_since (since={since_timestamp})")
+
+        try:
+            # Parse timestamp
+            from datetime import datetime
+            if isinstance(since_timestamp, str):
+                # Handle ISO 8601 format
+                since_dt = parse_date(since_timestamp)
+            else:
+                since_dt = since_timestamp
+
+            # Query Firestore với điều kiện ModifiedDate > since_timestamp
+            # Firestore sẽ chỉ charge reads cho documents matching query
+            query = self.products_ref.where("ModifiedDate", ">", since_dt.isoformat())
+            docs = query.stream()
+
+            result = []
+            for doc in docs:
+                data = doc.to_dict() or {}
+
+                is_active = self._coerce_bool(data.get("isActive"), True)
+                is_deleted = self._coerce_bool(data.get("isDeleted"), False)
+
+                if (not include_inactive) and (not is_active):
+                    continue
+                if (not include_deleted) and is_deleted:
+                    continue
+
+                result.append(dict(data))
+
+            print(f"✅ Found {len(result)} products modified since {since_timestamp}")
+            return result
+
+        except Exception as e:
+            print(f"❌ Error reading products modified since {since_timestamp}: {e}")
+            return []
+
     def read_all_products_fresh(self, include_inactive: bool = False, include_deleted: bool = False):
         """Đọc TẤT CẢ products trực tiếp từ Firestore, KHÔNG dùng cache."""
         print(f"🔄 read_all_products_fresh (include_inactive={include_inactive}, include_deleted={include_deleted})")
