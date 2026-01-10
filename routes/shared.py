@@ -180,16 +180,31 @@ def broadcast_products_onhand_updated(socketio, updates: Iterable[Dict[str, Any]
         if pid is None:
             continue
         ids.append(str(pid))
-        products_data.append({
-            'Id': pid,
-            'OnHand': item.get('OnHand'),
-            'OnHandNV': item.get('OnHandNV'),
-            'BasePrice': item.get('BasePrice'),
-            'Cost': item.get('Cost'),
-            'ModifiedDate': item.get('ModifiedDate') or timestamp,
-            # Include any other fields that were updated
-            **{k: v for k, v in item.items() if k not in ['Id', 'productId']}
-        })
+
+        # ✅ CRITICAL: Only include fields that have actual values (not None)
+        # This prevents overwriting existing values with None on the client side
+        product_data = {'Id': pid}
+
+        # Core fields - only add if not None
+        if item.get('OnHand') is not None:
+            product_data['OnHand'] = item.get('OnHand')
+        if item.get('OnHandNV') is not None:
+            product_data['OnHandNV'] = item.get('OnHandNV')
+        if item.get('BasePrice') is not None:
+            product_data['BasePrice'] = item.get('BasePrice')
+        if item.get('Cost') is not None:
+            product_data['Cost'] = item.get('Cost')
+
+        # ModifiedDate always included
+        product_data['ModifiedDate'] = item.get('ModifiedDate') or timestamp
+
+        # Include other fields that were updated (but only if not None)
+        for k, v in item.items():
+            if k not in ['Id', 'productId', 'OnHand', 'OnHandNV', 'BasePrice', 'Cost', 'ModifiedDate']:
+                if v is not None:
+                    product_data[k] = v
+
+        products_data.append(product_data)
 
     # Emit full product data with timestamp for Initial Sync
     socketio.emit('products_updated', {
