@@ -264,12 +264,11 @@ def broadcast_products_added(socketio, products: Iterable[Dict[str, Any]]):
         'count': len(products_data)
     }, namespace='/api/websocket/products')
 
-    # Store for Initial Sync (so new clients get the latest additions)
-    set_last_notify('/api/websocket/products', 'products_added', {
-        'products': products_data,
-        'timestamp': timestamp,
-        'count': len(products_data)
-    })
+    # ❌ REMOVED: Do NOT store products_added in LAST_NOTIFIES
+    # Reason: products_added should only be emitted ONCE when products are created.
+    # Replaying this event on reconnect causes duplicate products in IndexedDB.
+    # Clients that miss this event should sync via full product fetch, not via replay.
+    # set_last_notify('/api/websocket/products', 'products_added', {...})
 
     print(f"📡 [WebSocket] Broadcast {len(products_data)} NEW products added at {timestamp}")
 
