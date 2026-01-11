@@ -158,8 +158,33 @@ def create_firebase_products_bp(product_service, socketio) -> Blueprint:
 
     @bp.route("/update/products/batch", methods=["PUT"])
     def update_products_batch():
+        """
+        Update multiple products in batch.
+        Broadcasts updates via WebSocket for realtime sync across machines.
+        """
         products_dict = request.json
         result = product_service.update_products(products_dict)
+
+        # ✅ Broadcast updates via WebSocket for realtime sync
+        # Extract all updated products for broadcasting
+        broadcast_updates = []
+        if isinstance(products_dict, dict):
+            for group_key, products in products_dict.items():
+                if isinstance(products, list):
+                    for product in products:
+                        if isinstance(product, dict) and product.get('Id'):
+                            # Include all relevant fields for sync
+                            update_data = {'Id': str(product.get('Id'))}
+                            # Add fields if present
+                            for field in ['Code', 'Name', 'FullName', 'BasePrice', 'Cost', 'OnHand', 'OnHandNV', 'Description']:
+                                if field in product and product[field] is not None:
+                                    update_data[field] = product[field]
+                            broadcast_updates.append(update_data)
+
+        if broadcast_updates:
+            print(f"📡 [update_products_batch] Broadcasting {len(broadcast_updates)} product updates via WebSocket")
+            broadcast_products_onhand_updated(socketio, broadcast_updates)
+
         return jsonify(result)
 
     @bp.route("/products/sync", methods=["POST"])
