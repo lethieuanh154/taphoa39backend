@@ -226,6 +226,54 @@ def broadcast_products_onhand_updated(socketio, updates: Iterable[Dict[str, Any]
     print(f"📡 [WebSocket] Broadcast {len(products_data)} products updated at {timestamp}")
 
 
+def broadcast_products_added(socketio, products: Iterable[Dict[str, Any]]):
+    """
+    Broadcast newly added products via WebSocket for realtime sync.
+    Used when cloning products or adding new products.
+    Event: 'products_added' - clients should ADD these to their local DB, not just update.
+    """
+    products_list = list(products)
+    if not products_list:
+        return
+
+    if not socketio:
+        return
+
+    from datetime import datetime
+    timestamp = datetime.now().isoformat()
+
+    # Include ALL product fields for new products
+    products_data = []
+    for product in products_list:
+        pid = product.get('Id')
+        if pid is None:
+            continue
+
+        # Include all fields for new products
+        product_data = {k: v for k, v in product.items() if v is not None}
+        product_data['Id'] = pid  # Ensure Id is included
+        products_data.append(product_data)
+
+    if not products_data:
+        return
+
+    # Emit 'products_added' event with full product data
+    socketio.emit('products_added', {
+        'products': products_data,
+        'timestamp': timestamp,
+        'count': len(products_data)
+    }, namespace='/api/websocket/products')
+
+    # Store for Initial Sync (so new clients get the latest additions)
+    set_last_notify('/api/websocket/products', 'products_added', {
+        'products': products_data,
+        'timestamp': timestamp,
+        'count': len(products_data)
+    })
+
+    print(f"📡 [WebSocket] Broadcast {len(products_data)} NEW products added at {timestamp}")
+
+
 def broadcast_customer_updates(socketio, results: Iterable[Dict[str, Any]]):
     if not results:
         return

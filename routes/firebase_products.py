@@ -6,6 +6,7 @@ from flask import Blueprint, jsonify, request
 from firebase.firebase_hanghoa.import_to_firestore import update_products_from_banhang_app_to_firestore
 from routes.shared import (
     apply_product_updates,
+    broadcast_products_added,
     broadcast_products_onhand_updated,
     create_simple_fetch_handler,
     handle_api_errors,
@@ -123,10 +124,15 @@ def create_firebase_products_bp(product_service, socketio) -> Blueprint:
 
         # ✅ Gọi service để add batch
         result = product_service.add_products_batch(processed_products)
-        
+
         # Thêm errors từ validation vào result
         if errors:
             result["validation_errors"] = errors
+
+        # ✅ Broadcast via WebSocket for realtime sync to other machines
+        if result.get("status") != "error" and processed_products:
+            print(f"📡 [add_products_batch] Broadcasting {len(processed_products)} new products via WebSocket")
+            broadcast_products_added(socketio, processed_products)
 
         return jsonify(result)
 
