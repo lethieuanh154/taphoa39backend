@@ -105,6 +105,28 @@ class FirestoreProductService:
             return product
         return None
 
+    def _sanitize_inventory_fields(self, product: dict) -> dict:
+        """
+        Removes inappropriate inventory fields based on whether the product is a clone.
+        - Clones should only have onHandNV.
+        - Originals should only have onHand.
+        """
+        if not isinstance(product, dict):
+            return product
+
+        is_clone = self._coerce_bool(product.get("isClone"), False)
+
+        if is_clone:
+            # Clones should not have onHand
+            if "onHand" in product:
+                product.pop("onHand", None)
+        else:
+            # Originals should not have onHandNV
+            if "onHandNV" in product:
+                product.pop("onHandNV", None)
+        
+        return product
+
     def add_product(self, product):
         """Add a single product to Firestore."""
         if not isinstance(product, dict):
@@ -125,6 +147,9 @@ class FirestoreProductService:
         # Add sync metadata
         product["SyncChecksum"] = self.hash_item(product)
         product["SyncTimestamp"] = datetime.utcnow().isoformat()
+
+        # ✅ Enforce inventory field rules
+        product = self._sanitize_inventory_fields(product)
 
         doc_ref.set(product)
         self.cache.invalidate(str(product_id))
@@ -220,6 +245,9 @@ class FirestoreProductService:
                 product_data["SyncChecksum"] = self.hash_item(product_data)
                 product_data["SyncTimestamp"] = datetime.utcnow().isoformat()
 
+                # ✅ Enforce inventory field rules
+                product_data = self._sanitize_inventory_fields(product_data)
+
                 # Add to batch
                 doc_ref = self.products_ref.document(str(product_id))
                 batch.set(doc_ref, product_data)
@@ -274,6 +302,23 @@ class FirestoreProductService:
     def update_product(self, product_id, updates):
         # ✅ Debug log to see what's being sent to Firestore
         print(f"📝 [update_product] Product {product_id}: Updating with fields: {list(updates.keys())}")
+
+        # ✅ Enforce inventory field rules before updating
+        try:
+            product_doc = self.read_product(product_id)
+            if product_doc:
+                is_clone = self._coerce_bool(product_doc.get("isClone"), False)
+                if is_clone:
+                    if "onHand" in updates:
+                        updates.pop("onHand", None)
+                        print(f"   sanitized: Removed onHand from clone {product_id}")
+                else:
+                    if "onHandNV" in updates:
+                        updates.pop("onHandNV", None)
+                        print(f"   sanitized: Removed onHandNV from original {product_id}")
+        except Exception as e:
+            print(f"   ⚠️ Could not sanitize product {product_id} before update: {e}")
+
         if "OnHand" in updates:
             print(f"   ⚠️ OnHand will be updated to: {updates['OnHand']}")
         if "OnHandNV" in updates:
@@ -312,6 +357,10 @@ class FirestoreProductService:
                 removed.append(product_id)
                 self.cache.invalidate(product_id)
                 continue
+            
+            # ✅ Enforce inventory field rules
+            prod = self._sanitize_inventory_fields(prod)
+
             doc_ref.set(prod, merge=True)
             updated.append(product_id)
             self.cache.invalidate(product_id)
@@ -450,6 +499,11 @@ class FirestoreProductService:
                     product_to_store["StoreForIndexedDB"] = True
                 if is_deleted:
                     product_to_store["KiotVietDeleted"] = True
+
+                # ✅ Enforce inventory rule: KiotViet products are originals, so they should not have onHandNV.
+                # The 'isClone' flag is internal to our app, so we can't use the generic sanitizer here.
+                if "onHandNV" in product_to_store:
+                    product_to_store.pop("onHandNV", None)
 
                 to_upsert.append((doc_id, product_to_store))
 

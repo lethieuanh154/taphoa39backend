@@ -44,28 +44,34 @@ def update_products_from_banhang_app_to_firestore(update_payload):
                 return None
             product_doc = doc.to_dict() or {}
 
-            # ✅ Xác định loại update: OnHand (KV) hoặc OnHandNV (NV)
-            update_type = item.get("updateType", "OnHand")
+            # Determine the product type to enforce correct field updates
+            is_clone_product = False
+            if product_doc.get("isClone") is True or product_doc.get("isClone") == "true":
+                is_clone_product = True
+
+            # Get the requested update type from the client, default to OnHand
+            requested_update_type = item.get("updateType", "OnHand")
+
+            # ✅ Enforce the business rule:
+            # - Clones ONLY use onHandNV.
+            # - Originals ONLY use onHand.
+            # Correct the update type automatically, ignoring the client's request if it's wrong.
+            if is_clone_product:
+                update_type = "OnHandNV"
+            else:
+                update_type = "OnHand"
+            
             is_nv_update = update_type == "OnHandNV"
+
+            # Log if we corrected the client's request
+            if requested_update_type != update_type:
+                print(f"   sanitized: Corrected update type from '{requested_update_type}' to '{update_type}' for product {doc.id} (isClone={is_clone_product})")
 
             # Lấy giá trị current tương ứng
             if is_nv_update:
                 current_value = product_doc.get("OnHandNV", 0) or 0
             else:
                 current_value = product_doc.get("OnHand", 0) or 0
-
-            # Determine explicit target if provided
-            target_value = None
-            if is_nv_update:
-                for key in ("OnHandNV", "onHandNV", "onhandnv"):
-                    if key in item:
-                        target_value = _parse_int(item.get(key))
-                        break
-            else:
-                for key in ("OnHand", "onHand", "onhand"):
-                    if key in item:
-                        target_value = _parse_int(item.get(key))
-                        break
 
             minus_value = _parse_int(item.get("minus", 0)) or 0
 
@@ -80,9 +86,9 @@ def update_products_from_banhang_app_to_firestore(update_payload):
                         "updateType": update_type,
                     }
 
-            if target_value is None:
-                # Compute target using current value inside transaction for atomicity
-                target_value = int(current_value) - int(minus_value)
+            # ✅ Always compute target using current value inside the transaction for atomicity.
+            # This ignores any target value sent from the client, making the backend authoritative.
+            target_value = int(current_value) - int(minus_value)
 
             # ✅ Update product OnHand hoặc OnHandNV tùy theo loại
             # Cập nhật SyncTimestamp để realtime listener có thể bắt được thay đổi
