@@ -324,6 +324,9 @@ class FirestoreProductService:
         if "OnHandNV" in updates:
             print(f"   ✅ OnHandNV will be updated to: {updates['OnHandNV']}")
 
+        # Luôn cập nhật ModifiedDate để đảm bảo các client có thể đồng bộ thay đổi
+        updates["ModifiedDate"] = datetime.utcnow().isoformat()
+
         doc_ref = self.products_ref.document(str(product_id))
         doc_ref.update(updates)
         self.cache.invalidate(product_id)
@@ -360,6 +363,9 @@ class FirestoreProductService:
             
             # ✅ Enforce inventory field rules
             prod = self._sanitize_inventory_fields(prod)
+
+            # Luôn cập nhật ModifiedDate để đảm bảo đồng bộ
+            prod["ModifiedDate"] = datetime.utcnow().isoformat()
 
             doc_ref.set(prod, merge=True)
             updated.append(product_id)
@@ -594,95 +600,99 @@ class FirestoreProductService:
 
     def _sync_clones_with_originals(self, updated_originals: List[tuple]) -> int:
         """
-        Đồng bộ clones với products gốc đã được cập nhật.
+        Đồng bộ một số trường chọn lọc từ product gốc xuống các clones của nó.
 
-        Khi product gốc thay đổi tax, các clones tương ứng cũng phải được cập nhật.
-        BasePrice và Cost của clone được quản lý riêng.
-        Clone được xác định bởi CloneSourceId = Id của product gốc.
+        Khi một product gốc được cập nhật, hàm này sẽ tìm tất cả các clones liên quan
+        và cập nhật các trường được cho phép. Các trường quan trọng như Cost, BasePrice,
+        và inventory của clone sẽ được bảo vệ và không bị ghi đè.
 
         Args:
-            updated_originals: List of (doc_id, product_dict) tuples đã được cập nhật
+            updated_originals: List các tuple (doc_id, product_dict) của các product gốc đã được cập nhật.
 
         Returns:
-            Số lượng clones đã được cập nhật
+            Số lượng clones đã được cập nhật thành công.
         """
         if not updated_originals:
             return 0
 
-        # Lấy tất cả source IDs của products đã cập nhật
-        source_ids = set()
-        source_data = {}  # Map source_id -> (Tax)
+        # Các trường an toàn để đồng bộ từ gốc sang clone.
+        # KHÔNG BAO GIỜ thêm 'Cost', 'BasePrice', 'onHand', 'onHandNV' vào đây.
+        SYNC_FIELDS = [
+            "Name",
+            "CategoryName",
+            "Tax",
+            "Unit",
+            "Description",
+            "isActive",
+            "Attributes",
+            "Brand",
+            "ConversionValue"
+            # Thêm các trường khác cần đồng bộ ở đây nếu cần.
+        ]
 
+        # Chuẩn bị dữ liệu nguồn từ các product gốc đã cập nhật
+        source_data_map = {}
         for doc_id, product_dict in updated_originals:
-            source_ids.add(str(doc_id))
-            source_data[str(doc_id)] = {
-                "Tax": product_dict.get("Tax", 0),
-            }
+            data_to_sync = {field: product_dict.get(field) for field in SYNC_FIELDS}
+            source_data_map[str(doc_id)] = data_to_sync
 
+        source_ids = set(source_data_map.keys())
         if not source_ids:
             return 0
 
-        # Tìm tất cả clones - scan all products và check isClone
-        # Không dùng query vì isClone có thể là string "true" hoặc boolean True
         clones_to_update = []
-
         try:
-            # Scan all products để tìm clones
+            # Quét tất cả sản phẩm để tìm clones cần cập nhật
             all_docs = self.products_ref.stream()
 
             for doc in all_docs:
                 clone_data = doc.to_dict()
-
-                # Check isClone - có thể là boolean True hoặc string "true"
-                is_clone = clone_data.get("isClone", False)
-                if isinstance(is_clone, str):
-                    is_clone = is_clone.lower() == "true"
-
+                if not clone_data:
+                    continue
+                
+                is_clone = self._coerce_bool(clone_data.get("isClone"), False)
                 if not is_clone:
                     continue
 
                 clone_source_id = str(clone_data.get("CloneSourceId", ""))
-
                 if clone_source_id in source_ids:
-                    # Clone này cần được cập nhật
-                    original_data = source_data[clone_source_id]
-
-                    # Kiểm tra xem có thay đổi không
-                    current_tax = clone_data.get("Tax", 0)
-                    new_tax = original_data["Tax"]
-
-                    if current_tax != new_tax:
-                        clones_to_update.append({
-                            "doc_id": doc.id,
-                            "Tax": new_tax,
-                            "SyncTimestamp": datetime.utcnow().isoformat()
-                        })
-                        print(f"    📝 Clone {doc.id}: Tax {current_tax}->{new_tax}")
+                    original_data_to_sync = source_data_map[clone_source_id]
+                    
+                    # So sánh và xác định các trường thực sự thay đổi
+                    updates = {}
+                    for field, new_value in original_data_to_sync.items():
+                        if clone_data.get(field) != new_value:
+                            updates[field] = new_value
+                    
+                    # Nếu có thay đổi, đưa vào danh sách chờ cập nhật
+                    if updates:
+                        print(f"    📝 Chuẩn bị cập nhật clone {doc.id} với các trường: {list(updates.keys())}")
+                        updates["SyncTimestamp"] = datetime.utcnow().isoformat()
+                        updates["ModifiedDate"] = datetime.utcnow().isoformat()
+                        clones_to_update.append({"doc_id": doc.id, "updates": updates})
 
             if not clones_to_update:
-                print("    ℹ️ Không có clone nào cần cập nhật")
+                print("    ℹ️ Không có clone nào cần cập nhật từ các thay đổi của sản phẩm gốc.")
                 return 0
 
-            # Batch update clones
+            # Thực hiện cập nhật hàng loạt (batch update)
             BATCH_SIZE = 500
             updated_count = 0
-
             for i in range(0, len(clones_to_update), BATCH_SIZE):
                 batch = db.batch()
-                for clone_update in clones_to_update[i:i + BATCH_SIZE]:
+                chunk = clones_to_update[i:i + BATCH_SIZE]
+                for clone_update in chunk:
                     doc_ref = self.products_ref.document(clone_update["doc_id"])
-                    batch.update(doc_ref, {
-                        "Tax": clone_update["Tax"],
-                        "SyncTimestamp": clone_update["SyncTimestamp"]
-                    })
+                    batch.update(doc_ref, clone_update["updates"])
                 batch.commit()
-                updated_count += len(clones_to_update[i:i + BATCH_SIZE])
+                updated_count += len(chunk)
 
+            print(f"    ✅ Đã cập nhật thành công {updated_count} clones.")
             return updated_count
 
         except Exception as e:
             import traceback
-            print(f"⚠️ Lỗi khi sync clones: {e}")
+            print(f"❌ Lỗi nghiêm trọng khi đồng bộ clones: {e}")
             traceback.print_exc()
             return 0
 
