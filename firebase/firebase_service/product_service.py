@@ -105,6 +105,49 @@ class FirestoreProductService:
             return product
         return None
 
+    def get_products_by_master_unit_id(self, master_unit_id: str) -> List[Dict]:
+        """
+        Get all products (siblings) that share the same MasterUnitId.
+        This includes:
+        1. The master product itself (where Id == MasterUnitId or MasterUnitId is None/0)
+        2. All child products that have this MasterUnitId
+
+        Args:
+            master_unit_id: The MasterUnitId to search for
+
+        Returns:
+            List of product dicts that belong to this product group
+        """
+        if not master_unit_id:
+            return []
+
+        try:
+            results = []
+            master_id_str = str(master_unit_id)
+            master_id_int = int(master_unit_id) if master_unit_id.isdigit() else None
+
+            # Query 1: Products where MasterUnitId equals the given value
+            query1 = self.products_ref.where("MasterUnitId", "==", master_id_int).stream()
+            for doc in query1:
+                data = doc.to_dict()
+                if data:
+                    results.append(data)
+
+            # Query 2: The master product itself (where Id == master_unit_id)
+            master_doc = self.products_ref.document(master_id_str).get()
+            if master_doc.exists:
+                master_data = master_doc.to_dict()
+                # Add if not already in results
+                if master_data and not any(r.get('Id') == master_data.get('Id') for r in results):
+                    results.append(master_data)
+
+            print(f"  📦 get_products_by_master_unit_id({master_unit_id}): Found {len(results)} products")
+            return results
+
+        except Exception as e:
+            print(f"  ❌ Error in get_products_by_master_unit_id: {e}")
+            return []
+
     def _sanitize_inventory_fields(self, product: dict) -> dict:
         """
         Removes inappropriate inventory fields based on whether the product is a clone.
@@ -382,6 +425,71 @@ class FirestoreProductService:
         self.cache.invalidate(product_id)
         self.invalidate_all_product_caches()
         return {"message": "Product deleted"}
+
+    def delete_product_with_siblings(self, product_id) -> Dict:
+        """
+        Delete a product AND all its siblings (products with the same MasterUnitId).
+        This is used for clone products where we want to delete the entire product group.
+
+        Args:
+            product_id: The ID of the product to delete (can be master or any sibling)
+
+        Returns:
+            Dict with deletion results
+        """
+        product_id_str = str(product_id)
+        deleted_ids = []
+        errors = []
+
+        try:
+            # First, read the product to get its MasterUnitId
+            product_doc = self.read_product(product_id_str)
+            if not product_doc:
+                return {"message": "Product not found", "deleted_count": 0, "deleted_ids": []}
+
+            # Get the MasterUnitId (if it's a child) or use its own Id (if it's the master)
+            master_unit_id = product_doc.get('MasterUnitId') or product_doc.get('Id')
+            master_unit_id_str = str(master_unit_id)
+
+            print(f"🗑️ delete_product_with_siblings: Deleting product group for MasterUnitId={master_unit_id_str}")
+
+            # Get all siblings (including the master)
+            siblings = self.get_products_by_master_unit_id(master_unit_id_str)
+
+            if not siblings:
+                # Fallback: just delete the single product
+                self.products_ref.document(product_id_str).delete()
+                self.cache.invalidate(product_id_str)
+                deleted_ids.append(product_id_str)
+            else:
+                # Delete all siblings
+                for sibling in siblings:
+                    sibling_id = str(sibling.get('Id'))
+                    try:
+                        self.products_ref.document(sibling_id).delete()
+                        self.cache.invalidate(sibling_id)
+                        deleted_ids.append(sibling_id)
+                        print(f"  ✅ Deleted sibling: {sibling_id}")
+                    except Exception as e:
+                        print(f"  ❌ Error deleting sibling {sibling_id}: {e}")
+                        errors.append({"id": sibling_id, "error": str(e)})
+
+            self.invalidate_all_product_caches()
+
+            result = {
+                "message": f"Deleted {len(deleted_ids)} products",
+                "deleted_count": len(deleted_ids),
+                "deleted_ids": deleted_ids
+            }
+            if errors:
+                result["errors"] = errors
+
+            print(f"✅ delete_product_with_siblings complete: {len(deleted_ids)} deleted")
+            return result
+
+        except Exception as e:
+            print(f"❌ Error in delete_product_with_siblings: {e}")
+            return {"message": f"Error: {str(e)}", "deleted_count": 0, "deleted_ids": [], "error": str(e)}
     
     def group_product(self):
         """
@@ -442,19 +550,24 @@ class FirestoreProductService:
         try:
             print("🔄 Bắt đầu đồng bộ sản phẩm từ KiotViet (tối ưu)...")
 
-            # Step 1: Fetch checksums from Firestore (fast, minimal data)
-            print("  📥 Lấy checksums từ Firestore...")
+            # Step 1: Fetch checksums AND isClone flag from Firestore (fast, minimal data)
+            print("  📥 Lấy checksums và isClone từ Firestore...")
             checksum_start = time.time()
             existing_checksums = {}
             existing_ids = set()
+            clone_product_ids = set()  # ✅ NEW: Track clone products
 
-            for doc in self.products_ref.select(["SyncChecksum"]).stream():
+            for doc in self.products_ref.select(["SyncChecksum", "isClone"]).stream():
                 data = doc.to_dict() or {}
                 existing_checksums[doc.id] = data.get("SyncChecksum")
                 existing_ids.add(doc.id)
+                # ✅ NEW: Track if this product is a clone
+                if data.get("isClone") is True or data.get("isClone") == "true":
+                    clone_product_ids.add(doc.id)
 
             checksum_time = time.time() - checksum_start
             print(f"  ✅ Đã lấy {len(existing_checksums)} checksums trong {checksum_time:.2f}s")
+            print(f"  📋 Phát hiện {len(clone_product_ids)} clone products (sẽ bỏ qua sync OnHand)")
 
             # Step 2: Fetch products from KiotViet API
             print("  📥 Lấy sản phẩm từ KiotViet API...")
@@ -510,6 +623,15 @@ class FirestoreProductService:
                 # The 'isClone' flag is internal to our app, so we can't use the generic sanitizer here.
                 if "onHandNV" in product_to_store:
                     product_to_store.pop("onHandNV", None)
+
+                # ✅ NEW: For clone products, DO NOT sync OnHand from KiotViet
+                # Clone products manage their own inventory via OnHandNV, not OnHand
+                # KiotViet doesn't know about clones, so it may return incorrect OnHand values
+                if doc_id in clone_product_ids:
+                    # Remove OnHand from the update payload to preserve existing value
+                    if "OnHand" in product_to_store:
+                        product_to_store.pop("OnHand", None)
+                    print(f"  ⏭️ Clone product {doc_id}: Skipping OnHand sync (preserving OnHandNV)")
 
                 to_upsert.append((doc_id, product_to_store))
 

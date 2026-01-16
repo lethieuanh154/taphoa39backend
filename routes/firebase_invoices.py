@@ -167,18 +167,102 @@ def create_firebase_invoices_bp(invoice_service, product_service, customer_servi
                 product_doc = product_service.read_product(pid_str)
                 if not product_doc:
                     continue
-                current_onhand = to_number(product_doc.get('OnHand'))
-                if current_onhand is None:
+
+                # ✅ FIX: Check if product is a clone - clones use OnHandNV, not OnHand
+                is_clone = product_doc.get('isClone') is True or product_doc.get('isClone') == "true"
+
+                if is_clone:
+                    # ✅ Clone product: update OnHandNV for ALL siblings in the group
+                    # Get MasterUnitId to find all siblings
+                    master_unit_id = product_doc.get('MasterUnitId') or product_doc.get('Id')
+                    conversion_value = to_number(product_doc.get('ConversionValue', 1)) or 1
+
+                    # Calculate delta in master unit terms
+                    master_qty_delta = quantity * conversion_value
+
+                    # Find all siblings with the same MasterUnitId
+                    siblings = product_service.get_products_by_master_unit_id(str(master_unit_id))
+
+                    if siblings and len(siblings) > 0:
+                        print(f"  🔄 Clone product {pid_str}: Found {len(siblings)} siblings for MasterUnitId {master_unit_id}")
+                        for sibling in siblings:
+                            sibling_id = str(sibling.get('Id'))
+                            sibling_conversion = to_number(sibling.get('ConversionValue', 1)) or 1
+                            sibling_current_nv = to_number(sibling.get('OnHandNV', 0)) or 0
+
+                            # Calculate sibling's delta based on its ConversionValue
+                            sibling_delta = master_qty_delta / sibling_conversion if sibling_conversion != 0 else 0
+                            sibling_new_nv = sibling_current_nv + sibling_delta
+
+                            try:
+                                product_service.update_product(sibling_id, {"OnHandNV": sibling_new_nv})
+                                restocked_updates.append({"Id": sibling_id, "OnHandNV": sibling_new_nv, "updateType": "OnHandNV"})
+                                print(f"    ✅ Sibling {sibling_id} (CV={sibling_conversion}): OnHandNV {sibling_current_nv} → {sibling_new_nv}")
+                            except Exception as exc:
+                                import traceback
+                                print(f"Error restocking clone sibling {sibling_id}: {exc}")
+                                print(traceback.format_exc())
+                                restock_errors.append({"id": sibling_id, "error": str(exc)})
+                    else:
+                        # Fallback: just update the single product if no siblings found
+                        current_onhand_nv = to_number(product_doc.get('OnHandNV', 0)) or 0
+                        new_onhand_nv = current_onhand_nv + quantity
+                        try:
+                            product_service.update_product(pid_str, {"OnHandNV": new_onhand_nv})
+                            restocked_updates.append({"Id": pid_str, "OnHandNV": new_onhand_nv, "updateType": "OnHandNV"})
+                            print(f"  ✅ Clone product {pid_str}: OnHandNV restored {current_onhand_nv} → {new_onhand_nv} (no siblings)")
+                        except Exception as exc:
+                            import traceback
+                            print(f"Error restocking clone product {pid_str}: {exc}")
+                            print(traceback.format_exc())
+                            restock_errors.append({"id": pid_str, "error": str(exc)})
                     continue
-                new_onhand = int(current_onhand) + quantity
-                try:
-                    product_service.update_product(pid_str, {"OnHand": new_onhand})
-                    restocked_updates.append({"Id": pid_str, "OnHand": new_onhand})
-                except Exception as exc:
-                    import traceback
-                    print(f"Error restocking product {pid_str}: {exc}")
-                    print(traceback.format_exc())
-                    restock_errors.append({"id": pid_str, "error": str(exc)})
+
+                # Original product: update OnHand for ALL siblings in the group
+                master_unit_id = product_doc.get('MasterUnitId') or product_doc.get('Id')
+                conversion_value = to_number(product_doc.get('ConversionValue', 1)) or 1
+
+                # Calculate delta in master unit terms
+                master_qty_delta = quantity * conversion_value
+
+                # Find all siblings with the same MasterUnitId
+                siblings = product_service.get_products_by_master_unit_id(str(master_unit_id))
+
+                if siblings and len(siblings) > 0:
+                    print(f"  🔄 Original product {pid_str}: Found {len(siblings)} siblings for MasterUnitId {master_unit_id}")
+                    for sibling in siblings:
+                        sibling_id = str(sibling.get('Id'))
+                        sibling_conversion = to_number(sibling.get('ConversionValue', 1)) or 1
+                        sibling_current = to_number(sibling.get('OnHand', 0)) or 0
+
+                        # Calculate sibling's delta based on its ConversionValue
+                        sibling_delta = master_qty_delta / sibling_conversion if sibling_conversion != 0 else 0
+                        sibling_new = sibling_current + sibling_delta
+
+                        try:
+                            product_service.update_product(sibling_id, {"OnHand": sibling_new})
+                            restocked_updates.append({"Id": sibling_id, "OnHand": sibling_new, "updateType": "OnHand"})
+                            print(f"    ✅ Sibling {sibling_id} (CV={sibling_conversion}): OnHand {sibling_current} → {sibling_new}")
+                        except Exception as exc:
+                            import traceback
+                            print(f"Error restocking sibling {sibling_id}: {exc}")
+                            print(traceback.format_exc())
+                            restock_errors.append({"id": sibling_id, "error": str(exc)})
+                else:
+                    # Fallback: just update the single product if no siblings found
+                    current_onhand = to_number(product_doc.get('OnHand'))
+                    if current_onhand is None:
+                        continue
+                    new_onhand = int(current_onhand) + quantity
+                    try:
+                        product_service.update_product(pid_str, {"OnHand": new_onhand})
+                        restocked_updates.append({"Id": pid_str, "OnHand": new_onhand, "updateType": "OnHand"})
+                        print(f"  ✅ Original product {pid_str}: OnHand restored {current_onhand} → {new_onhand} (no siblings)")
+                    except Exception as exc:
+                        import traceback
+                        print(f"Error restocking product {pid_str}: {exc}")
+                        print(traceback.format_exc())
+                        restock_errors.append({"id": pid_str, "error": str(exc)})
             
             # ✅ Adjust summaries (reverse the invoice)
             summary_adjustment = invoice_service.adjust_invoice_summaries(existing_invoice, direction=-1)

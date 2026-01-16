@@ -162,6 +162,21 @@ def create_firebase_products_bp(product_service, socketio) -> Blueprint:
     def delete_product(product_id: str):
         return jsonify(product_service.delete_product(product_id))
 
+    @bp.route("/products/del-with-siblings/<product_id>", methods=["DELETE"])
+    @handle_api_errors
+    def delete_product_with_siblings(product_id: str):
+        """
+        Delete a product AND all its siblings (products with the same MasterUnitId).
+        Use this for clone products to ensure ALL related units are deleted together.
+
+        This endpoint:
+        1. Finds the product's MasterUnitId (or uses product Id if it's the master)
+        2. Deletes ALL products with that MasterUnitId
+        3. Returns list of deleted product IDs
+        """
+        result = product_service.delete_product_with_siblings(product_id)
+        return jsonify(result)
+
     @bp.route("/update/products/batch", methods=["PUT"])
     def update_products_batch():
         """
