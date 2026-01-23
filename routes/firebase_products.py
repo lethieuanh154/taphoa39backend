@@ -43,6 +43,12 @@ def create_firebase_products_bp(product_service, socketio) -> Blueprint:
     @bp.route("/get/products", methods=["GET"])
     @handle_api_errors
     def get_all_products():
+        # ⚠️ WARNING: This endpoint reads ALL products from Firestore!
+        # Track caller for debugging excessive reads
+        caller_ip = request.remote_addr
+        user_agent = request.headers.get('User-Agent', 'unknown')[:100]
+        print(f"⚠️ [FULL_READ] /get/products called from {caller_ip} - UA: {user_agent}")
+
         include_inactive = request.args.get("include_inactive", "false").lower() in ("1", "true", "yes")
         include_deleted = request.args.get("include_deleted", "false").lower() in ("1", "true", "yes")
         products = product_service.read_all_products(include_inactive=include_inactive, include_deleted=include_deleted)
@@ -232,6 +238,11 @@ def create_firebase_products_bp(product_service, socketio) -> Blueprint:
     @handle_api_errors
     def get_latest_products():
         """Return latest cached products (optional query param `limit`)."""
+        # ⚠️ WARNING: This endpoint reads ALL products from Firestore!
+        caller_ip = request.remote_addr
+        user_agent = request.headers.get('User-Agent', 'unknown')[:100]
+        print(f"⚠️ [FULL_READ] /products/latest called from {caller_ip} - UA: {user_agent}")
+
         try:
             limit = int(request.args.get("limit")) if request.args.get("limit") is not None else None
         except ValueError:
@@ -259,6 +270,10 @@ def create_firebase_products_bp(product_service, socketio) -> Blueprint:
     
         # Support fetch all products
         if payload.get("all") == True:
+            # ⚠️ WARNING: This reads ALL products from Firestore (EXPENSIVE!)
+            caller_ip = request.remote_addr
+            user_agent = request.headers.get('User-Agent', 'unknown')[:100]
+            print(f"⚠️ [FULL_READ_FRESH] /products/fetch ALL called from {caller_ip} - UA: {user_agent}")
             print("🔄 Fetching ALL products directly from Firestore (no cache)...")
 
             product_service.invalidate_all_product_caches()
