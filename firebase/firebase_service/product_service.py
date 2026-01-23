@@ -45,6 +45,29 @@ class FirestoreProductService:
         self.products_ref = db.collection(COLLECTION_NAME)
 
     @staticmethod
+    def _normalize_string(s: str) -> str:
+        """
+        Normalize string for search (remove diacritics, uppercase).
+        Used for NormalizedCode and NormalizedName fields.
+        """
+        if not s:
+            return ""
+        import unicodedata
+        import re
+        # Remove diacritics (accents)
+        normalized = unicodedata.normalize('NFD', s)
+        normalized = ''.join(c for c in normalized if unicodedata.category(c) != 'Mn')
+        # Replace đ/Đ
+        normalized = normalized.replace('đ', 'd').replace('Đ', 'D')
+        # Uppercase
+        normalized = normalized.upper()
+        # Replace non-alphanumeric with underscore
+        normalized = re.sub(r'[^A-Z0-9]', '_', normalized)
+        # Collapse multiple underscores
+        normalized = re.sub(r'_+', '_', normalized)
+        return normalized
+
+    @staticmethod
     def _coerce_bool(value, default: bool) -> bool:
         if isinstance(value, bool):
             return value
@@ -740,7 +763,9 @@ class FirestoreProductService:
         # Các trường an toàn để đồng bộ từ gốc sang clone.
         # KHÔNG BAO GIỜ thêm 'Cost', 'BasePrice', 'onHand', 'onHandNV' vào đây.
         SYNC_FIELDS = [
+            "Code",  # ✅ IMPORTANT: Sync Code để đảm bảo clone luôn khớp với product gốc
             "Name",
+            "FullName",  # ✅ Thêm FullName để đồng bộ
             "CategoryName",
             "Tax",
             "Unit",
@@ -748,7 +773,8 @@ class FirestoreProductService:
             "isActive",
             "Attributes",
             "Brand",
-            "ConversionValue"
+            "ConversionValue",
+            "Image"  # ✅ Thêm Image để đồng bộ
             # Thêm các trường khác cần đồng bộ ở đây nếu cần.
         ]
 
@@ -789,6 +815,17 @@ class FirestoreProductService:
                     # Nếu có thay đổi, đưa vào danh sách chờ cập nhật
                     if updates:
                         print(f"    📝 Chuẩn bị cập nhật clone {doc.id} với các trường: {list(updates.keys())}")
+
+                        # ✅ Cập nhật NormalizedCode nếu Code thay đổi
+                        if "Code" in updates and updates["Code"]:
+                            updates["NormalizedCode"] = self._normalize_string(updates["Code"])
+
+                        # ✅ Cập nhật NormalizedName nếu Name hoặc FullName thay đổi
+                        if "Name" in updates and updates["Name"]:
+                            updates["NormalizedName"] = self._normalize_string(updates["Name"])
+                        elif "FullName" in updates and updates["FullName"]:
+                            updates["NormalizedName"] = self._normalize_string(updates["FullName"])
+
                         updates["SyncTimestamp"] = datetime.utcnow().isoformat()
                         updates["ModifiedDate"] = datetime.utcnow().isoformat()
                         clones_to_update.append({"doc_id": doc.id, "updates": updates})
