@@ -167,7 +167,8 @@ class TaxInvoiceXMLParser:
                     for elem in parent.iter():
                         # Strip namespace if present
                         tag = elem.tag.split('}')[-1] if '}' in elem.tag else elem.tag
-                        if tag == path or tag.endswith(path):
+                        # Chỉ khớp chính xác tag name, không dùng endswith để tránh KHMSHDon khớp với SHDon
+                        if tag == path:
                             if elem.text:
                                 return elem.text.strip()
                 return ''
@@ -234,7 +235,7 @@ class TaxInvoiceXMLParser:
             # ================================================================
             invoice['invoiceNo'] = find_in_ttchung(
                 hdon_element,
-                'SHDon', 'SoHoaDon', 'So', 'InvoiceNo', 'InvoiceNumber', 'KHMSHDon'
+                'SHDon', 'SoHoaDon', 'So', 'InvoiceNo', 'InvoiceNumber'
             )
 
             # Nếu không tìm thấy, thử tìm ở root
@@ -246,11 +247,15 @@ class TaxInvoiceXMLParser:
 
             # ================================================================
             # 2. KÝ HIỆU HÓA ĐƠN (invoice symbol/serial)
+            # KHMSHDon (mẫu số) + KHHDon (ký hiệu) = ký hiệu đầy đủ
+            # Ví dụ: KHMSHDon="1" + KHHDon="C26TTY" = "1C26TTY"
             # ================================================================
-            invoice['invoiceSymbol'] = find_in_ttchung(
+            khmshdon = find_in_ttchung(hdon_element, 'KHMSHDon')
+            khhdon = find_in_ttchung(
                 hdon_element,
                 'KHHDon', 'KyHieu', 'KyHieuHoaDon', 'SerialNo', 'Symbol', 'MauSo'
             )
+            invoice['invoiceSymbol'] = (khmshdon or '') + (khhdon or '')
 
             # ================================================================
             # 3. NGÀY LẬP - tìm trong TTChung trước
@@ -346,6 +351,52 @@ class TaxInvoiceXMLParser:
             invoice['vatAmount'] = TaxInvoiceXMLParser._parse_amount(vat_str)
 
             # ================================================================
+            # 7b. THUẾ SUẤT - TSuat (trong LTSuat hoặc trực tiếp)
+            # ================================================================
+            vat_rate_str = ''
+            # Tìm trong LTSuat (Loại thuế suất) trước - duyệt trực tiếp các element con
+            for elem in hdon_element.iter():
+                tag = elem.tag.split('}')[-1] if '}' in elem.tag else elem.tag
+                if tag == 'LTSuat':
+                    print(f"[DEBUG] Found LTSuat element")
+                    # Tìm TSuat trong các element con của LTSuat
+                    for child in elem:
+                        child_tag = child.tag.split('}')[-1] if '}' in child.tag else child.tag
+                        print(f"[DEBUG] LTSuat child: {child_tag} = {child.text}")
+                        if child_tag == 'TSuat' and child.text:
+                            vat_rate_str = child.text.strip()
+                            print(f"[DEBUG] Found TSuat in LTSuat: {vat_rate_str}")
+                            break
+                    if vat_rate_str:
+                        break
+            # Nếu không tìm thấy trong LTSuat, thử tìm trong items (HHDVu)
+            if not vat_rate_str:
+                print(f"[DEBUG] TSuat not found in LTSuat, searching in HHDVu...")
+                for elem in hdon_element.iter():
+                    tag = elem.tag.split('}')[-1] if '}' in elem.tag else elem.tag
+                    if tag in ('HHDVu', 'HHDV'):
+                        for child in elem:
+                            child_tag = child.tag.split('}')[-1] if '}' in child.tag else child.tag
+                            if child_tag == 'TSuat' and child.text:
+                                vat_rate_str = child.text.strip()
+                                print(f"[DEBUG] Found TSuat in HHDVu: {vat_rate_str}")
+                                break
+                        if vat_rate_str:
+                            break
+            print(f"[DEBUG] Final vat_rate_str: '{vat_rate_str}'")
+            # Parse thuế suất (loại bỏ ký tự % nếu có)
+            if vat_rate_str:
+                vat_rate_str = vat_rate_str.replace('%', '').strip()
+                try:
+                    invoice['vatRate'] = float(vat_rate_str)
+                    print(f"[DEBUG] Parsed vatRate: {invoice['vatRate']}")
+                except ValueError:
+                    invoice['vatRate'] = 0
+            else:
+                invoice['vatRate'] = 0
+                print(f"[DEBUG] vatRate defaulted to 0")
+
+            # ================================================================
             # 8. TỔNG TIỀN THANH TOÁN - TgTTTBSo
             # ================================================================
             total_str = find_in_ttoan(
@@ -399,7 +450,7 @@ class TaxInvoiceXMLParser:
                 f"Parsed invoice: no={invoice['invoiceNo']}, symbol={invoice.get('invoiceSymbol', '')}, "
                 f"date={invoice['invoiceDate']}, seller={invoice['sellerName']}, "
                 f"tax={invoice['sellerTaxCode']}, beforeVat={invoice.get('totalBeforeVat', 0)}, "
-                f"vat={invoice['vatAmount']}, total={invoice['totalAmount']}"
+                f"vat={invoice['vatAmount']}, vatRate={invoice.get('vatRate', 0)}, total={invoice['totalAmount']}"
             )
 
             # Validate required fields

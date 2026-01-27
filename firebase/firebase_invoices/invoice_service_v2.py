@@ -512,8 +512,9 @@ class InvoiceServiceV2:
                     if item_data.get('vatRate'):
                         vat_rates_in_items.append(item_data.get('vatRate'))
                 
-                root_vat_rate = 0.0
-                if vat_rates_in_items:
+                # Ưu tiên vatRate từ invoice_data (parsed từ LTSuat), fallback về items
+                root_vat_rate = float(invoice_data.get('vatRate', 0))
+                if root_vat_rate == 0 and vat_rates_in_items:
                     try:
                         vat_rate_str = str(vat_rates_in_items[0]).replace('%', '').strip()
                         if vat_rate_str:

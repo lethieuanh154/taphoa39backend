@@ -248,6 +248,7 @@ def create_invoice_routes_v2():
                     'totalBeforeVat': inv.get('totalBeforeVat', 0),
                     'totalAmount': inv.get('totalAmount', 0),
                     'vatAmount': inv.get('vatAmount', 0),
+                    'vatRate': inv.get('vatRate', 0),
                     'totalAmountInWords': inv.get('totalAmountInWords', ''),
                     'items': inv.get('items', [])
                 })
