@@ -474,8 +474,17 @@ class InvoiceServiceV2:
             if not invoice_no or not supplier_tax_code:
                 return False, "Thiếu số hóa đơn hoặc MST nhà cung cấp", None
 
+            # Lấy invoiceSymbol (ký hiệu hóa đơn) - quan trọng để phân biệt các hóa đơn
+            # Ví dụ: KHMSHDon + KHHDon = "1C26TTY"
+            invoice_symbol = str(invoice_data.get('invoiceSymbol', '')).strip()
+
             # Create invoice key for duplicate check
-            invoice_key = f"{invoice_no}|{supplier_tax_code}"
+            # Format: invoiceSymbol_invoiceNo|taxCode (nếu có invoiceSymbol)
+            # Hoặc: invoiceNo|taxCode (backward compatible nếu không có symbol)
+            if invoice_symbol:
+                invoice_key = f"{invoice_symbol}_{invoice_no}|{supplier_tax_code}"
+            else:
+                invoice_key = f"{invoice_no}|{supplier_tax_code}"
 
             # Check duplicate trong collection tương ứng
             existing = self.db.collection(collection_name).where(
@@ -497,17 +506,22 @@ class InvoiceServiceV2:
                 buyer_data = {
                     'name': invoice_data.get('buyerName', ''),
                     'taxCode': invoice_data.get('buyerTaxCode', ''),
+                    'address': invoice_data.get('buyerAddress', ''),
                 }
 
                 items = []
                 vat_rates_in_items = []
                 for item_data in invoice_data.get('items', []):
+                    # Parser trả về 'name' và 'unit', fallback về 'itemName' và 'unitName' cho backward compatibility
+                    item_name = item_data.get('name', '') or item_data.get('itemName', '')
+                    item_unit = item_data.get('unit', '') or item_data.get('unitName', '')
+                    item_amount = item_data.get('amount', 0) or item_data.get('totalAmount', 0)
                     items.append({
-                        'name': item_data.get('itemName', ''),
-                        'unit': item_data.get('unitName', ''),
+                        'name': item_name,
+                        'unit': item_unit,
                         'quantity': float(item_data.get('quantity', 0)),
                         'unitPrice': float(item_data.get('unitPrice', 0)),
-                        'amount': float(item_data.get('totalAmount', 0)),
+                        'amount': float(item_amount),
                     })
                     if item_data.get('vatRate'):
                         vat_rates_in_items.append(item_data.get('vatRate'))
@@ -917,22 +931,51 @@ class InvoiceServiceV2:
             logger.info(f"Found {len(internal_docs)} internal_invoices for reconciliation")
 
             # Build maps for quick lookup
-            # Key: invoiceNo|taxCode
+            # QUAN TRỌNG: Dùng normalized key (invoiceNo|taxCode) để matching
+            # vì data cũ không có invoiceSymbol, data mới có invoiceSymbol
+            # Nếu chỉ dùng full key sẽ không match được
+            def build_match_key(data: Dict, tax_code_field: str) -> str:
+                """
+                Build normalized key for MATCHING (không có invoiceSymbol)
+                Format: invoiceNo|taxCode
+                Để đảm bảo backward compatible với data cũ không có invoiceSymbol
+                """
+                invoice_no = data.get('invoiceNo', '')
+                # Lấy tax code từ supplier object hoặc flat field
+                supplier = data.get('supplier', {})
+                tax_code = supplier.get('taxCode', '') or data.get(tax_code_field, '')
+                return f"{invoice_no}|{tax_code}"
+
+            def build_display_key(data: Dict, tax_code_field: str) -> str:
+                """
+                Build full key for DISPLAY (có invoiceSymbol nếu có)
+                Format: invoiceSymbol_invoiceNo|taxCode hoặc invoiceNo|taxCode
+                """
+                invoice_no = data.get('invoiceNo', '')
+                invoice_symbol = data.get('invoiceSymbol', '')
+                supplier = data.get('supplier', {})
+                tax_code = supplier.get('taxCode', '') or data.get(tax_code_field, '')
+                if invoice_symbol:
+                    return f"{invoice_symbol}_{invoice_no}|{tax_code}"
+                return f"{invoice_no}|{tax_code}"
+
             tax_map = {}
             for doc in tax_docs:
                 data = doc.to_dict()
                 data['id'] = doc.id
-                key = data.get('invoiceKey', f"{data.get('invoiceNo', '')}|{data.get('sellerTaxCode', '')}")
+                data['_displayKey'] = build_display_key(data, 'sellerTaxCode')
+                key = build_match_key(data, 'sellerTaxCode')
                 tax_map[key] = data
 
             internal_map = {}
             for doc in internal_docs:
                 data = doc.to_dict()
                 data['id'] = doc.id
-                key = data.get('invoiceKey', f"{data.get('invoiceNo', '')}|{data.get('supplierTaxCode', '')}")
+                data['_displayKey'] = build_display_key(data, 'supplierTaxCode')
+                key = build_match_key(data, 'supplierTaxCode')
                 internal_map[key] = data
 
-            # Get all unique keys
+            # Get all unique MATCH keys (normalized, không có invoiceSymbol)
             all_keys = set(tax_map.keys()) | set(internal_map.keys())
 
             # Reconcile each invoice
@@ -950,8 +993,16 @@ class InvoiceServiceV2:
                 tax_inv = tax_map.get(key)
                 internal_inv = internal_map.get(key)
 
+                # Sử dụng display key (có invoiceSymbol) nếu có, fallback về match key
+                display_key = key
+                if tax_inv and tax_inv.get('_displayKey'):
+                    display_key = tax_inv['_displayKey']
+                elif internal_inv and internal_inv.get('_displayKey'):
+                    display_key = internal_inv['_displayKey']
+
                 recon_record = {
-                    'invoiceKey': key,
+                    'invoiceKey': display_key,  # Hiển thị full key với invoiceSymbol
+                    'matchKey': key,  # Key dùng để match (không có invoiceSymbol)
                     'taxInvoiceId': tax_inv['id'] if tax_inv else None,
                     'internalInvoiceId': internal_inv['id'] if internal_inv else None,
                     'status': None,
@@ -982,11 +1033,13 @@ class InvoiceServiceV2:
                 # Add invoice data for UI display
                 if tax_inv:
                     # Lấy supplier info từ nhiều nguồn có thể: sellerName, supplierName, hoặc nested supplier
-                    tax_supplier = tax_inv.get('supplier', {})
+                    tax_supplier = tax_inv.get('supplier', {}) or tax_inv.get('seller', {})
+                    tax_buyer = tax_inv.get('buyer', {})
                     recon_record['taxData'] = {
                         'invoiceNo': tax_inv.get('invoiceNo', ''),
                         'invoiceSymbol': tax_inv.get('invoiceSymbol', ''),
                         'invoiceDate': tax_inv.get('invoiceDate', ''),
+                        # Nhà cung cấp (NBan)
                         'supplierName': (
                             tax_supplier.get('name', '') or
                             tax_inv.get('sellerName', '') or
@@ -997,26 +1050,56 @@ class InvoiceServiceV2:
                             tax_inv.get('sellerTaxCode', '') or
                             tax_inv.get('supplierTaxCode', '')
                         ),
+                        'supplierAddress': (
+                            tax_supplier.get('address', '') or
+                            tax_inv.get('sellerAddress', '') or
+                            tax_inv.get('supplierAddress', '')
+                        ),
+                        # Người mua (NMua)
+                        'buyerName': (
+                            tax_buyer.get('name', '') or
+                            tax_inv.get('buyerName', '')
+                        ),
+                        'buyerTaxCode': (
+                            tax_buyer.get('taxCode', '') or
+                            tax_inv.get('buyerTaxCode', '')
+                        ),
+                        'buyerAddress': (
+                            tax_buyer.get('address', '') or
+                            tax_inv.get('buyerAddress', '')
+                        ),
+                        # Tổng tiền
                         'totalBeforeVat': tax_inv.get('totalBeforeVat', 0),
                         'vatRate': tax_inv.get('vatRate', 0),
                         'vatAmount': tax_inv.get('vatAmount', 0),
-                        'totalAmount': tax_inv.get('totalAmount', 0)
+                        'totalAmount': tax_inv.get('totalAmount', 0),
+                        # Danh sách hàng hóa (DSHHDVu)
+                        'items': tax_inv.get('items', [])
                     }
 
                 if internal_inv:
                     # Lấy supplier info từ nested object hoặc flat fields
                     supplier = internal_inv.get('supplier', {})
+                    buyer = internal_inv.get('buyer', {})
                     recon_record['internalData'] = {
                         'invoiceNo': internal_inv.get('invoiceNo', ''),
                         'invoiceSymbol': internal_inv.get('invoiceSymbol', ''),
                         'invoiceDate': internal_inv.get('invoiceDate', ''),
+                        # Nhà cung cấp
                         'supplierName': supplier.get('name', '') or internal_inv.get('supplierName', ''),
                         'supplierTaxCode': supplier.get('taxCode', '') or internal_inv.get('supplierTaxCode', ''),
                         'supplierAddress': supplier.get('address', '') or internal_inv.get('supplierAddress', ''),
+                        # Người mua
+                        'buyerName': buyer.get('name', '') or internal_inv.get('buyerName', ''),
+                        'buyerTaxCode': buyer.get('taxCode', '') or internal_inv.get('buyerTaxCode', ''),
+                        'buyerAddress': buyer.get('address', '') or internal_inv.get('buyerAddress', ''),
+                        # Tổng tiền
                         'totalBeforeVat': internal_inv.get('totalBeforeVat', 0),
                         'vatRate': internal_inv.get('vatRate', 0),
                         'vatAmount': internal_inv.get('vatAmount', 0),
-                        'totalAmount': internal_inv.get('totalAmount', 0)
+                        'totalAmount': internal_inv.get('totalAmount', 0),
+                        # Danh sách hàng hóa
+                        'items': internal_inv.get('items', [])
                     }
 
                 reconciliations.append(recon_record)

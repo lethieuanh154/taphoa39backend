@@ -68,6 +68,7 @@ class TaxInvoiceXMLParser:
             root_tag = root.tag.split('}')[-1] if '}' in root.tag else root.tag
 
             logger.info(f"XML root tag: {root_tag}")
+            print(f"[PARSER DEBUG] XML root tag: {root_tag}")
 
             # Try multiple possible structures
             # Structure 1: HDon với DLHDon bên trong (format mới từ GDT)
@@ -230,6 +231,15 @@ class TaxInvoiceXMLParser:
                     *paths
                 )
 
+            # Helper để tìm text trong các element con trực tiếp (không dùng iter)
+            def find_direct_child_text(parent, *tag_names):
+                """Tìm text trong các element con trực tiếp của parent"""
+                for child in parent:
+                    child_tag = child.tag.split('}')[-1] if '}' in child.tag else child.tag
+                    if child_tag in tag_names and child.text:
+                        return child.text.strip()
+                return ''
+
             # ================================================================
             # 1. SỐ HÓA ĐƠN - tìm trong TTChung trước
             # ================================================================
@@ -298,27 +308,47 @@ class TaxInvoiceXMLParser:
 
             # ================================================================
             # 5. THÔNG TIN NGƯỜI MUA (optional)
+            # Tìm trực tiếp trong NMua section để đảm bảo lấy đúng
             # ================================================================
-            invoice['buyerTaxCode'] = find_in_section(
-                hdon_element,
-                ('NMua', 'BenMua', 'NguoiMua', 'Buyer'),
-                'MST', 'MaSoThue', 'TaxCode', 'MSTNMua'
-            )
-            invoice['buyerName'] = find_in_section(
-                hdon_element,
-                ('NMua', 'BenMua', 'NguoiMua', 'Buyer'),
-                'Ten', 'TenDonVi', 'TenNguoiMua', 'TenNMua', 'BuyerName'
-            )
-            invoice['buyerAddress'] = find_in_section(
-                hdon_element,
-                ('NMua', 'BenMua', 'NguoiMua', 'Buyer'),
-                'DChi', 'DiaChi', 'Address', 'DChiNMua'
-            )
-            invoice['buyerCode'] = find_in_section(
-                hdon_element,
-                ('NMua', 'BenMua', 'NguoiMua', 'Buyer'),
-                'MKHang', 'MaKH', 'BuyerCode'
-            )
+            # Tìm NMua section trước
+            nmua_section = None
+            for elem in hdon_element.iter():
+                tag = elem.tag.split('}')[-1] if '}' in elem.tag else elem.tag
+                if tag == 'NMua':
+                    nmua_section = elem
+                    break
+
+            if nmua_section is not None:
+                # Tìm trực tiếp trong NMua section
+                invoice['buyerTaxCode'] = find_text(nmua_section, 'MST', 'MaSoThue', 'TaxCode')
+                invoice['buyerName'] = find_text(nmua_section, 'Ten', 'TenDonVi', 'TenNguoiMua')
+                invoice['buyerAddress'] = find_text(nmua_section, 'DChi', 'DiaChi', 'Address')
+                invoice['buyerCode'] = find_text(nmua_section, 'MKHang', 'MaKH', 'BuyerCode')
+                print(f"[PARSER DEBUG] NMua found: name={invoice['buyerName']}, address={invoice['buyerAddress']}")
+                logger.info(f"[NMua] Found section, name={invoice['buyerName']}, taxCode={invoice['buyerTaxCode']}, address={invoice['buyerAddress']}")
+            else:
+                # Fallback: tìm theo cách cũ
+                invoice['buyerTaxCode'] = find_in_section(
+                    hdon_element,
+                    ('NMua', 'BenMua', 'NguoiMua', 'Buyer'),
+                    'MST', 'MaSoThue', 'TaxCode', 'MSTNMua'
+                )
+                invoice['buyerName'] = find_in_section(
+                    hdon_element,
+                    ('NMua', 'BenMua', 'NguoiMua', 'Buyer'),
+                    'Ten', 'TenDonVi', 'TenNguoiMua', 'TenNMua', 'BuyerName'
+                )
+                invoice['buyerAddress'] = find_in_section(
+                    hdon_element,
+                    ('NMua', 'BenMua', 'NguoiMua', 'Buyer'),
+                    'DChi', 'DiaChi', 'Address', 'DChiNMua'
+                )
+                invoice['buyerCode'] = find_in_section(
+                    hdon_element,
+                    ('NMua', 'BenMua', 'NguoiMua', 'Buyer'),
+                    'MKHang', 'MaKH', 'BuyerCode'
+                )
+                logger.info(f"[NMua] Fallback used, name={invoice['buyerName']}, address={invoice['buyerAddress']}")
 
             # ================================================================
             # 6. TIỀN HÀNG TRƯỚC THUẾ - TgTCThue
@@ -418,31 +448,58 @@ class TaxInvoiceXMLParser:
 
             # ================================================================
             # 9. DANH SÁCH HÀNG HÓA, DỊCH VỤ (items)
+            # DSHHDVu: Danh sách hàng hóa dịch vụ (có thể là DSHHDV hoặc DSHHDVu tùy format)
             # ================================================================
             invoice['items'] = []
             dshhdv_element = None
             for elem in hdon_element.iter():
                 tag = elem.tag.split('}')[-1] if '}' in elem.tag else elem.tag
-                if tag == 'DSHHDV':
+                # Hỗ trợ cả DSHHDV và DSHHDVu (format mới từ GDT)
+                if tag in ('DSHHDV', 'DSHHDVu'):
                     dshhdv_element = elem
                     break
-            
+
             if dshhdv_element is not None:
-                for hhdv_element in dshhdv_element.iter():
+                print(f"[PARSER DEBUG] DSHHDVu found, parsing items...")
+                logger.info(f"[DSHHDVu] Found items container")
+                # Duyệt qua các element con trực tiếp của DSHHDVu
+                for hhdv_element in dshhdv_element:
                     tag = hhdv_element.tag.split('}')[-1] if '}' in hhdv_element.tag else hhdv_element.tag
-                    if tag != 'HHDV':
+                    # Hỗ trợ cả HHDV và HHDVu (format mới từ GDT)
+                    if tag not in ('HHDV', 'HHDVu'):
                         continue
 
+                    stt_str = find_direct_child_text(hhdv_element, 'STT') or '0'
+                    try:
+                        stt = int(float(stt_str))  # Handle "1.0" format
+                    except ValueError:
+                        stt = 0
+
+                    # Lấy tên hàng từ THHDVu (format mới) hoặc THHDV/TenHang (format cũ)
+                    item_name = find_direct_child_text(hhdv_element, 'THHDVu', 'THHDV', 'TenHang') or ''
+                    # Lấy đơn vị tính
+                    item_unit = find_direct_child_text(hhdv_element, 'DVTinh', 'DonViTinh') or ''
+                    # Lấy số lượng
+                    item_quantity = TaxInvoiceXMLParser._parse_amount(find_direct_child_text(hhdv_element, 'SLuong', 'SoLuong'))
+                    # Lấy đơn giá
+                    item_unit_price = TaxInvoiceXMLParser._parse_amount(find_direct_child_text(hhdv_element, 'DGia', 'DonGia'))
+                    # Lấy thành tiền
+                    item_amount = TaxInvoiceXMLParser._parse_amount(find_direct_child_text(hhdv_element, 'ThTien', 'ThanhTien'))
+
                     item = {
-                        'lineNumber': find_text(hhdv_element, 'STT'),
-                        'itemName': find_text(hhdv_element, 'THHDV', 'TenHang'),
-                        'unitName': find_text(hhdv_element, 'DVTinh', 'DonViTinh'),
-                        'quantity': TaxInvoiceXMLParser._parse_amount(find_text(hhdv_element, 'SLuong', 'SoLuong')),
-                        'unitPrice': TaxInvoiceXMLParser._parse_amount(find_text(hhdv_element, 'DGia', 'DonGia')),
-                        'totalAmount': TaxInvoiceXMLParser._parse_amount(find_text(hhdv_element, 'ThTien', 'ThanhTien')),
-                        'vatRate': find_text(hhdv_element, 'TSuat', 'ThueSuat')
+                        'stt': stt,
+                        'name': item_name,  # Thống nhất dùng 'name' như internalData
+                        'description': item_name,  # Backup cho template fallback
+                        'unit': item_unit,
+                        'quantity': item_quantity,
+                        'unitPrice': item_unit_price,
+                        'amount': item_amount,
+                        'totalAmount': item_amount,  # Backup cho template fallback
+                        'vatRate': find_direct_child_text(hhdv_element, 'TSuat', 'ThueSuat')
                     }
                     invoice['items'].append(item)
+                    print(f"[PARSER DEBUG] Item {stt}: name='{item_name}', unit='{item_unit}'")
+                    logger.info(f"[HHDVu] Item {stt}: name='{item_name}', unit='{item_unit}', qty={item_quantity}, amount={item_amount}")
 
 
             # Log để debug
@@ -452,6 +509,16 @@ class TaxInvoiceXMLParser:
                 f"tax={invoice['sellerTaxCode']}, beforeVat={invoice.get('totalBeforeVat', 0)}, "
                 f"vat={invoice['vatAmount']}, vatRate={invoice.get('vatRate', 0)}, total={invoice['totalAmount']}"
             )
+            # Log buyer và items info để debug
+            logger.info(
+                f"Buyer info: name={invoice.get('buyerName', '')}, "
+                f"taxCode={invoice.get('buyerTaxCode', '')}, "
+                f"address={invoice.get('buyerAddress', '')}"
+            )
+            if invoice.get('items'):
+                logger.info(f"Items count: {len(invoice['items'])}")
+                for idx, item in enumerate(invoice['items'][:2]):  # Log 2 items đầu
+                    logger.info(f"  Item {idx+1}: name={item.get('name', '')}, unit={item.get('unit', '')}, amount={item.get('amount', 0)}")
 
             # Validate required fields
             if not invoice['invoiceNo']:
