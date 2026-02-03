@@ -39,7 +39,7 @@ def create_firebase_merged_products_bp(socketio=None) -> Blueprint:
                         "lastModified": result.get("lastModified"),
                         "modifiedBy": modified_by
                     },
-                    namespace="/products"
+                    namespace="/api/websocket/products"
                 )
                 print(f"📡 Broadcast merged_products_updated: {len(items)} items")
             except Exception as e:
@@ -68,7 +68,7 @@ def create_firebase_merged_products_bp(socketio=None) -> Blueprint:
                         "lastModified": result.get("lastModified"),
                         "modifiedBy": modified_by
                     },
-                    namespace="/products"
+                    namespace="/api/websocket/products"
                 )
             except Exception as e:
                 print(f"⚠️ Failed to broadcast merged products update: {e}")
@@ -96,7 +96,7 @@ def create_firebase_merged_products_bp(socketio=None) -> Blueprint:
                         "lastModified": result.get("lastModified"),
                         "modifiedBy": modified_by
                     },
-                    namespace="/products"
+                    namespace="/api/websocket/products"
                 )
             except Exception as e:
                 print(f"⚠️ Failed to broadcast merged products update: {e}")
@@ -122,7 +122,7 @@ def create_firebase_merged_products_bp(socketio=None) -> Blueprint:
                         "lastModified": result.get("lastModified"),
                         "modifiedBy": modified_by
                     },
-                    namespace="/products"
+                    namespace="/api/websocket/products"
                 )
             except Exception as e:
                 print(f"⚠️ Failed to broadcast merged products clear: {e}")
