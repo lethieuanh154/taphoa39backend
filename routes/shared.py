@@ -43,6 +43,14 @@ def to_number(value: Any) -> Optional[int]:
         return None
 
 
+def to_float(value: Any) -> Optional[float]:
+    """Convert value to float, preserving decimal precision for OnHandNV"""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def normalize_product_updates(payload: Any) -> List[Dict[str, Any]]:
     if isinstance(payload, list):
         normalized: List[Dict[str, Any]] = []
@@ -116,7 +124,8 @@ def apply_product_updates(product_service, normalized_items: Iterable[Dict[str, 
                 broadcast_fields["OnHand"] = converted
             elif key in ONHANDNV_KEYS:
                 # ✅ Explicit handling for OnHandNV - normalize to "OnHandNV"
-                converted = to_number(value)
+                # ✅ FIX: Use to_float instead of to_number to preserve decimal precision
+                converted = to_float(value)
                 if converted is not None:
                     updates["OnHandNV"] = converted
                     broadcast_fields["OnHandNV"] = converted
