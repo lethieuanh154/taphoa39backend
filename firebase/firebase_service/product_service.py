@@ -1096,8 +1096,8 @@ class FirestoreProductService:
 
     def read_products_modified_since(self, since_timestamp: str, include_inactive: bool = True, include_deleted: bool = False) -> List[Dict]:
         """
-        Đọc products đã được modified kể từ timestamp cho trước.
-        Sử dụng Firestore query với điều kiện ModifiedDate > since_timestamp.
+        Đọc products đã được modified HOẶC created kể từ timestamp cho trước.
+        Sử dụng Firestore query với điều kiện ModifiedDate > since_timestamp OR CreatedDate > since_timestamp.
 
         Args:
             since_timestamp: ISO 8601 timestamp string (e.g., "2024-01-15T10:30:00Z")
@@ -1105,7 +1105,7 @@ class FirestoreProductService:
             include_deleted: Bao gồm products đã xóa
 
         Returns:
-            List of products modified since the given timestamp
+            List of products modified or created since the given timestamp
         """
         print(f"🔄 read_products_modified_since (since={since_timestamp})")
 
@@ -1118,15 +1118,37 @@ class FirestoreProductService:
             else:
                 since_dt = since_timestamp
 
-            # Query Firestore với điều kiện ModifiedDate > since_timestamp
-            # Firestore sẽ chỉ charge reads cho documents matching query
-            query = self.products_ref.where("ModifiedDate", ">", since_dt.isoformat())
-            docs = query.stream()
+            since_iso = since_dt.isoformat()
 
-            result = []
-            for doc in docs:
+            # ✅ FIX: Query BOTH ModifiedDate AND CreatedDate
+            # Firestore không hỗ trợ OR query, nên chạy 2 queries và merge
+            result_map = {}  # Use dict to dedupe by Id
+
+            # Query 1: Products modified since timestamp
+            print(f"  📥 Query 1: ModifiedDate > {since_iso}")
+            query_modified = self.products_ref.where("ModifiedDate", ">", since_iso)
+            for doc in query_modified.stream():
                 data = doc.to_dict() or {}
+                product_id = data.get("Id")
+                if product_id and product_id not in result_map:
+                    result_map[product_id] = data
+            print(f"  ✅ Query 1 found {len(result_map)} products")
 
+            # Query 2: Products created since timestamp (for new products)
+            print(f"  📥 Query 2: CreatedDate > {since_iso}")
+            query_created = self.products_ref.where("CreatedDate", ">", since_iso)
+            created_count = 0
+            for doc in query_created.stream():
+                data = doc.to_dict() or {}
+                product_id = data.get("Id")
+                if product_id and product_id not in result_map:
+                    result_map[product_id] = data
+                    created_count += 1
+            print(f"  ✅ Query 2 found {created_count} additional products")
+
+            # Filter by isActive and isDeleted
+            result = []
+            for data in result_map.values():
                 is_active = self._coerce_bool(data.get("isActive"), True)
                 is_deleted = self._coerce_bool(data.get("isDeleted"), False)
 
@@ -1137,7 +1159,7 @@ class FirestoreProductService:
 
                 result.append(dict(data))
 
-            print(f"✅ Found {len(result)} products modified since {since_timestamp}")
+            print(f"✅ Found {len(result)} products modified/created since {since_timestamp}")
             return result
 
         except Exception as e:
