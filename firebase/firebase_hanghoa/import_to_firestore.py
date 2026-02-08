@@ -74,6 +74,7 @@ def update_products_from_banhang_app_to_firestore(update_payload):
                 current_value = product_doc.get("OnHand", 0) or 0
 
             minus_value = _parse_int(item.get("minus", 0)) or 0
+            plus_value = _parse_int(item.get("plus", 0)) or 0
 
             # If proc_ref (event marker) exists, skip to make it idempotent
             if proc_ref is not None:
@@ -88,7 +89,8 @@ def update_products_from_banhang_app_to_firestore(update_payload):
 
             # ✅ Always compute target using current value inside the transaction for atomicity.
             # This ignores any target value sent from the client, making the backend authoritative.
-            target_value = int(current_value) - int(minus_value)
+            # ✅ FIX: Handle both minus (decrease) and plus (increase) for edit invoice restore
+            target_value = int(current_value) - int(minus_value) + int(plus_value)
 
             # ✅ Update product OnHand hoặc OnHandNV tùy theo loại
             # Cập nhật SyncTimestamp và ModifiedDate để:
