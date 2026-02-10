@@ -236,22 +236,46 @@ class FirestoreProductService:
             return {"status": "error", "message": "Products must be a list"}
 
         try:
-            # ✅ Step 1: Lấy danh sách Codes và Ids hiện có trong Firestore để check duplicate
+            # ✅ Step 1: Check duplicate CHỈ cho các IDs/Codes cần thêm (không stream toàn bộ collection)
             existing_codes = set()
-            existing_ids = set()  # ✅ Thêm set để check duplicate Id
+            existing_ids = set()
             try:
-                all_docs = self.products_ref.stream()
-                for doc in all_docs:
-                    doc_data = doc.to_dict()
-                    # ✅ Thu thập existing Ids
-                    doc_id = doc_data.get("Id")
-                    if doc_id:
-                        existing_ids.add(str(doc_id))
-                    # Thu thập existing Codes
-                    code = doc_data.get("Code", "")
-                    if code:
-                        existing_codes.add(code.upper())  # Normalize to uppercase
-                print(f"📋 Found {len(existing_ids)} existing product IDs and {len(existing_codes)} codes in Firestore")
+                # Batch get by document IDs - chỉ fetch các documents cần check
+                candidate_ids = [str(p.get("Id") or p.get("id")) for p in products if p.get("Id") or p.get("id")]
+                if candidate_ids:
+                    doc_refs = [self.products_ref.document(pid) for pid in candidate_ids]
+                    # Firestore getAll - fetch nhiều documents cùng lúc
+                    docs = db.get_all(doc_refs)
+                    for doc in docs:
+                        if doc.exists:
+                            doc_data = doc.to_dict()
+                            doc_id = doc_data.get("Id")
+                            if doc_id:
+                                existing_ids.add(str(doc_id))
+                            code = doc_data.get("Code", "")
+                            if code:
+                                existing_codes.add(code.upper())
+
+                # Check duplicate Code cho non-clone products bằng query thay vì stream all
+                non_clone_codes = [
+                    p.get("Code", "")
+                    for p in products
+                    if p.get("Code") and not p.get("isClone", False) and str(p.get("Id") or "") not in existing_ids
+                ]
+                if non_clone_codes:
+                    # Firestore 'in' query hỗ trợ tối đa 30 values, case-sensitive nên dùng code gốc
+                    for i in range(0, len(non_clone_codes), 30):
+                        chunk = [c for c in non_clone_codes[i:i+30] if c]
+                        if not chunk:
+                            continue
+                        query = self.products_ref.where("Code", "in", chunk)
+                        for doc in query.stream():
+                            doc_data = doc.to_dict()
+                            code = doc_data.get("Code", "")
+                            if code:
+                                existing_codes.add(code.upper())
+
+                print(f"📋 Checked {len(candidate_ids)} candidate IDs: {len(existing_ids)} existing, {len(existing_codes)} existing codes")
             except Exception as e:
                 print(f"⚠️ Could not fetch existing data: {e}")
                 # Continue without duplicate check
