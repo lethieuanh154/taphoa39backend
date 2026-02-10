@@ -227,51 +227,86 @@ def get_auth_header():
     return auth_header
 
 
+def _fetch_all_pages(url, headers, sort, size, search, max_pages=20):
+    """
+    Tự động lấy tất cả trang từ GDT API bằng cursor-based pagination.
+    GDT trả về 'state' trong response, dùng làm cursor cho trang tiếp theo.
+    Lặp cho đến khi không còn 'state' hoặc đạt max_pages.
+    """
+    all_datas = []
+    state = None
+    page = 0
+
+    while page < max_pages:
+        page += 1
+        params = {
+            'sort': sort,
+            'size': size,
+            'search': search
+        }
+        if state:
+            params['state'] = state
+
+        logger.info(f"[HDDT Proxy] Page {page}: GET {url} (state={'yes' if state else 'none'})")
+
+        response = requests.get(url, params=params, headers=headers, timeout=30, verify=True)
+
+        if response.status_code != 200:
+            logger.error(f"[HDDT Proxy] Page {page} Error: {response.status_code} - {response.text}")
+            if page == 1:
+                # Trang đầu lỗi -> trả lỗi về client
+                return None, response.status_code, response.text
+            else:
+                # Trang sau lỗi -> trả về data đã có
+                break
+
+        data = response.json()
+        datas = data.get('datas', [])
+        all_datas.extend(datas)
+
+        logger.info(f"[HDDT Proxy] Page {page}: got {len(datas)} items (total: {len(all_datas)})")
+
+        # Nếu không có state hoặc trả về ít hơn size -> hết data
+        next_state = data.get('state')
+        if not next_state or len(datas) < int(size):
+            break
+
+        state = next_state
+
+    return all_datas, 200, None
+
+
 @bp.route('/purchase', methods=['GET'])
 def get_purchase_invoices():
     """
-    Proxy cho API lấy hóa đơn mua vào
+    Proxy cho API lấy hóa đơn mua vào - TỰ ĐỘNG PHÂN TRANG
     GET /query/invoices/purchase
-
-    Query params:
-        - sort: Sắp xếp (default: tdlap:desc)
-        - size: Số lượng (default: 50)
-        - search: Search query
+    Tự động lặp qua tất cả các trang và trả về toàn bộ data.
     """
     try:
         auth_header = get_auth_header()
         if not auth_header:
             return jsonify({'error': 'Missing Authorization header'}), 401
 
-        # Forward query params
         sort = request.args.get('sort', 'tdlap:desc')
         size = request.args.get('size', '50')
         search = request.args.get('search', '')
 
         url = f"{HDDT_API_BASE}/query/invoices/purchase"
-        params = {
-            'sort': sort,
-            'size': size,
-            'search': search
-        }
-
         headers = {
             'Authorization': auth_header,
             'Content-Type': 'application/json'
         }
 
-        logger.info(f"[HDDT Proxy] GET {url} with params: {params}")
+        all_datas, status, error_text = _fetch_all_pages(url, headers, sort, size, search)
 
-        response = requests.get(url, params=params, headers=headers, timeout=30, verify=True)
-
-        if response.status_code == 200:
-            return jsonify(response.json())
-        else:
-            logger.error(f"[HDDT Proxy] Error: {response.status_code} - {response.text}")
+        if all_datas is None:
             return jsonify({
-                'error': f'HDDT API Error: {response.status_code}',
-                'detail': response.text
-            }), response.status_code
+                'error': f'HDDT API Error: {status}',
+                'detail': error_text
+            }), status
+
+        return jsonify({'datas': all_datas, 'total': len(all_datas)})
 
     except requests.exceptions.Timeout:
         logger.error("[HDDT Proxy] Request timeout")
@@ -287,44 +322,33 @@ def get_purchase_invoices():
 @bp.route('/purchase-sco', methods=['GET'])
 def get_purchase_invoices_sco():
     """
-    Proxy cho API lấy hóa đơn mua vào từ máy tính tiền (SCO)
+    Proxy cho API lấy hóa đơn mua vào từ máy tính tiền (SCO) - TỰ ĐỘNG PHÂN TRANG
     GET /sco-query/invoices/purchase
-    ttxly==8: Hóa đơn khởi tạo từ máy tính tiền
     """
     try:
         auth_header = get_auth_header()
         if not auth_header:
             return jsonify({'error': 'Missing Authorization header'}), 401
 
-        # Forward query params
         sort = request.args.get('sort', 'tdlap:desc')
         size = request.args.get('size', '50')
         search = request.args.get('search', '')
 
         url = f"{HDDT_API_BASE}/sco-query/invoices/purchase"
-        params = {
-            'sort': sort,
-            'size': size,
-            'search': search
-        }
-
         headers = {
             'Authorization': auth_header,
             'Content-Type': 'application/json'
         }
 
-        logger.info(f"[HDDT Proxy] GET {url} with params: {params}")
+        all_datas, status, error_text = _fetch_all_pages(url, headers, sort, size, search)
 
-        response = requests.get(url, params=params, headers=headers, timeout=30, verify=True)
-
-        if response.status_code == 200:
-            return jsonify(response.json())
-        else:
-            logger.error(f"[HDDT Proxy] Error: {response.status_code} - {response.text}")
+        if all_datas is None:
             return jsonify({
-                'error': f'HDDT API Error: {response.status_code}',
-                'detail': response.text
-            }), response.status_code
+                'error': f'HDDT API Error: {status}',
+                'detail': error_text
+            }), status
+
+        return jsonify({'datas': all_datas, 'total': len(all_datas)})
 
     except requests.exceptions.Timeout:
         logger.error("[HDDT Proxy] Request timeout")
@@ -340,48 +364,34 @@ def get_purchase_invoices_sco():
 @bp.route('/sold', methods=['GET'])
 def get_sold_invoices():
     """
-    Proxy cho API lấy hóa đơn bán ra (sold invoices)
+    Proxy cho API lấy hóa đơn bán ra (sold invoices) - TỰ ĐỘNG PHÂN TRANG
     GET /sco-query/invoices/sold
-
-    Query params:
-        - sort: Sắp xếp (default: tdlap:desc)
-        - size: Số lượng (default: 50)
-        - search: Search query
+    Tự động lặp qua tất cả các trang và trả về toàn bộ data.
     """
     try:
         auth_header = get_auth_header()
         if not auth_header:
             return jsonify({'error': 'Missing Authorization header'}), 401
 
-        # Forward query params
         sort = request.args.get('sort', 'tdlap:desc')
         size = request.args.get('size', '50')
         search = request.args.get('search', '')
 
         url = f"{HDDT_API_BASE}/sco-query/invoices/sold"
-        params = {
-            'sort': sort,
-            'size': size,
-            'search': search
-        }
-
         headers = {
             'Authorization': auth_header,
             'Content-Type': 'application/json'
         }
 
-        logger.info(f"[HDDT Proxy] GET {url} with params: {params}")
+        all_datas, status, error_text = _fetch_all_pages(url, headers, sort, size, search)
 
-        response = requests.get(url, params=params, headers=headers, timeout=30, verify=True)
-
-        if response.status_code == 200:
-            return jsonify(response.json())
-        else:
-            logger.error(f"[HDDT Proxy] Error: {response.status_code} - {response.text}")
+        if all_datas is None:
             return jsonify({
-                'error': f'HDDT API Error: {response.status_code}',
-                'detail': response.text
-            }), response.status_code
+                'error': f'HDDT API Error: {status}',
+                'detail': error_text
+            }), status
+
+        return jsonify({'datas': all_datas, 'total': len(all_datas)})
 
     except requests.exceptions.Timeout:
         logger.error("[HDDT Proxy] Request timeout")
@@ -497,21 +507,15 @@ def get_invoice_detail_by_id(invoice_id):
 @bp.route('/detail', methods=['GET'])
 def get_invoice_detail():
     """
-    Proxy cho API lấy chi tiết hóa đơn theo params
-    GET /query/invoices/detail?nbmst=xxx&khhdon=xxx&shdon=xxx&khmshdon=xxx
-
-    Query params:
-        - nbmst: Mã số thuế người bán
-        - khhdon: Ký hiệu hóa đơn
-        - shdon: Số hóa đơn
-        - khmshdon: Ký hiệu mẫu số hóa đơn
+    Proxy cho API lấy chi tiết hóa đơn mua vào theo params.
+    Thử /query/invoices/detail trước, nếu lỗi thì fallback sang /sco-query/invoices/detail
+    (vì HĐ từ máy tính tiền chỉ có trên sco-query)
     """
     try:
         auth_header = get_auth_header()
         if not auth_header:
             return jsonify({'error': 'Missing Authorization header'}), 401
 
-        # Lấy query params
         nbmst = request.args.get('nbmst')
         khhdon = request.args.get('khhdon')
         shdon = request.args.get('shdon')
@@ -520,7 +524,6 @@ def get_invoice_detail():
         if not all([nbmst, khhdon, shdon, khmshdon]):
             return jsonify({'error': 'Missing required params: nbmst, khhdon, shdon, khmshdon'}), 400
 
-        url = f"{HDDT_API_BASE}/query/invoices/detail"
         params = {
             'nbmst': nbmst,
             'khhdon': khhdon,
@@ -533,18 +536,27 @@ def get_invoice_detail():
             'Content-Type': 'application/json'
         }
 
-        logger.info(f"[HDDT Proxy] GET {url} with params: {params}")
-
-        response = requests.get(url, params=params, headers=headers, timeout=30, verify=True)
+        # Thử /query trước (HĐ điện tử thông thường)
+        url1 = f"{HDDT_API_BASE}/query/invoices/detail"
+        logger.info(f"[HDDT Proxy] GET {url1} with params: {params}")
+        response = requests.get(url1, params=params, headers=headers, timeout=30, verify=True)
 
         if response.status_code == 200:
             return jsonify(response.json())
-        else:
-            logger.error(f"[HDDT Proxy] Error: {response.status_code} - {response.text}")
-            return jsonify({
-                'error': f'HDDT API Error: {response.status_code}',
-                'detail': response.text
-            }), response.status_code
+
+        # Fallback sang /sco-query (HĐ máy tính tiền)
+        url2 = f"{HDDT_API_BASE}/sco-query/invoices/detail"
+        logger.info(f"[HDDT Proxy] Fallback GET {url2} with params: {params}")
+        response2 = requests.get(url2, params=params, headers=headers, timeout=30, verify=True)
+
+        if response2.status_code == 200:
+            return jsonify(response2.json())
+
+        logger.error(f"[HDDT Proxy] Both endpoints failed: {response.status_code}, {response2.status_code}")
+        return jsonify({
+            'error': f'HDDT API Error: {response2.status_code}',
+            'detail': response2.text
+        }), response2.status_code
 
     except requests.exceptions.Timeout:
         logger.error("[HDDT Proxy] Request timeout")
