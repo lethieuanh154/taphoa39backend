@@ -44,23 +44,34 @@ def update_products_from_banhang_app_to_firestore(update_payload):
                 return None
             product_doc = doc.to_dict() or {}
 
-            # Determine the product type to enforce correct field updates
+            # Determine the product type using expanded clone detection
+            # matching the frontend's logic for consistency
             is_clone_product = False
             if product_doc.get("isClone") is True or product_doc.get("isClone") == "true":
+                is_clone_product = True
+            # Fallback: product có OnHandNV > 0 và OnHand === 0 là clone
+            elif (product_doc.get("OnHandNV") or 0) > 0 and (product_doc.get("OnHand") or 0) == 0:
+                is_clone_product = True
+            # Fallback: KiotVietSync === false là local product, dùng OnHandNV
+            elif product_doc.get("KiotVietSync") is False:
                 is_clone_product = True
 
             # Get the requested update type from the client, default to OnHand
             requested_update_type = item.get("updateType", "OnHand")
 
-            # ✅ Enforce the business rule:
-            # - Clones ONLY use onHandNV.
-            # - Originals ONLY use onHand.
-            # Correct the update type automatically, ignoring the client's request if it's wrong.
+            # Trust the client's updateType if it says OnHandNV — the frontend has
+            # additional context (cart item snapshot with OnHandNV/OnHand values at
+            # checkout time) that the backend cannot see from the current Firestore doc
+            # (e.g. after a full deduction, OnHandNV may be 0 in Firestore but the
+            # frontend knows it was originally an NV product).
             if is_clone_product:
+                update_type = "OnHandNV"
+            elif requested_update_type == "OnHandNV":
+                # Frontend explicitly requested OnHandNV — trust it
                 update_type = "OnHandNV"
             else:
                 update_type = "OnHand"
-            
+
             is_nv_update = update_type == "OnHandNV"
 
             # Log if we corrected the client's request
