@@ -443,43 +443,130 @@ class FirestoreCustomerService:
 
         return updated_customers, errors
 
-    def reset_all_customer_points(self, lunar_year: int) -> dict:
-        """Reset TotalPoint of all customers to 0, saving old value to TotalPointLastYear."""
+    def reset_all_customer_points(self, lunar_year: int, cutoff_date_str: str = None) -> dict:
+        """Reset points/revenue for a new lunar year.
+
+        Deletes all invoices before the lunar new year cutoff date from Firebase.
+        Recalculates customer totals from remaining (new year) invoices only.
+        Removes old PointHistory data.
+        """
+        from datetime import datetime, timezone
+
+        # Parse cutoff date (solar date of mùng 1 tháng 1 âm lịch)
+        if cutoff_date_str:
+            try:
+                cutoff = datetime.fromisoformat(cutoff_date_str.replace("Z", "+00:00"))
+                if cutoff.tzinfo is None:
+                    cutoff = cutoff.replace(tzinfo=timezone.utc)
+            except (ValueError, AttributeError):
+                cutoff = datetime(lunar_year, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+        else:
+            cutoff = datetime(lunar_year, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+
+        def _to_number(value):
+            if value is None:
+                return 0.0
+            if isinstance(value, (int, float)):
+                return float(value)
+            if isinstance(value, str):
+                try:
+                    return float(value.replace(",", "").strip() or "0")
+                except ValueError:
+                    return 0.0
+            return 0.0
+
+        def _parse_date(value):
+            if value is None:
+                return None
+            if hasattr(value, 'timestamp'):
+                if hasattr(value, 'tzinfo') and value.tzinfo is None:
+                    return value.replace(tzinfo=timezone.utc)
+                return value
+            if isinstance(value, str):
+                for fmt in ("%Y-%m-%dT%H:%M:%S.%fZ", "%Y-%m-%dT%H:%M:%SZ",
+                            "%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S",
+                            "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+                    try:
+                        return datetime.strptime(value, fmt).replace(tzinfo=timezone.utc)
+                    except ValueError:
+                        continue
+            return None
+
         try:
             customer_docs = list(self.customers_ref.stream())
         except Exception as exc:
             return {"status": "error", "message": str(exc), "reset_count": 0}
 
         reset_count = 0
+        skipped = 0
         failed = {}
+        deleted_invoices_count = 0
+
+        # Invalidate all invoice caches before processing
+        if self.cache:
+            for doc in customer_docs:
+                self.cache.invalidate(f"invoices_by_customer_id:{doc.id}")
 
         for doc in customer_docs:
             customer_id = doc.id
             data = doc.to_dict() or {}
-            total_point = data.get("TotalPoint", 0)
 
-            if not isinstance(total_point, (int, float)):
-                try:
-                    total_point = float(total_point)
-                except (ValueError, TypeError):
-                    total_point = 0
+            try:
+                invoices = self.get_invoices_by_customer_id(customer_id)
+            except Exception as exc:
+                print(f"⚠️ Reset: failed to get invoices for customer {customer_id}: {exc}")
+                invoices = []
 
-            total_revenue = data.get("TotalRevenue", 0)
-            if not isinstance(total_revenue, (int, float)):
-                try:
-                    total_revenue = float(total_revenue)
-                except (ValueError, TypeError):
-                    total_revenue = 0
-
-            if total_point == 0 and total_revenue == 0:
+            total_point = _to_number(data.get("TotalPoint"))
+            total_revenue = _to_number(data.get("TotalRevenue"))
+            if not invoices and total_point == 0 and total_revenue == 0:
+                skipped += 1
                 continue
 
+            # Split invoices: delete old ones, keep new year ones
+            old_invoice_ids = []
+            this_year_revenue = 0.0
+            this_year_profit = 0.0
+            this_year_debt = 0.0
+            this_year_invoiced = 0
+
+            for invoice in invoices:
+                inv_price = _to_number(invoice.get("totalPrice"))
+                inv_cost = _to_number(invoice.get("totalCost"))
+                inv_profit = inv_price - inv_cost
+                inv_date = _parse_date(invoice.get("createdDate"))
+
+                if inv_date and inv_date >= cutoff:
+                    this_year_revenue += inv_price
+                    this_year_profit += inv_profit
+                    this_year_debt += self._resolve_invoice_debt(invoice)
+                    this_year_invoiced += 1
+                else:
+                    # Mark old invoice for deletion
+                    inv_id = invoice.get("id")
+                    if inv_id:
+                        old_invoice_ids.append(inv_id)
+
+            # Delete old invoices from Firebase
+            for inv_id in old_invoice_ids:
+                try:
+                    self.invoices_ref.document(str(inv_id)).delete()
+                    deleted_invoices_count += 1
+                except Exception as exc:
+                    print(f"⚠️ Failed to delete invoice {inv_id}: {exc}")
+
+            # Update customer: reset to new year data only, remove old history fields
+            from google.cloud.firestore_v1 import DELETE_FIELD
             updates = {
-                "TotalPointLastYear": round(total_point, 2),
-                "TotalRevenueLastYear": round(total_revenue, 2),
                 "LastResetLunarYear": lunar_year,
-                "TotalPoint": 0,
-                "TotalRevenue": 0,
+                "TotalPoint": round(this_year_profit, 2),
+                "TotalRevenue": round(this_year_revenue, 2),
+                "TotalInvoiced": this_year_invoiced,
+                "Debt": round(this_year_debt, 2),
+                # Remove old history fields
+                "PointHistory": DELETE_FIELD,
+                "TotalPointLastYear": DELETE_FIELD,
+                "TotalRevenueLastYear": DELETE_FIELD,
             }
 
             try:
@@ -487,17 +574,22 @@ class FirestoreCustomerService:
                 reset_count += 1
                 if self.cache:
                     self.cache.invalidate(customer_id)
+                print(f"✅ Reset customer {customer_id}: deleted={len(old_invoice_ids)}, "
+                      f"kept={this_year_invoiced}, revenue={round(this_year_revenue,2)}")
             except Exception as exc:
                 failed[customer_id] = str(exc)
 
         if self.cache:
             self.cache.invalidate("all_customers")
+            self.cache.invalidate("all_invoices")
 
         result = {
             "status": "success",
             "reset_count": reset_count,
+            "skipped": skipped,
             "lunar_year": lunar_year,
             "total_customers": len(customer_docs),
+            "deleted_invoices": deleted_invoices_count,
         }
         if failed:
             result["failed"] = failed
@@ -615,14 +707,24 @@ class FirestoreCustomerService:
             seen_invoice_ids.add(doc.id)
 
         def _run_field_queries(field_path, values):
-            candidates = [str(val).strip() for val in values if str(val).strip()]
+            # Build candidates as both string and numeric types for Firestore type-sensitive queries
+            candidates = set()
+            for val in values:
+                s = str(val).strip()
+                if s:
+                    candidates.add(s)
+                    try:
+                        candidates.add(int(s))
+                    except (ValueError, TypeError):
+                        pass
             if not candidates:
                 return 0
 
+            candidate_list = list(candidates)
             total = 0
             chunk_size = 10  # Firestore 'in' queries support up to 10 values
-            for start in range(0, len(candidates), chunk_size):
-                batch = candidates[start:start + chunk_size]
+            for start in range(0, len(candidate_list), chunk_size):
+                batch = candidate_list[start:start + chunk_size]
                 try:
                     if len(batch) == 1:
                         query = self.invoices_ref.where(filter=FieldFilter(field_path, "==", batch[0]))

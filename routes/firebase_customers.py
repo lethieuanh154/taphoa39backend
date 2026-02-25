@@ -176,7 +176,8 @@ def create_firebase_customers_bp(customer_service, socketio) -> Blueprint:
         if lunar_year is None or not isinstance(lunar_year, (int, float)):
             return jsonify({"status": "error", "message": "lunarYear is required (integer)"}), 400
 
-        result = customer_service.reset_all_customer_points(int(lunar_year))
+        cutoff_date = payload.get("cutoffDate")  # Solar date of lunar Jan 1
+        result = customer_service.reset_all_customer_points(int(lunar_year), cutoff_date)
 
         if result.get("reset_count", 0) > 0:
             broadcast_customer_updates(socketio, [{"applied": True, "reset": True}])

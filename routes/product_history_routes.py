@@ -52,14 +52,17 @@ def add_records(product_id):
         now = datetime.now().isoformat()
         new_records = []
         for r in body['records']:
-            new_records.append({
+            record = {
                 'timestamp': r.get('timestamp', now),
                 'field': r['field'],
                 'fieldLabel': r['fieldLabel'],
                 'oldValue': r['oldValue'],
                 'newValue': r['newValue'],
                 'changedBy': r.get('changedBy', '')
-            })
+            }
+            if r.get('tag'):
+                record['tag'] = r['tag']
+            new_records.append(record)
 
         all_records = existing_records + new_records
 
