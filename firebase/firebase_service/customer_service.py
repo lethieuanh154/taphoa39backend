@@ -443,6 +443,57 @@ class FirestoreCustomerService:
 
         return updated_customers, errors
 
+    def reset_all_customer_points(self, lunar_year: int) -> dict:
+        """Reset TotalPoint of all customers to 0, saving old value to TotalPointLastYear."""
+        try:
+            customer_docs = list(self.customers_ref.stream())
+        except Exception as exc:
+            return {"status": "error", "message": str(exc), "reset_count": 0}
+
+        reset_count = 0
+        failed = {}
+
+        for doc in customer_docs:
+            customer_id = doc.id
+            data = doc.to_dict() or {}
+            total_point = data.get("TotalPoint", 0)
+
+            if not isinstance(total_point, (int, float)):
+                try:
+                    total_point = float(total_point)
+                except (ValueError, TypeError):
+                    total_point = 0
+
+            if total_point == 0:
+                continue
+
+            updates = {
+                "TotalPointLastYear": round(total_point, 2),
+                "LastResetLunarYear": lunar_year,
+                "TotalPoint": 0,
+            }
+
+            try:
+                doc.reference.update(updates)
+                reset_count += 1
+                if self.cache:
+                    self.cache.invalidate(customer_id)
+            except Exception as exc:
+                failed[customer_id] = str(exc)
+
+        if self.cache:
+            self.cache.invalidate("all_customers")
+
+        result = {
+            "status": "success",
+            "reset_count": reset_count,
+            "lunar_year": lunar_year,
+            "total_customers": len(customer_docs),
+        }
+        if failed:
+            result["failed"] = failed
+        return result
+
     def delete_customers(self, customer_ids) -> dict:
         if not customer_ids:
             return {

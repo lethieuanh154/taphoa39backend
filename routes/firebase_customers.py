@@ -165,6 +165,24 @@ def create_firebase_customers_bp(customer_service, socketio) -> Blueprint:
             print(traceback.format_exc())
             return jsonify({"status": "error", "message": str(exc)}), 500
 
+    @bp.route("/customers/reset_points", methods=["POST"])
+    @handle_api_errors
+    def reset_customer_points():
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            return jsonify({"status": "error", "message": "JSON body is required"}), 400
+
+        lunar_year = payload.get("lunarYear")
+        if lunar_year is None or not isinstance(lunar_year, (int, float)):
+            return jsonify({"status": "error", "message": "lunarYear is required (integer)"}), 400
+
+        result = customer_service.reset_all_customer_points(int(lunar_year))
+
+        if result.get("reset_count", 0) > 0:
+            broadcast_customer_updates(socketio, [{"applied": True, "reset": True}])
+
+        return jsonify(result)
+
     @bp.route("/customers/batch_delete", methods=["POST"])
     def delete_customers():
         try:
