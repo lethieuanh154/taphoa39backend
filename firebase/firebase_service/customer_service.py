@@ -464,13 +464,22 @@ class FirestoreCustomerService:
                 except (ValueError, TypeError):
                     total_point = 0
 
-            if total_point == 0:
+            total_revenue = data.get("TotalRevenue", 0)
+            if not isinstance(total_revenue, (int, float)):
+                try:
+                    total_revenue = float(total_revenue)
+                except (ValueError, TypeError):
+                    total_revenue = 0
+
+            if total_point == 0 and total_revenue == 0:
                 continue
 
             updates = {
                 "TotalPointLastYear": round(total_point, 2),
+                "TotalRevenueLastYear": round(total_revenue, 2),
                 "LastResetLunarYear": lunar_year,
                 "TotalPoint": 0,
+                "TotalRevenue": 0,
             }
 
             try:
