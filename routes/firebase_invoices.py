@@ -153,8 +153,13 @@ def create_firebase_invoices_bp(invoice_service, product_service, customer_servi
                 return jsonify({"status": "error", "message": "Invoice not found"}), 404
             restocked_updates = []
             restock_errors = []
-            cart_items = existing_invoice.get('cartItems', []) or []   
-            	
+            cart_items = existing_invoice.get('cartItems', []) or []
+
+            # ✅ FIX: Nếu invoice có isMergeEnabled=true, product gốc (original/KiotViet)
+            # chưa bao giờ bị trừ tồn kho (chỉ lưu vào danh sách gộp), nên KHÔNG restock OnHand.
+            # Clone products vẫn restock bình thường vì OnHandNV đã bị trừ khi checkout.
+            is_merge_enabled = existing_invoice.get('isMergeEnabled') is True
+
             for item in cart_items:
                 product_data = item.get('product') or {}
                 product_id = product_data.get('Id') or product_data.get('id') or item.get('productId')
@@ -216,6 +221,11 @@ def create_firebase_invoices_bp(invoice_service, product_service, customer_servi
                             print(f"Error restocking clone product {pid_str}: {exc}")
                             print(traceback.format_exc())
                             restock_errors.append({"id": pid_str, "error": str(exc)})
+                    continue
+
+                # ✅ FIX: Nếu isMergeEnabled, product gốc chưa bị trừ tồn kho → skip restock
+                if is_merge_enabled:
+                    print(f"  ⏭️ Skipping restock for original product {pid_str} (isMergeEnabled=true, stock was never deducted)")
                     continue
 
                 # Original product: update OnHand for ALL siblings in the group
