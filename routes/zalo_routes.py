@@ -8,8 +8,10 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 import requests
+from dotenv import load_dotenv
 from flask import Blueprint, jsonify, redirect, request
 
+load_dotenv()
 logger = logging.getLogger(__name__)
 
 ZALO_APP_ID = os.getenv("ZALO_APP_ID", "")
