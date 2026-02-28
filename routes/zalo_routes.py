@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import secrets
 import time
 import threading
 from datetime import datetime, timezone
@@ -151,7 +152,7 @@ def create_zalo_routes_bp() -> Blueprint:
         if not ZALO_APP_ID or not ZALO_REDIRECT_URI:
             return jsonify({"error": "Zalo OAuth not configured"}), 500
 
-        state = request.args.get("state", "")
+        state = request.args.get("state") or secrets.token_urlsafe(16)
         oauth_url = (
             f"https://oauth.zaloapp.com/v4/permission"
             f"?app_id={ZALO_APP_ID}"
