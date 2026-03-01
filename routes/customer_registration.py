@@ -53,8 +53,25 @@ def create_customer_registration_bp(customer_service, socketio) -> Blueprint:
                 return c
         return None
 
-    def _generate_customer_code_transaction() -> str:
-        """Generate KH code using Firestore transaction to prevent race conditions."""
+    def _get_max_existing_code() -> int:
+        """Scan all existing customers (Firestore + KiotViet) to find max KH number."""
+        max_num = 0
+        try:
+            customers = customer_service.read_all_customers()
+            for c in customers:
+                if not isinstance(c, dict):
+                    continue
+                code = c.get("Code") or ""
+                if code.startswith("KH") and code[2:].isdigit():
+                    num = int(code[2:])
+                    if num > max_num:
+                        max_num = num
+        except Exception as exc:
+            logger.warning("Failed to scan existing customers: %s", exc)
+        return max_num
+
+    def _generate_customer_code() -> str:
+        """Generate KH code using Firestore counter, auto-synced with existing data."""
         from firebase.init_firebase import init_firestore
         from google.cloud.firestore_v1 import transactional
 
@@ -64,36 +81,24 @@ def create_customer_registration_bp(customer_service, socketio) -> Blueprint:
         @transactional
         def _update_counter(transaction):
             snapshot = counter_ref.get(transaction=transaction)
-            if snapshot.exists:
-                current = snapshot.to_dict().get("last_number", 0)
-            else:
-                current = 0
+            current = snapshot.to_dict().get("last_number", 0) if snapshot.exists else 0
+
+            # Ensure counter is >= max existing code (KiotViet sync)
+            max_existing = _get_max_existing_code()
+            if current < max_existing:
+                current = max_existing
+                logger.info("Counter synced to max existing code: %d", current)
+
             next_num = current + 1
             transaction.set(counter_ref, {"last_number": next_num}, merge=True)
             return f"KH{next_num:06d}"
 
-        return _update_counter(db.transaction())
-
-    def _generate_customer_code_fallback() -> str:
-        """Fallback: scan all customers for max KH code."""
-        customers = customer_service.read_all_customers()
-        max_num = 0
-        for c in customers:
-            if not isinstance(c, dict):
-                continue
-            code = c.get("Code") or ""
-            if code.startswith("KH") and code[2:].isdigit():
-                num = int(code[2:])
-                if num > max_num:
-                    max_num = num
-        return f"KH{max_num + 1:06d}"
-
-    def _generate_customer_code() -> str:
         try:
-            return _generate_customer_code_transaction()
+            return _update_counter(db.transaction())
         except Exception as exc:
             logger.warning("Transaction code gen failed, using fallback: %s", exc)
-            return _generate_customer_code_fallback()
+            max_num = _get_max_existing_code()
+            return f"KH{max_num + 1:06d}"
 
     @bp.route("/register", methods=["POST"])
     def register_customer():
