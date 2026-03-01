@@ -195,6 +195,12 @@ def create_zalo_routes_bp() -> Blueprint:
             logger.error("Zalo token error: %s", token_data)
             return jsonify({"error": error_msg}), 400
 
+        # Try to get user info from Zalo Graph API
+        # May fail if server IP is outside Vietnam
+        zalo_user_id = None
+        zalo_name = ""
+        phone = None
+
         try:
             user_resp = _retry_request(
                 "GET",
@@ -204,23 +210,26 @@ def create_zalo_routes_bp() -> Blueprint:
             )
             user_data = user_resp.json()
             logger.info("Zalo user info response: %s", user_data)
+
+            zalo_user_id = user_data.get("id")
+            zalo_name = user_data.get("name") or ""
+            phone = user_data.get("phone") or None
+            if phone and phone.startswith("84") and len(phone) == 11:
+                phone = "0" + phone[2:]
         except Exception as exc:
-            logger.error("Zalo user info failed: %s", exc)
-            return jsonify({"error": "Không thể lấy thông tin Zalo"}), 502
+            logger.warning("Zalo user info failed (IP restriction?): %s", exc)
 
-        zalo_user_id = user_data.get("id")
+        # If Graph API failed (IP outside Vietnam), generate ID from access_token
         if not zalo_user_id:
-            logger.error("Zalo user data missing id: %s", user_data)
-            return jsonify({"error": "Không lấy được Zalo user ID", "debug": user_data}), 400
-
-        phone = user_data.get("phone") or None
-        if phone and phone.startswith("84") and len(phone) == 11:
-            phone = "0" + phone[2:]
+            import hashlib
+            zalo_user_id = "zalo_" + hashlib.sha256(access_token.encode()).hexdigest()[:16]
+            logger.info("Generated fallback zalo_user_id: %s", zalo_user_id)
 
         return jsonify({
             "zalo_user_id": str(zalo_user_id),
-            "name": user_data.get("name") or "",
+            "name": zalo_name,
             "phone": phone,
+            "needs_profile": not phone,
         })
 
     # ── OA Authorization (admin runs once) ──
