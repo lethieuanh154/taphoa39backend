@@ -176,9 +176,15 @@ def create_zalo_routes_bp() -> Blueprint:
                 "POST",
                 "https://oauth.zaloapp.com/v4/access_token",
                 headers={"Content-Type": "application/x-www-form-urlencoded", "secret_key": ZALO_APP_SECRET},
-                data={"code": code, "app_id": ZALO_APP_ID, "grant_type": "authorization_code"},
+                data={
+                    "code": code,
+                    "app_id": ZALO_APP_ID,
+                    "grant_type": "authorization_code",
+                    "redirect_uri": ZALO_REDIRECT_URI,
+                },
             )
             token_data = token_resp.json()
+            logger.info("Zalo token response: %s", token_data)
         except Exception as exc:
             logger.error("Zalo token exchange failed: %s", exc)
             return jsonify({"error": "Không thể kết nối Zalo"}), 502
@@ -197,13 +203,15 @@ def create_zalo_routes_bp() -> Blueprint:
                 params={"fields": "id,name,phone"},
             )
             user_data = user_resp.json()
+            logger.info("Zalo user info response: %s", user_data)
         except Exception as exc:
             logger.error("Zalo user info failed: %s", exc)
             return jsonify({"error": "Không thể lấy thông tin Zalo"}), 502
 
         zalo_user_id = user_data.get("id")
         if not zalo_user_id:
-            return jsonify({"error": "Không lấy được Zalo user ID"}), 400
+            logger.error("Zalo user data missing id: %s", user_data)
+            return jsonify({"error": "Không lấy được Zalo user ID", "debug": user_data}), 400
 
         phone = user_data.get("phone") or None
         if phone and phone.startswith("84") and len(phone) == 11:
