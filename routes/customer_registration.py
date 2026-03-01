@@ -70,7 +70,7 @@ def create_customer_registration_bp(customer_service, socketio) -> Blueprint:
                 current = 0
             next_num = current + 1
             transaction.set(counter_ref, {"last_number": next_num}, merge=True)
-            return f"KH{next_num:05d}"
+            return f"KH{next_num:06d}"
 
         return _update_counter(db.transaction())
 
@@ -86,7 +86,7 @@ def create_customer_registration_bp(customer_service, socketio) -> Blueprint:
                 num = int(code[2:])
                 if num > max_num:
                     max_num = num
-        return f"KH{max_num + 1:05d}"
+        return f"KH{max_num + 1:06d}"
 
     def _generate_customer_code() -> str:
         try:
