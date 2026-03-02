@@ -433,6 +433,9 @@ class FirestoreInvoiceService:
             daily_doc = db.collection('DailySummary').document(date_str).get()
             if daily_doc.exists:
                 daily = daily_doc.to_dict()
+                # Nếu DailySummary cũ không có kv/nv fields, recalculate từ invoices
+                if 'kvRevenue' not in daily and daily.get('revenue', 0) > 0:
+                    daily = self.calculate_daily_summary(date_str)
                 revenue += daily.get('revenue', 0)
                 cost += daily.get('cost', 0)
                 buyer_quantity += daily.get('buyer_quantity', 0)
@@ -480,6 +483,9 @@ class FirestoreInvoiceService:
             monthly_doc = db.collection('MonthlySummary').document(doc_id).get()
             if monthly_doc.exists:
                 monthly = monthly_doc.to_dict()
+                # Nếu MonthlySummary cũ không có kv/nv fields, recalculate từ daily summaries
+                if 'kvRevenue' not in monthly and monthly.get('revenue', 0) > 0:
+                    monthly = self.calculate_monthly_summary(year, month)
                 revenue += monthly.get('revenue', 0)
                 cost += monthly.get('cost', 0)
                 buyer_quantity += monthly.get('buyer_quantity', 0)

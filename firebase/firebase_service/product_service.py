@@ -538,6 +538,64 @@ class FirestoreProductService:
             print(f"❌ Error in delete_product_with_siblings: {e}")
             return {"message": f"Error: {str(e)}", "deleted_count": 0, "deleted_ids": [], "error": str(e)}
     
+    def cleanup_deleted_products(self):
+        """
+        Tìm và xóa tất cả sản phẩm có isDeleted=true hoặc KiotVietDeleted=true khỏi Firebase.
+        Returns dict với thông tin số lượng đã xóa và danh sách IDs.
+        """
+        print("🧹 Bắt đầu dọn dẹp sản phẩm đã xóa từ Firebase...")
+
+        deleted_ids = []
+        errors = []
+
+        try:
+            # Scan tất cả products, kiểm tra isDeleted và KiotVietDeleted
+            for doc in self.products_ref.select(["isDeleted", "KiotVietDeleted", "Code", "Name"]).stream():
+                data = doc.to_dict() or {}
+                is_deleted = self._coerce_bool(data.get("isDeleted"), False)
+                kv_deleted = self._coerce_bool(data.get("KiotVietDeleted"), False)
+
+                if is_deleted or kv_deleted:
+                    try:
+                        self.products_ref.document(doc.id).delete()
+                        deleted_ids.append({
+                            "id": doc.id,
+                            "code": data.get("Code"),
+                            "name": data.get("Name"),
+                            "isDeleted": is_deleted,
+                            "KiotVietDeleted": kv_deleted,
+                        })
+                        self.cache.invalidate(doc.id)
+                        print(f"  🗑️ Đã xóa: {doc.id} - {data.get('Code')} - {data.get('Name')}")
+                    except Exception as e:
+                        errors.append({"id": doc.id, "error": str(e)})
+                        print(f"  ❌ Lỗi khi xóa {doc.id}: {e}")
+
+            if deleted_ids:
+                self.invalidate_all_product_caches()
+
+            print(f"✅ Dọn dẹp hoàn tất: {len(deleted_ids)} sản phẩm đã xóa")
+
+            result = {
+                "success": True,
+                "message": f"Đã xóa {len(deleted_ids)} sản phẩm đã bị xóa trên KiotViet",
+                "deleted_count": len(deleted_ids),
+                "deleted_products": deleted_ids,
+            }
+            if errors:
+                result["errors"] = errors
+            return result
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return {
+                "success": False,
+                "message": f"Lỗi khi dọn dẹp: {str(e)}",
+                "deleted_count": len(deleted_ids),
+                "deleted_products": deleted_ids,
+            }
+
     def group_product(self):
         """
         Group products by Master Item (MasterUnitId=None or 0) and their Child Items.
@@ -648,6 +706,18 @@ class FirestoreProductService:
                 if not is_active:
                     inactive_count += 1
 
+                # Skip deleted products - không lưu vào Firebase
+                if is_deleted:
+                    # Nếu product đã tồn tại trong Firebase, xóa nó
+                    if doc_id in existing_ids:
+                        try:
+                            self.products_ref.document(doc_id).delete()
+                            self.cache.invalidate(doc_id)
+                            print(f"  🗑️ Xóa sản phẩm đã bị xóa trên KiotViet: {doc_id}")
+                        except Exception as e:
+                            print(f"  ❌ Lỗi khi xóa {doc_id}: {e}")
+                    continue
+
                 # Keep track of ids present in API
                 active_ids.add(doc_id)
 
@@ -663,8 +733,6 @@ class FirestoreProductService:
                 product_to_store["SyncTimestamp"] = datetime.utcnow().isoformat()
                 if not is_active:
                     product_to_store["StoreForIndexedDB"] = True
-                if is_deleted:
-                    product_to_store["KiotVietDeleted"] = True
 
                 # ✅ Enforce inventory rule: KiotViet products are originals, so they should not have onHandNV.
                 # The 'isClone' flag is internal to our app, so we can't use the generic sanitizer here.
