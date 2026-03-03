@@ -5,6 +5,7 @@ from google.api_core.exceptions import ResourceExhausted
 
 from FromKiotViet.Model.customer import Customer
 from FromKiotViet.add_customer import add_customer_to_kiotviet
+from FromKiotViet.delete_customer import delete_customers_from_kiotviet
 from Utility.get_env import LatestBranchId
 from routes.shared import (
     broadcast_customer_updates,
@@ -201,7 +202,20 @@ def create_firebase_customers_bp(customer_service, socketio) -> Blueprint:
             if customer_ids is None:
                 return jsonify({"status": "error", "message": "customer_ids is required"}), 400
 
+            # Xóa trên KiotViet trước
+            kiotviet_result = None
+            numeric_ids = [int(cid) for cid in customer_ids if str(cid).strip().isdigit()]
+            if numeric_ids:
+                try:
+                    kiotviet_result = delete_customers_from_kiotviet(numeric_ids)
+                    print(f"✅ KiotViet delete result: {kiotviet_result}")
+                except Exception as kv_exc:
+                    print(f"⚠️ KiotViet delete failed (continuing with Firebase): {kv_exc}")
+                    kiotviet_result = {"error": str(kv_exc)}
+
+            # Xóa trên Firebase
             result = customer_service.delete_customers(customer_ids)
+            result["kiotviet"] = kiotviet_result
 
             if result.get("requested", 0) == 0:
                 return jsonify(result), 400

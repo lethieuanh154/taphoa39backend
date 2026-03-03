@@ -175,6 +175,7 @@ def create_customer_registration_bp(customer_service, socketio) -> Blueprint:
             if zalo_user_id:
                 data["ZaloUserId"] = zalo_user_id
             data["CreatedDate"] = datetime.now(timezone.utc).isoformat()
+            data["RegistrationBonus"] = 1000
 
             customer_service.add_customer(data)
 
