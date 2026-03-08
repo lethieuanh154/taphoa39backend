@@ -1,6 +1,6 @@
 """
-User management for authentication.  
-Stores user sessions in Firestore (using AUTH project).
+User management for authentication.
+Stores user sessions in Firestore (using quanlysongminh project via FIREBASE_SERVICE_ACCOUNT_GMAIL).
 """
 
 from datetime import datetime, timedelta
@@ -42,9 +42,9 @@ ALLOWED_EMAILS = _get_allowed_emails()
 
 
 def _get_auth_firestore():
-    """Get Firestore client for auth project."""
+    """Get Firestore client for auth project (quanlysongminh)."""
     from firebase. init_firebase import init_firestore
-    return init_firestore("FIREBASE_SERVICE_ACCOUNT_AUTH", app_name="auth_firestore_app")
+    return init_firestore("FIREBASE_SERVICE_ACCOUNT_GMAIL", app_name="auth_firestore_app")
 
 
 class UserManager:

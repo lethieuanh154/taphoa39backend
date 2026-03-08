@@ -10,6 +10,7 @@ Flask-SocketIO==5.5.1
 firebase-admin==6.8.0
 google-auth==2.40.2
 google-cloud-firestore==2.20.2
+google-api-python-client==2.153.0
 google-api-core==2.25.0
 google-cloud-core==2.4.3
 google-crc32c==1.7.1

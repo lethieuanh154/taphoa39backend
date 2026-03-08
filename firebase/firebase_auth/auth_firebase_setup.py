@@ -1,7 +1,7 @@
 """
-Firebase Admin SDK setup for Authentication. 
-Uses separate Firebase project (FIREBASE_SERVICE_ACCOUNT_AUTH) to avoid conflicts
-with other Firebase projects (HANGHOA, HOADON, CUSTOMER).
+Firebase Admin SDK setup for Authentication.
+Uses quanlysongminh Firebase project (FIREBASE_SERVICE_ACCOUNT_GMAIL) - shared with
+SongMinhQuanLyGmail so that UIDs match for Gmail token access.
 """
 
 import os
@@ -34,12 +34,12 @@ def _get_auth_app():
         pass  # App doesn't exist, create it
     
     # Get service account from environment
-    service_account_json = os.getenv('FIREBASE_SERVICE_ACCOUNT_AUTH')
-    
+    service_account_json = os.getenv('FIREBASE_SERVICE_ACCOUNT_GMAIL')
+
     if not service_account_json:
         raise ValueError(
-            "FIREBASE_SERVICE_ACCOUNT_AUTH environment variable is not set.  "
-            "Please add it to firebase/. env file."
+            "FIREBASE_SERVICE_ACCOUNT_GMAIL environment variable is not set. "
+            "Please add it to firebase/.env file."
         )
     
     try:

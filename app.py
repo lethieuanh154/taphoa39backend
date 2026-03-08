@@ -32,6 +32,7 @@ from routes.product_history_routes import bp as product_history_bp
 from routes.firebase_merged_products import create_firebase_merged_products_bp
 from routes.customer_registration import create_customer_registration_bp
 from routes.zalo_routes import create_zalo_routes_bp
+from routes.gmail_routes import create_gmail_routes_bp
 
 # SocketIO middleware removed — websockets are no longer used.
 
@@ -91,6 +92,7 @@ def _build_app() -> Flask:
     app.register_blueprint(create_firebase_merged_products_bp(socketio))
     app.register_blueprint(create_customer_registration_bp(customer_service, socketio))
     app.register_blueprint(create_zalo_routes_bp())
+    app.register_blueprint(create_gmail_routes_bp())
 
     # Attach socketio to app for external use if needed
     app.socketio = socketio

@@ -203,7 +203,7 @@ def create_firebase_products_bp(product_service, socketio) -> Blueprint:
                             # Include all relevant fields for sync
                             update_data = {'Id': str(product.get('Id'))}
                             # Add fields if present - include all edited fields for realtime sync
-                            for field in ['Code', 'Name', 'FullName', 'BasePrice', 'Cost', 'OnHand', 'OnHandNV', 'Description', 'NormalizedName', 'NormalizedCode']:
+                            for field in ['Code', 'Name', 'FullName', 'BasePrice', 'Cost', 'OnHand', 'OnHandNV', 'Description', 'NormalizedName', 'NormalizedCode','OrderTemplate']:
                                 if field in product and product[field] is not None:
                                     update_data[field] = product[field]
                             broadcast_updates.append(update_data)
