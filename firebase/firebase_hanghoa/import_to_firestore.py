@@ -27,6 +27,14 @@ def _parse_int(value):
         return None
 
 
+def _parse_number(value):
+    """Parse value as float, preserving decimals for OnHandNV."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def update_products_from_banhang_app_to_firestore(update_payload):
     try:
         if not isinstance(update_payload, list):
@@ -84,8 +92,14 @@ def update_products_from_banhang_app_to_firestore(update_payload):
             else:
                 current_value = product_doc.get("OnHand", 0) or 0
 
-            minus_value = _parse_int(item.get("minus", 0)) or 0
-            plus_value = _parse_int(item.get("plus", 0)) or 0
+            # For OnHandNV (clone products): use float to preserve decimals (e.g. 20.08333)
+            # For OnHand (KiotViet products): use int (KiotViet always uses integers)
+            if is_nv_update:
+                minus_value = _parse_number(item.get("minus", 0)) or 0
+                plus_value = _parse_number(item.get("plus", 0)) or 0
+            else:
+                minus_value = _parse_int(item.get("minus", 0)) or 0
+                plus_value = _parse_int(item.get("plus", 0)) or 0
 
             # If proc_ref (event marker) exists, skip to make it idempotent
             if proc_ref is not None:
@@ -101,7 +115,12 @@ def update_products_from_banhang_app_to_firestore(update_payload):
             # ✅ Always compute target using current value inside the transaction for atomicity.
             # This ignores any target value sent from the client, making the backend authoritative.
             # ✅ FIX: Handle both minus (decrease) and plus (increase) for edit invoice restore
-            target_value = int(current_value) - int(minus_value) + int(plus_value)
+            if is_nv_update:
+                # OnHandNV: preserve decimals, round to 1 decimal place
+                target_value = round(float(current_value) - float(minus_value) + float(plus_value), 1)
+            else:
+                # OnHand: integer (KiotViet standard)
+                target_value = int(current_value) - int(minus_value) + int(plus_value)
 
             # ✅ Update product OnHand hoặc OnHandNV tùy theo loại
             # Cập nhật SyncTimestamp và ModifiedDate để:
