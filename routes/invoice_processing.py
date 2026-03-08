@@ -212,6 +212,41 @@ def create_invoice_processing_bp() -> Blueprint:
             processing_log=processing_log
         ).model_dump())
 
+    @bp.route("/parse-xml", methods=["POST"])
+    def parse_xml_invoice():
+        """
+        Parse XML invoice file directly (no AI needed).
+        Accepts .xml file upload, returns parsed invoice data.
+        """
+        from services.invoice_parsers import TaxInvoiceXMLParser
+
+        if "file" not in request.files:
+            return jsonify({"success": False, "error": "Không có file trong request"}), 400
+
+        file = request.files["file"]
+        if not file.filename or not file.filename.lower().endswith('.xml'):
+            return jsonify({"success": False, "error": "Chỉ chấp nhận file XML"}), 400
+
+        try:
+            xml_bytes = file.read()
+            invoices, errors = TaxInvoiceXMLParser.parse(xml_bytes)
+
+            if not invoices:
+                return jsonify({
+                    "success": False,
+                    "error": "Không thể đọc dữ liệu từ file XML",
+                    "parse_errors": errors
+                }), 400
+
+            return jsonify({
+                "success": True,
+                "invoices": invoices,
+                "parse_errors": errors
+            })
+        except Exception as e:
+            logger.exception(f"XML parse error: {e}")
+            return jsonify({"success": False, "error": f"Lỗi parse XML: {str(e)}"}), 500
+
     @bp.route("/extract", methods=["POST"])
     def extract_invoice():
         """
