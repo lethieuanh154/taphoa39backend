@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from flask import Blueprint, jsonify, request
 from google.api_core.exceptions import ResourceExhausted
 
@@ -13,6 +15,9 @@ from routes.shared import (
     handle_api_errors,
     notify_customer_created,
 )
+from routes.zalo_routes import send_zalo_cs_message
+
+logger = logging.getLogger(__name__)
 
 
 def create_firebase_customers_bp(customer_service, socketio) -> Blueprint:
@@ -260,6 +265,8 @@ def create_firebase_customers_bp(customer_service, socketio) -> Blueprint:
         current_bonus = current_customer.get("BonusPoint") or 0
         new_bonus = int(current_bonus) + amount
 
+        reason = payload.get("reason") or "điểm thưởng"
+
         result = customer_service.update_customer(str(customer_id), {"BonusPoint": new_bonus})
         if result.get("updated"):
             updated_customer = dict(current_customer)
@@ -267,12 +274,32 @@ def create_firebase_customers_bp(customer_service, socketio) -> Blueprint:
             broadcast_customer_updates(socketio, [
                 {"applied": True, "customer": updated_customer}
             ])
+
+            # Send Zalo notification (best-effort)
+            zalo_sent = False
+            zalo_user_id = current_customer.get("ZaloUserId") or ""
+            if zalo_user_id:
+                try:
+                    customer_name = current_customer.get("Name") or "Quý khách"
+                    msg = (
+                        f"🎁 Xin chào {customer_name}!\n\n"
+                        f"Bạn vừa nhận được {amount:,} điểm thưởng"
+                        f" từ {reason}.\n"
+                        f"Tổng điểm thưởng hiện tại: {new_bonus:,} điểm.\n\n"
+                        f"Cảm ơn bạn đã ủng hộ Tạp Hóa 39! 🙏"
+                    )
+                    send_zalo_cs_message(zalo_user_id, msg)
+                    zalo_sent = True
+                except Exception as exc:
+                    logger.error("Zalo CS message failed (non-fatal): %s", exc)
+
             return jsonify({
                 "status": "ok",
                 "customer_id": customer_id,
                 "BonusPoint": new_bonus,
                 "added": amount,
                 "customer": updated_customer,
+                "zalo_sent": zalo_sent,
             })
 
         status_code = 404 if result.get("reason") == "not_found" else 400
