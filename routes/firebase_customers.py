@@ -229,6 +229,55 @@ def create_firebase_customers_bp(customer_service, socketio) -> Blueprint:
             print(traceback.format_exc())
             return jsonify({"status": "error", "message": str(exc)}), 500
 
+    @bp.route("/customers/<customer_id>/add_bonus", methods=["POST"])
+    @handle_api_errors
+    def add_bonus_point(customer_id: str):
+        if not customer_id:
+            return jsonify({"status": "error", "message": "Customer ID is required"}), 400
+
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            return jsonify({"status": "error", "message": "JSON body is required"}), 400
+
+        amount = payload.get("amount")
+        if amount is None or not isinstance(amount, (int, float)) or amount <= 0:
+            return jsonify({"status": "error", "message": "amount must be a positive number"}), 400
+
+        amount = int(amount)
+
+        # Read current customer
+        all_customers = customer_service.read_all_customers()
+        current_customer = None
+        for c in all_customers:
+            cid = c.get("Id") or c.get("id")
+            if str(cid) == str(customer_id):
+                current_customer = c
+                break
+
+        if current_customer is None:
+            return jsonify({"status": "error", "message": "Customer not found"}), 404
+
+        current_bonus = current_customer.get("BonusPoint") or 0
+        new_bonus = int(current_bonus) + amount
+
+        result = customer_service.update_customer(str(customer_id), {"BonusPoint": new_bonus})
+        if result.get("updated"):
+            updated_customer = dict(current_customer)
+            updated_customer["BonusPoint"] = new_bonus
+            broadcast_customer_updates(socketio, [
+                {"applied": True, "customer": updated_customer}
+            ])
+            return jsonify({
+                "status": "ok",
+                "customer_id": customer_id,
+                "BonusPoint": new_bonus,
+                "added": amount,
+                "customer": updated_customer,
+            })
+
+        status_code = 404 if result.get("reason") == "not_found" else 400
+        return jsonify(result), status_code
+
     @bp.route("/customers/fetch", methods=["POST"])
     def fetch_customers_changed():
         """
