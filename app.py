@@ -33,8 +33,7 @@ from routes.firebase_merged_products import create_firebase_merged_products_bp
 from routes.customer_registration import create_customer_registration_bp
 from routes.zalo_routes import create_zalo_routes_bp
 from routes.gmail_routes import create_gmail_routes_bp
-
-# SocketIO middleware removed — websockets are no longer used.
+from routes.merged_products_audit_routes import create_merged_products_audit_bp
 
 
 def _build_app() -> Flask:
@@ -94,10 +93,45 @@ def _build_app() -> Flask:
     app.register_blueprint(create_zalo_routes_bp())
     app.register_blueprint(create_gmail_routes_bp())
 
+    # Merged products audit (lightweight backup)
+    audit_bp, audit_service = create_merged_products_audit_bp()
+    app.register_blueprint(audit_bp)
+
     # Attach socketio to app for external use if needed
     app.socketio = socketio
 
+    # Schedule daily audit cleanup at 5:00 AM
+    _schedule_audit_cleanup(audit_service)
+
     return app
+
+
+def _schedule_audit_cleanup(audit_service):
+    """Schedule daily cleanup of old audit documents at 5:00 AM."""
+    import threading
+    from datetime import datetime, timedelta
+
+    def _run_cleanup():
+        try:
+            result = audit_service.clear_old_audits()
+            print(f"🧹 [Scheduler] Audit cleanup: {result}")
+        except Exception as e:
+            print(f"❌ [Scheduler] Audit cleanup failed: {e}")
+        # Re-schedule for next 5:00 AM
+        _schedule_next()
+
+    def _schedule_next():
+        now = datetime.now()
+        next_run = now.replace(hour=5, minute=0, second=0, microsecond=0)
+        if next_run <= now:
+            next_run += timedelta(days=1)
+        delay = (next_run - now).total_seconds()
+        timer = threading.Timer(delay, _run_cleanup)
+        timer.daemon = True
+        timer.start()
+        print(f"⏰ [Scheduler] Next audit cleanup at {next_run.strftime('%Y-%m-%d %H:%M')} ({delay:.0f}s)")
+
+    _schedule_next()
 
 
 app = _build_app()
