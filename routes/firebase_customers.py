@@ -51,6 +51,46 @@ def create_firebase_customers_bp(customer_service, socketio) -> Blueprint:
             raise ValueError("KiotViet response missing customer Id")
         return kiot_response
 
+    def _find_existing_customer(customer_id: str) -> Customer | None:
+        all_customers = customer_service.read_all_customers()
+        for c in all_customers:
+            cid = c.get("Id") or c.get("id")
+            if str(cid) == str(customer_id):
+                return Customer.from_dict(c, default_branch_id=LatestBranchId)
+        return None
+
+    def _merge_customer_update(existing: Customer, updated: Customer) -> Customer:
+        """Merge frontend form changes onto the existing customer, keeping fields the form doesn't touch."""
+        # Fields that the frontend form can change
+        if updated.Name:
+            existing.Name = updated.Name
+            existing.CompareName = updated.Name
+        if updated.ContactNumber is not None:
+            existing.ContactNumber = updated.ContactNumber
+        if updated.Address is not None:
+            existing.Address = updated.Address
+        if updated.Email is not None:
+            existing.Email = updated.Email
+        if updated.GenderName is not None:
+            existing.GenderName = updated.GenderName
+        if updated.CustomerType is not None:
+            existing.CustomerType = updated.CustomerType
+        if updated.TaxCode is not None:
+            existing.TaxCode = updated.TaxCode
+        if updated.Organization is not None:
+            existing.Organization = updated.Organization
+        return existing
+
+    def _update_customer_on_kiotviet(customer: Customer) -> dict:
+        """Send full customer payload to KiotViet for update (requires Id, Code, __type)."""
+        kv_payload = customer.to_kiotviet_payload()
+        kv_payload["__type"] = "KiotViet.Persistence.OrmCustomer, KiotViet.Domain"
+        kv_payload.setdefault("IsActive", True)
+        kv_payload.setdefault("BranchId", LatestBranchId)
+
+        kiot_response = add_customer_to_kiotviet(kv_payload)
+        return kiot_response
+
     def _coerce_numeric_ids(records):
         for item in records or []:
             if not isinstance(item, dict):
@@ -122,13 +162,24 @@ def create_firebase_customers_bp(customer_service, socketio) -> Blueprint:
             if not isinstance(payload, dict):
                 return jsonify({"status": "error", "message": "Body must be a JSON object"}), 400
 
-            customer = _build_customer(payload, require_id=False, allow_frontend_shape=True)
-            customer.ensure_id(customer_id)
-            kiotviet_response = _sync_customer_with_kiotviet(customer)
-            normalized = _customer_to_firestore_payload(customer)
+            # Read existing customer from Firestore to get full data (Code, Id, etc.)
+            existing = _find_existing_customer(customer_id)
+            if existing is None:
+                return jsonify({"status": "error", "message": "Customer not found"}), 404
 
-            result = customer_service.update_customer(str(customer.Id), normalized)
+            # Build customer from frontend payload then merge onto existing
+            updated_fields = _build_customer(payload, require_id=False, allow_frontend_shape=True)
+            merged = _merge_customer_update(existing, updated_fields)
+
+            kiotviet_response = _update_customer_on_kiotviet(merged)
+            merged.apply_kiotviet_response(kiotviet_response)
+            normalized = _customer_to_firestore_payload(merged)
+
+            result = customer_service.update_customer(str(merged.Id), normalized)
             if result.get("updated"):
+                broadcast_customer_updates(socketio, [
+                    {"applied": True, "customer": normalized}
+                ])
                 response = dict(result)
                 response["customer"] = normalized
                 response["kiotviet"] = kiotviet_response
