@@ -1,8 +1,5 @@
 ﻿from __future__ import annotations
 
-from gevent import monkey
-monkey.patch_all()
-
 import os
 from typing import Dict, Tuple
 
@@ -54,7 +51,7 @@ def _build_app() -> Flask:
     # This avoids eventlet monkey patching issues that can block REST APIs
     socketio = SocketIO(
         app,
-        async_mode="gevent",   # QUAN TRỌNG
+        async_mode="threading",
         cors_allowed_origins="*",
         logger=False,
         engineio_logger=False,
