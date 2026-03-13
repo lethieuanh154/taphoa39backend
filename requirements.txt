@@ -38,3 +38,4 @@ google-genai>=1.0.0
 python-multipart>=0.0.6
 gunicorn>=21.0.0
 gevent>=2.1
+gevent-websocket
