@@ -25,9 +25,6 @@ Unidecode==1.3.8
 pydantic>=2.5.0
 
 
-# OCR & Image Processing
-# easyocr>=1.7.0
-# pdf2image>=1.16.0
 Pillow>=10.0.0
 numpy>=1.24.0
 
