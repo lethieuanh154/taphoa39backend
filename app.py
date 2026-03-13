@@ -51,13 +51,12 @@ def _build_app() -> Flask:
     # This avoids eventlet monkey patching issues that can block REST APIs
     socketio = SocketIO(
         app,
+        async_mode="gevent",   # QUAN TRỌNG
         cors_allowed_origins="*",
         logger=False,
         engineio_logger=False,
         ping_timeout=60,
         ping_interval=25,
-        # Allow both polling and websocket, but frontend will use polling only
-        transports=['polling', 'websocket']
     )
 
     # Register Socket.IO namespaces so clients can connect and receive events
@@ -140,20 +139,16 @@ app = _build_app()
 if __name__ == "__main__":
     env = os.getenv("e", "prod")
     port = 8000 if env == "prod" else 5000
+
     print(f"\n{'='*60}")
     print(f"Starting server in {env.upper()} mode on port {port}")
-    print(f"Socket.IO: Polling transport (threading mode)")
     print(f"Server URL: http://0.0.0.0:{port}")
     print(f"{'='*60}\n")
 
-    # Use socketio.run() which handles both regular HTTP and Socket.IO
-    # Using threading mode (default) instead of eventlet to avoid blocking REST APIs
     app.socketio.run(
         app,
         host="0.0.0.0",
         port=port,
-        debug=False,  # Disable debug to prevent blocking
-        use_reloader=False,  # Disable reloader for stability
-        log_output=True,  # Show request logs
-        allow_unsafe_werkzeug=True
+        debug=False,
+        use_reloader=False
     )
