@@ -177,7 +177,7 @@ def update_products_from_banhang_app_to_firestore(update_payload):
             return None
 
         # Run all product transactions in parallel
-        with ThreadPoolExecutor(max_workers=min(len(update_payload), 10)) as executor:
+        with ThreadPoolExecutor(max_workers=min(len(update_payload), 20)) as executor:
             futures = [executor.submit(_process_item, item) for item in update_payload]
             for future in as_completed(futures):
                 result = future.result()

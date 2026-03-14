@@ -38,6 +38,9 @@ def create_firebase_invoices_bp(invoice_service, product_service, customer_servi
     @bp.route("/add_invoice", methods=["POST"])
     def add_invoice():
         try:
+            import time as _time
+            t_start = _time.time()
+
             invoice = request.get_json(silent=True) or {}
             invoice_id = invoice.get("id") or invoice.get("Id")
             if invoice_id is None:
@@ -46,28 +49,43 @@ def create_firebase_invoices_bp(invoice_service, product_service, customer_servi
             normalized_invoice = dict(invoice)
             normalized_invoice["id"] = str(invoice_id).strip()
 
+            t0 = _time.time()
             result = invoice_service.add_invoice(normalized_invoice)
+            t_write = _time.time()
+            print(f"⏱️ [add_invoice] write: {(t_write - t0)*1000:.0f}ms")
 
-            # Run post-write tasks in parallel (they are independent)
-            with ThreadPoolExecutor(max_workers=3) as executor:
-                f_cache = executor.submit(invalidate_invoice_cache, customer_service, normalized_invoice)
-                f_summary = executor.submit(invoice_service.adjust_invoice_summaries, normalized_invoice, 1)
-                f_recalc = executor.submit(customer_service.recalculate_customer_from_invoice, normalized_invoice)
-
-                f_cache.result()
-                summary_result = f_summary.result()
-                recalc_result = f_recalc.result()
-
-            if recalc_result.get("updated") and recalc_result.get("customer"):
-                broadcast_customer_updates(socketio, [
-                    {"applied": True, "customer": recalc_result.get("customer")}
-                ])
-
+            # Return response immediately after invoice is saved
             notify_invoice_created(socketio, normalized_invoice)
-
             response = dict(result)
-            if summary_result.get("updated"):
-                response["summary_adjusted"] = summary_result
+
+            t_response = _time.time()
+            print(f"⏱️ [add_invoice] total response time: {(t_response - t_start)*1000:.0f}ms")
+
+            # Run post-write tasks in background (summary, customer, cache)
+            def _background_tasks():
+                try:
+                    t_bg_start = _time.time()
+                    with ThreadPoolExecutor(max_workers=3) as executor:
+                        f_cache = executor.submit(invalidate_invoice_cache, customer_service, normalized_invoice)
+                        f_summary = executor.submit(invoice_service.adjust_invoice_summaries, normalized_invoice, 1)
+                        f_customer = executor.submit(customer_service.apply_invoice_delta, None, normalized_invoice)
+
+                        f_cache.result()
+                        f_summary.result()
+                        customer_results = f_customer.result()
+
+                    customer_broadcasts = [r for r in customer_results if r.get("applied") and r.get("customer")]
+                    if customer_broadcasts:
+                        broadcast_customer_updates(socketio, customer_broadcasts)
+
+                    t_bg_end = _time.time()
+                    print(f"⏱️ [add_invoice] background tasks: {(t_bg_end - t_bg_start)*1000:.0f}ms | total from start: {(t_bg_end - t_start)*1000:.0f}ms")
+                except Exception as exc:
+                    import traceback
+                    print(f"Background task error for invoice {normalized_invoice.get('id')}: {traceback.format_exc()}")
+
+            import threading
+            threading.Thread(target=_background_tasks, daemon=True).start()
 
             return jsonify(response)
         except ResourceExhausted as exc:
@@ -113,25 +131,14 @@ def create_firebase_invoices_bp(invoice_service, product_service, customer_servi
                 if new_summary_result.get("updated"):
                     summary_adjustments.append(("new", new_summary_result))
 
-            # ✅ Update customer totals
-            recalc_results = []
-            if existing_invoice:
-                prev_recalc = customer_service.recalculate_customer_from_invoice(existing_invoice)
-                if prev_recalc.get("updated") and prev_recalc.get("customer"):
-                    recalc_results.append(prev_recalc)
-
-            if updated_invoice:
-                new_recalc = customer_service.recalculate_customer_from_invoice(updated_invoice)
-                if new_recalc.get("updated") and new_recalc.get("customer"):
-                    if not any(r.get("customer_id") == new_recalc.get("customer_id") for r in recalc_results):
-                        recalc_results.append(new_recalc)
-
-            if recalc_results:
-                broadcast_customer_updates(socketio, [
-                    {"applied": True, "customer": recalc.get("customer")}
-                    for recalc in recalc_results
-                    if recalc.get("customer")
-                ])
+            # ✅ Update customer totals using incremental delta (no full recalculate)
+            customer_results = customer_service.apply_invoice_delta(
+                previous_invoice=existing_invoice,
+                new_invoice=updated_invoice,
+            )
+            customer_broadcasts = [r for r in customer_results if r.get("applied") and r.get("customer")]
+            if customer_broadcasts:
+                broadcast_customer_updates(socketio, customer_broadcasts)
             if updated_invoice:
                 notify_invoice_updated(socketio, updated_invoice)
 
@@ -285,12 +292,14 @@ def create_firebase_invoices_bp(invoice_service, product_service, customer_servi
 
             invalidate_invoice_cache(customer_service, existing_invoice)
 
-            # ✅ Recalculate customer totals
-            recalc_result = customer_service.recalculate_customer_from_invoice(existing_invoice)
-            if recalc_result.get("updated") and recalc_result.get("customer"):
-                broadcast_customer_updates(socketio, [
-                    {"applied": True, "customer": recalc_result.get("customer")}
-                ])
+            # ✅ Update customer totals using incremental delta (reverse the invoice)
+            customer_results = customer_service.apply_invoice_delta(
+                previous_invoice=existing_invoice,
+                new_invoice=None,
+            )
+            customer_broadcasts = [r for r in customer_results if r.get("applied") and r.get("customer")]
+            if customer_broadcasts:
+                broadcast_customer_updates(socketio, customer_broadcasts)
 
             notify_invoice_deleted(socketio, invoice_id)
 
