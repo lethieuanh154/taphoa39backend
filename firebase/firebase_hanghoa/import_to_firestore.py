@@ -2,6 +2,7 @@ from dotenv import load_dotenv
 from firebase.init_firebase import init_firestore
 from google.cloud import firestore
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 load_dotenv()
 
@@ -152,10 +153,10 @@ def update_products_from_banhang_app_to_firestore(update_payload):
                 "updateType": update_type,
             }
 
-        for item in update_payload:
+        def _process_item(item):
             product_id = item.get("productId") or item.get("Id") or item.get("id")
             if not product_id:
-                continue
+                return None
 
             doc_ref = db.collection(COLLECTION_NAME).document(str(product_id))
 
@@ -169,13 +170,19 @@ def update_products_from_banhang_app_to_firestore(update_payload):
                 # Create a transaction and pass it to the decorated function
                 transaction = db.transaction()
                 result = _process_single(transaction, doc_ref, proc_ref, item)
-                if result:
-                    # result may be dict or None
-                    if isinstance(result, dict) and not result.get("skipped"):
-                        updated_products.append(result)
+                if result and isinstance(result, dict) and not result.get("skipped"):
+                    return result
             except Exception as exc:
-                # Best-effort logging; continue with next item
                 print(f"Error processing product {product_id}: {exc}")
+            return None
+
+        # Run all product transactions in parallel
+        with ThreadPoolExecutor(max_workers=min(len(update_payload), 10)) as executor:
+            futures = [executor.submit(_process_item, item) for item in update_payload]
+            for future in as_completed(futures):
+                result = future.result()
+                if result:
+                    updated_products.append(result)
 
         return {
             "message": f"Đã cập nhật số lượng {len(updated_products)} sản phẩm",

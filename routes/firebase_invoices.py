@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from flask import Blueprint, jsonify, request
 from google.api_core.exceptions import ResourceExhausted
 
@@ -47,24 +48,27 @@ def create_firebase_invoices_bp(invoice_service, product_service, customer_servi
 
             result = invoice_service.add_invoice(normalized_invoice)
 
-            invalidate_invoice_cache(customer_service, normalized_invoice)
+            # Run post-write tasks in parallel (they are independent)
+            with ThreadPoolExecutor(max_workers=3) as executor:
+                f_cache = executor.submit(invalidate_invoice_cache, customer_service, normalized_invoice)
+                f_summary = executor.submit(invoice_service.adjust_invoice_summaries, normalized_invoice, 1)
+                f_recalc = executor.submit(customer_service.recalculate_customer_from_invoice, normalized_invoice)
 
-            # ✅ NEW: Update summaries (DailySummary, MonthlySummary, YearlySummary)
-            summary_result = invoice_service.adjust_invoice_summaries(normalized_invoice, direction=1)
+                f_cache.result()
+                summary_result = f_summary.result()
+                recalc_result = f_recalc.result()
 
-            # ✅ Update customer totals
-            recalc_result = customer_service.recalculate_customer_from_invoice(normalized_invoice)
             if recalc_result.get("updated") and recalc_result.get("customer"):
                 broadcast_customer_updates(socketio, [
                     {"applied": True, "customer": recalc_result.get("customer")}
                 ])
 
             notify_invoice_created(socketio, normalized_invoice)
-            
+
             response = dict(result)
             if summary_result.get("updated"):
                 response["summary_adjusted"] = summary_result
-            
+
             return jsonify(response)
         except ResourceExhausted as exc:
             import traceback
