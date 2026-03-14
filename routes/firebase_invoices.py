@@ -38,6 +38,9 @@ def create_firebase_invoices_bp(invoice_service, product_service, customer_servi
     @bp.route("/add_invoice", methods=["POST"])
     def add_invoice():
         try:
+            import time as _time
+            t_start = _time.time()
+
             invoice = request.get_json(silent=True) or {}
             invoice_id = invoice.get("id") or invoice.get("Id")
             if invoice_id is None:
@@ -46,15 +49,22 @@ def create_firebase_invoices_bp(invoice_service, product_service, customer_servi
             normalized_invoice = dict(invoice)
             normalized_invoice["id"] = str(invoice_id).strip()
 
+            t0 = _time.time()
             result = invoice_service.add_invoice(normalized_invoice)
+            t_write = _time.time()
+            print(f"⏱️ [add_invoice] write: {(t_write - t0)*1000:.0f}ms")
 
             # Return response immediately after invoice is saved
             notify_invoice_created(socketio, normalized_invoice)
             response = dict(result)
 
+            t_response = _time.time()
+            print(f"⏱️ [add_invoice] total response time: {(t_response - t_start)*1000:.0f}ms")
+
             # Run post-write tasks in background (summary, customer, cache)
             def _background_tasks():
                 try:
+                    t_bg_start = _time.time()
                     with ThreadPoolExecutor(max_workers=3) as executor:
                         f_cache = executor.submit(invalidate_invoice_cache, customer_service, normalized_invoice)
                         f_summary = executor.submit(invoice_service.adjust_invoice_summaries, normalized_invoice, 1)
@@ -67,6 +77,9 @@ def create_firebase_invoices_bp(invoice_service, product_service, customer_servi
                     customer_broadcasts = [r for r in customer_results if r.get("applied") and r.get("customer")]
                     if customer_broadcasts:
                         broadcast_customer_updates(socketio, customer_broadcasts)
+
+                    t_bg_end = _time.time()
+                    print(f"⏱️ [add_invoice] background tasks: {(t_bg_end - t_bg_start)*1000:.0f}ms | total from start: {(t_bg_end - t_start)*1000:.0f}ms")
                 except Exception as exc:
                     import traceback
                     print(f"Background task error for invoice {normalized_invoice.get('id')}: {traceback.format_exc()}")

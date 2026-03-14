@@ -20,8 +20,17 @@ def create_firebase_products_bp(product_service, socketio) -> Blueprint:
 
     @bp.route("/products/update_onhand_batch", methods=["PUT"])
     def update_onhand_from_invoice():
+        import time as _time
+        t_start = _time.time()
+
         invoice_obj = request.json
+        item_count = len(invoice_obj) if isinstance(invoice_obj, list) else 0
+
+        t0 = _time.time()
         result = update_products_from_banhang_app_to_firestore(invoice_obj)
+        t_firestore = _time.time()
+        print(f"⏱️ [update_onhand_batch] firestore update ({item_count} items): {(t_firestore - t0)*1000:.0f}ms")
+
         updates_for_broadcast = []
         for item in result.get('updated_products', []):
             pid = item.get("Id")
@@ -38,6 +47,9 @@ def create_firebase_products_bp(product_service, socketio) -> Blueprint:
 
         if updates_for_broadcast:
             broadcast_products_onhand_updated(socketio, updates_for_broadcast)
+
+        t_end = _time.time()
+        print(f"⏱️ [update_onhand_batch] total: {(t_end - t_start)*1000:.0f}ms | updated: {len(updates_for_broadcast)}/{item_count}")
         return jsonify(result)
 
     @bp.route("/get/products", methods=["GET"])
