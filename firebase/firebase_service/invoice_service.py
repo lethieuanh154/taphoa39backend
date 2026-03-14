@@ -1,4 +1,9 @@
 from datetime import datetime
+import time
+import traceback
+from concurrent.futures import ThreadPoolExecutor
+from google.api_core.exceptions import DeadlineExceeded
+from google.cloud.firestore_v1 import Increment
 
 from dotenv import load_dotenv
 
@@ -13,6 +18,24 @@ COLLECTION_NAME = "invoices"
 db = init_firestore("FIREBASE_SERVICE_ACCOUNT_HOADON")
 # Chuyển chuỗi JSON thành dict và tạo credential
 
+
+def _retry_on_deadline(operation, max_retries=3, initial_delay=1, operation_name="Firestore operation"):
+    """
+    Retry wrapper for Firestore operations that may timeout.
+    Uses exponential backoff for retries.
+    """
+    retry_delay = initial_delay
+    for attempt in range(max_retries):
+        try:
+            return operation()
+        except DeadlineExceeded as e:
+            if attempt < max_retries - 1:
+                print(f"{operation_name} timeout on attempt {attempt + 1}/{max_retries}, retrying in {retry_delay}s...")
+                time.sleep(retry_delay)
+                retry_delay *= 2  # Exponential backoff
+            else:
+                print(f"{operation_name} failed after {max_retries} attempts: {str(e)}")
+                raise Exception(f"Firestore timeout after {max_retries} attempts. Please check your network connection.")
 
 
 class FirestoreInvoiceService:
@@ -81,23 +104,34 @@ class FirestoreInvoiceService:
 
     def add_invoice(self, invoice):
         doc_ref = self.invoices_ref.document(str(invoice["id"]))
-        doc_ref.set(invoice)
-        self.cache.invalidate("all_invoices")
-        self.cache.invalidate(str(invoice["id"]))
-        return {"message": "invoice added"}
+
+        def _add_operation():
+            doc_ref.set(invoice, timeout=30.0)
+            self.cache.invalidate("all_invoices")
+            self.cache.invalidate(str(invoice["id"]))
+            return {"message": "invoice added"}
+
+        return _retry_on_deadline(_add_operation, operation_name=f"Add invoice {invoice['id']}")
 
     def update_invoice(self, invoice_id, updates):
         doc_ref = self.invoices_ref.document(invoice_id)
-        doc_ref.update(updates)
-        self.cache.invalidate(invoice_id)
-        self.cache.invalidate("all_invoices")
-        return {"message": "invoice updated"}
+
+        def _update_operation():
+            doc_ref.update(updates, timeout=30.0)
+            self.cache.invalidate(invoice_id)
+            self.cache.invalidate("all_invoices")
+            return {"message": "invoice updated"}
+
+        return _retry_on_deadline(_update_operation, operation_name=f"Update invoice {invoice_id}")
 
     def delete_invoice(self, invoice_id):
-        self.invoices_ref.document(invoice_id).delete()
-        self.cache.invalidate(invoice_id)
-        self.cache.invalidate("all_invoices")
-        return {"message": "invoice deleted"}
+        def _delete_operation():
+            self.invoices_ref.document(invoice_id).delete(timeout=30.0)
+            self.cache.invalidate(invoice_id)
+            self.cache.invalidate("all_invoices")
+            return {"message": "invoice deleted"}
+
+        return _retry_on_deadline(_delete_operation, operation_name=f"Delete invoice {invoice_id}")
 
     def adjust_invoice_summaries(self, invoice: dict, direction: int) -> dict:
         if invoice is None or not isinstance(invoice, dict):
@@ -119,13 +153,26 @@ class FirestoreInvoiceService:
             "cost": direction * totals["cost"],
             "profit": direction * totals["profit"],
             "buyer_quantity": direction * totals["buyer_quantity"],
+            "kvRevenue": direction * totals.get("kvRevenue", 0),
+            "kvCost": direction * totals.get("kvCost", 0),
+            "kvProfit": direction * totals.get("kvProfit", 0),
+            "kvVat": direction * totals.get("kvVat", 0),
+            "nvRevenue": direction * totals.get("nvRevenue", 0),
+            "nvCost": direction * totals.get("nvCost", 0),
+            "nvProfit": direction * totals.get("nvProfit", 0),
         }
 
-        self._apply_summary_delta("DailySummary", keys["date"], deltas, direction)
+        # Run all summary updates in parallel (they are independent docs)
+        tasks = [("DailySummary", keys["date"])]
         if keys["month"]:
-            self._apply_summary_delta("MonthlySummary", keys["month"], deltas, direction)
+            tasks.append(("MonthlySummary", keys["month"]))
         if keys["year"]:
-            self._apply_summary_delta("YearlySummary", keys["year"], deltas, direction)
+            tasks.append(("YearlySummary", keys["year"]))
+
+        with ThreadPoolExecutor(max_workers=len(tasks)) as executor:
+            futures = [executor.submit(self._apply_summary_delta, coll, doc_id, deltas) for coll, doc_id in tasks]
+            for f in futures:
+                f.result()
 
         return {
             "updated": True,
@@ -134,37 +181,75 @@ class FirestoreInvoiceService:
         }
 
     def _compute_invoice_totals(self, invoice: dict) -> dict:
-        revenue = self.safe_float(
-            invoice.get("totalPrice")
-            or invoice.get("TotalPrice")
-            or invoice.get("grandTotal")
-        )
-        cost = self.safe_float(
-            invoice.get("totalCost")
-            or invoice.get("TotalCost")
-            or invoice.get("costTotal")
-        )
+        """
+        Tính tổng revenue/cost/profit cho invoice, tách bạch KV (gốc) và NV (clone).
+        Duyệt cartItems để phân loại từng item.
+        """
+        kv_revenue = 0.0
+        kv_cost = 0.0
+        kv_vat = 0.0
+        nv_revenue = 0.0
+        nv_cost = 0.0
 
-        if (revenue == 0.0 and cost == 0.0) and isinstance(invoice.get("cartItems"), list):
-            cart_items = invoice.get("cartItems", [])
+        cart_items = invoice.get("cartItems", [])
+        has_cart_items = isinstance(cart_items, list) and len(cart_items) > 0
+
+        if has_cart_items:
             for item in cart_items:
+                if not isinstance(item, dict):
+                    continue
                 product = item.get("product", {}) if isinstance(item, dict) else {}
-                quantity = self.safe_int(item.get("quantity", 0)) if isinstance(item, dict) else 0
+                quantity = self.safe_int(item.get("quantity", 0))
                 price = self.safe_float(
-                    item.get("price")
+                    item.get("unitPrice")
+                    or item.get("price")
                     or product.get("BasePrice")
                     or product.get("Price")
                 )
                 cost_price = self.safe_float(product.get("Cost"))
-                revenue += price * quantity
-                cost += cost_price * quantity
+                item_revenue = price * quantity
+                item_cost = cost_price * quantity
 
+                if self._is_clone_product(product):
+                    nv_revenue += item_revenue
+                    nv_cost += item_cost
+                else:
+                    kv_revenue += item_revenue
+                    kv_cost += item_cost
+                    tax_rate = self.safe_float(product.get("Tax", 0))
+                    if tax_rate > 0:
+                        kv_vat += item_revenue * tax_rate / (100 + tax_rate)
+        else:
+            # Fallback: dùng invoice-level totals (không thể split)
+            total_revenue = self.safe_float(
+                invoice.get("totalPrice")
+                or invoice.get("TotalPrice")
+                or invoice.get("grandTotal")
+            )
+            total_cost = self.safe_float(
+                invoice.get("totalCost")
+                or invoice.get("TotalCost")
+                or invoice.get("costTotal")
+            )
+            kv_revenue = total_revenue
+            kv_cost = total_cost
+
+        revenue = kv_revenue + nv_revenue
+        cost = kv_cost + nv_cost
         profit = revenue - cost
+
         return {
             "revenue": round(revenue, 2),
             "cost": round(cost, 2),
             "profit": round(profit, 2),
             "buyer_quantity": 1,
+            "kvRevenue": round(kv_revenue, 2),
+            "kvCost": round(kv_cost, 2),
+            "kvProfit": round(kv_revenue - kv_cost, 2),
+            "kvVat": round(kv_vat, 2),
+            "nvRevenue": round(nv_revenue, 2),
+            "nvCost": round(nv_cost, 2),
+            "nvProfit": round(nv_revenue - nv_cost, 2),
         }
 
     def _extract_summary_keys(self, invoice: dict) -> dict:
@@ -196,45 +281,39 @@ class FirestoreInvoiceService:
 
         return {"date": date_str, "month": month, "year": year}
 
-    def _apply_summary_delta(self, collection: str, doc_id: str, delta: dict, direction: int) -> None:
+    def _apply_summary_delta(self, collection: str, doc_id: str, delta: dict) -> None:
+        """Apply delta to summary doc using Increment (no read needed, atomic server-side)."""
         if not doc_id:
             return
 
         doc_ref = db.collection(collection).document(doc_id)
-        snapshot = doc_ref.get()
-
-        if not snapshot.exists and direction < 0:
-            return
-
-        current = snapshot.to_dict() if snapshot.exists else {}
-
-        revenue = round((current.get("revenue") or 0.0) + delta["revenue"], 2)
-        cost = round((current.get("cost") or 0.0) + delta["cost"], 2)
-        profit = round((current.get("profit") or 0.0) + delta["profit"], 2)
-        buyer_quantity = int((current.get("buyer_quantity") or 0) + delta["buyer_quantity"])
-
-        revenue = max(revenue, 0.0)
-        cost = max(cost, 0.0)
-        profit = max(profit, 0.0)
-        buyer_quantity = max(buyer_quantity, 0)
 
         payload = {
-            "revenue": revenue,
-            "cost": cost,
-            "profit": profit,
-            "buyer_quantity": buyer_quantity,
+            "revenue": Increment(delta["revenue"]),
+            "cost": Increment(delta["cost"]),
+            "profit": Increment(delta["profit"]),
+            "buyer_quantity": Increment(delta["buyer_quantity"]),
+            "kvRevenue": Increment(delta.get("kvRevenue", 0)),
+            "kvCost": Increment(delta.get("kvCost", 0)),
+            "kvProfit": Increment(delta.get("kvProfit", 0)),
+            "kvVat": Increment(delta.get("kvVat", 0)),
+            "nvRevenue": Increment(delta.get("nvRevenue", 0)),
+            "nvCost": Increment(delta.get("nvCost", 0)),
+            "nvProfit": Increment(delta.get("nvProfit", 0)),
         }
 
         if collection == "DailySummary":
-            payload.setdefault("date", doc_id)
+            payload["date"] = doc_id
         elif collection == "MonthlySummary":
-            payload.setdefault("month", doc_id)
+            payload["month"] = doc_id
         elif collection == "YearlySummary":
-            payload.setdefault("year", doc_id)
+            payload["year"] = doc_id
 
         payload["lastUpdated"] = datetime.utcnow().isoformat() + "Z"
 
         doc_ref.set(payload, merge=True)
+
+    
 
     def safe_float(self, val):
         try:
@@ -248,29 +327,94 @@ class FirestoreInvoiceService:
         except (TypeError, ValueError):
             return 0
 
+    def _is_clone_product(self, product: dict) -> bool:
+        """
+        Xác định product là clone (NV) hay gốc (KiotViet).
+        """
+        is_clone = product.get("isClone")
+        if is_clone is True or is_clone == "true":
+            return True
+        on_hand_nv = self.safe_float(product.get("OnHandNV", 0))
+        on_hand = self.safe_float(product.get("OnHand", 0))
+        if on_hand_nv > 0 and on_hand == 0:
+            return True
+        return False
+
     def calculate_daily_summary(self, date):
         invoices = self.get_invoices_by_date(date)
         revenue = 0
         cost = 0
+        kv_revenue = 0
+        kv_cost = 0
+        kv_vat = 0
+        nv_revenue = 0
+        nv_cost = 0
         for invoice in invoices:
             cart_items = invoice.get('cartItems', [])
-            for item in cart_items:
-                product = item.get('product', {})
-                quantity = self.safe_int(item.get('quantity', 0))
-                price = self.safe_float(item.get('price', product.get('BasePrice', 0)))
-                cost_price = self.safe_float(product.get('Cost', 0))
-                revenue += price * quantity
-                cost += cost_price * quantity
+            has_cart_items = isinstance(cart_items, list) and len(cart_items) > 0
+
+            if has_cart_items:
+                for item in cart_items:
+                    if not isinstance(item, dict):
+                        continue
+                    product = item.get('product', {}) if isinstance(item, dict) else {}
+                    quantity = self.safe_int(item.get('quantity', 0))
+                    price = self.safe_float(
+                        item.get('unitPrice')
+                        or item.get('price')
+                        or product.get('BasePrice')
+                        or product.get('Price')
+                    )
+                    cost_price = self.safe_float(product.get('Cost', 0))
+                    item_revenue = price * quantity
+                    item_cost = cost_price * quantity
+                    revenue += item_revenue
+                    cost += item_cost
+
+                    if self._is_clone_product(product):
+                        nv_revenue += item_revenue
+                        nv_cost += item_cost
+                    else:
+                        kv_revenue += item_revenue
+                        kv_cost += item_cost
+                        tax_rate = self.safe_float(product.get('Tax', 0))
+                        if tax_rate > 0:
+                            kv_vat += item_revenue * tax_rate / (100 + tax_rate)
+            else:
+                # Fallback: invoice không có cartItems → dùng invoice-level totals
+                total_revenue = self.safe_float(
+                    invoice.get('totalPrice')
+                    or invoice.get('TotalPrice')
+                    or invoice.get('grandTotal')
+                )
+                total_cost = self.safe_float(
+                    invoice.get('totalCost')
+                    or invoice.get('TotalCost')
+                    or invoice.get('costTotal')
+                )
+                revenue += total_revenue
+                cost += total_cost
+                kv_revenue += total_revenue
+                kv_cost += total_cost
+
         profit = revenue - cost
-        summary_ref = db.collection('DailySummary').document(date)
-        summary_ref.set({
+        summary = {
             'buyer_quantity': len(invoices),
             'date': date,
-            'revenue': revenue,
-            'cost': cost,
-            'profit': profit
-        })
-        return { 'buyer_quantity': len(invoices),'date': date, 'revenue': revenue, 'cost': cost, 'profit': profit}
+            'revenue': round(revenue, 2),
+            'cost': round(cost, 2),
+            'profit': round(profit, 2),
+            'kvRevenue': round(kv_revenue, 2),
+            'kvCost': round(kv_cost, 2),
+            'kvProfit': round(kv_revenue - kv_cost, 2),
+            'kvVat': round(kv_vat, 2),
+            'nvRevenue': round(nv_revenue, 2),
+            'nvCost': round(nv_cost, 2),
+            'nvProfit': round(nv_revenue - nv_cost, 2),
+        }
+        summary_ref = db.collection('DailySummary').document(date)
+        summary_ref.set(summary)
+        return summary
 
     def get_daily_summary(self, date):
         return self.calculate_daily_summary(date)
@@ -284,26 +428,42 @@ class FirestoreInvoiceService:
         revenue = 0
         cost = 0
         buyer_quantity = 0
+        kv_revenue = 0
+        kv_cost = 0
+        kv_vat = 0
+        nv_revenue = 0
+        nv_cost = 0
         for day in range(1, days_in_month + 1):
             date_str = f"{year}-{str(month).zfill(2)}-{str(day).zfill(2)}"
-            # Lấy document từ collection DailySummary
-            daily_doc = db.collection('DailySummary').document(date_str).get()
-            if daily_doc.exists:
-                daily = daily_doc.to_dict()
-                revenue += daily.get('revenue', 0)
-                cost += daily.get('cost', 0)
-                buyer_quantity += daily.get('buyer_quantity', 0)
+            # Luôn recalculate từ invoices để đảm bảo data mới nhất
+            daily = self.calculate_daily_summary(date_str)
+            revenue += daily.get('revenue', 0)
+            cost += daily.get('cost', 0)
+            buyer_quantity += daily.get('buyer_quantity', 0)
+            kv_revenue += daily.get('kvRevenue', 0)
+            kv_cost += daily.get('kvCost', 0)
+            kv_vat += daily.get('kvVat', 0)
+            nv_revenue += daily.get('nvRevenue', 0)
+            nv_cost += daily.get('nvCost', 0)
         profit = revenue - cost
         doc_id = f"{year}-{str(month).zfill(2)}"
-        summary_ref = db.collection('MonthlySummary').document(doc_id)
-        summary_ref.set({
+        summary = {
             'buyer_quantity': buyer_quantity,
             'month': doc_id,
-            'revenue': revenue,
-            'cost': cost,
-            'profit': profit
-        })
-        return { 'buyer_quantity': buyer_quantity,'month': doc_id, 'revenue': revenue, 'cost': cost, 'profit': profit }
+            'revenue': round(revenue, 2),
+            'cost': round(cost, 2),
+            'profit': round(profit, 2),
+            'kvRevenue': round(kv_revenue, 2),
+            'kvCost': round(kv_cost, 2),
+            'kvProfit': round(kv_revenue - kv_cost, 2),
+            'kvVat': round(kv_vat, 2),
+            'nvRevenue': round(nv_revenue, 2),
+            'nvCost': round(nv_cost, 2),
+            'nvProfit': round(nv_revenue - nv_cost, 2),
+        }
+        summary_ref = db.collection('MonthlySummary').document(doc_id)
+        summary_ref.set(summary)
+        return summary
     def get_monthly_summary(self, year, month):
         return self.calculate_monthly_summary(year, month)
 
@@ -314,24 +474,40 @@ class FirestoreInvoiceService:
         revenue = 0
         cost = 0
         buyer_quantity = 0
+        kv_revenue = 0
+        kv_cost = 0
+        kv_vat = 0
+        nv_revenue = 0
+        nv_cost = 0
         for month in range(1, 13):
-            doc_id = f"{year}-{str(month).zfill(2)}"
-            monthly_doc = db.collection('MonthlySummary').document(doc_id).get()
-            if monthly_doc.exists:
-                monthly = monthly_doc.to_dict()
-                revenue += monthly.get('revenue', 0)
-                cost += monthly.get('cost', 0)
-                buyer_quantity += monthly.get('buyer_quantity', 0)
+            # Luôn recalculate từ daily summaries để đảm bảo data mới nhất
+            monthly = self.calculate_monthly_summary(year, month)
+            revenue += monthly.get('revenue', 0)
+            cost += monthly.get('cost', 0)
+            buyer_quantity += monthly.get('buyer_quantity', 0)
+            kv_revenue += monthly.get('kvRevenue', 0)
+            kv_cost += monthly.get('kvCost', 0)
+            kv_vat += monthly.get('kvVat', 0)
+            nv_revenue += monthly.get('nvRevenue', 0)
+            nv_cost += monthly.get('nvCost', 0)
         profit = revenue - cost
-        summary_ref = db.collection('YearlySummary').document(str(year))
-        summary_ref.set({
+        summary = {
             'buyer_quantity': buyer_quantity,
             'year': str(year),
-            'revenue': revenue,
-            'cost': cost,
-            'profit': profit
-        })
-        return {'buyer_quantity': buyer_quantity, 'year': str(year), 'revenue': revenue, 'cost': cost, 'profit': profit}
+            'revenue': round(revenue, 2),
+            'cost': round(cost, 2),
+            'profit': round(profit, 2),
+            'kvRevenue': round(kv_revenue, 2),
+            'kvCost': round(kv_cost, 2),
+            'kvProfit': round(kv_revenue - kv_cost, 2),
+            'kvVat': round(kv_vat, 2),
+            'nvRevenue': round(nv_revenue, 2),
+            'nvCost': round(nv_cost, 2),
+            'nvProfit': round(nv_revenue - nv_cost, 2),
+        }
+        summary_ref = db.collection('YearlySummary').document(str(year))
+        summary_ref.set(summary)
+        return summary
 
     def get_yearly_summary(self, year):
         return self.calculate_yearly_summary(year)

@@ -1,9 +1,11 @@
+deployDataOnline
 # Ignore Python cache files
 __pycache__
 *.pyc
 *.pyo
 banhang-service-account.json
 hoadon-service-account.json
+/scripts
 # Ignore environment files
 .env
 /*.sh
@@ -40,3 +42,7 @@ dist/
 build/
 
 .angular/
+.claude/
+GEMINI.md
+EMPLOYEE_API_DOCS.md
+PROJECT_STRUCTURE.md

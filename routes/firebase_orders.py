@@ -1,33 +1,31 @@
 from __future__ import annotations
 
 from flask import Blueprint, jsonify, request
-from routes.shared import notify_order_created, notify_order_deleted, notify_order_updated
+from routes.shared import (
+    create_simple_fetch_handler,
+    handle_api_errors,
+    notify_order_created,
+    notify_order_deleted,
+    notify_order_updated,
+)
 
 
 def create_firebase_orders_bp(order_service, socketio) -> Blueprint:
     bp = Blueprint("firebase_orders", __name__, url_prefix="/api/firebase")
 
     @bp.route("/orders", methods=["GET"])
+    @handle_api_errors
     def get_all_orders():
-        try:
-            orders = order_service.read_all_orders()
-            return jsonify(orders)
-        except Exception as exc:
-            import traceback
-            print(traceback.format_exc())
-            return jsonify({"status": "error", "message": str(exc), "trace": traceback.format_exc()}), 500
+        orders = order_service.read_all_orders()
+        return jsonify(orders)
 
     @bp.route("/orders/<order_id>", methods=["GET"])
+    @handle_api_errors
     def get_order_by_id(order_id: str):
-        try:
-            order = order_service.read_order(order_id)
-            if order:
-                return jsonify(order)
-            return jsonify({"status": "error", "message": "Order not found"}), 404
-        except Exception as exc:
-            import traceback
-            print(traceback.format_exc())
-            return jsonify({"status": "error", "message": str(exc), "trace": traceback.format_exc()}), 500
+        order = order_service.read_order(order_id)
+        if order:
+            return jsonify(order)
+        return jsonify({"status": "error", "message": "Order not found"}), 404
 
     @bp.route("/add_order", methods=["POST"])
     def add_order():
@@ -76,41 +74,15 @@ def create_firebase_orders_bp(order_service, socketio) -> Blueprint:
         Accepts JSON: { "id": "123" } or { "ids": ["1","2"] }
         Returns the latest order document(s) from Firestore.
         """
-        try:
-            payload = request.get_json(silent=True) or {}
-            ids = []
-            if isinstance(payload, dict) and payload.get("id"):
-                ids = [str(payload.get("id"))]
-            elif isinstance(payload, dict) and payload.get("ids"):
-                ids = [str(i) for i in payload.get("ids") if i is not None]
-            else:
-                return jsonify({"status": "error", "message": "Provide 'id' or 'ids' in JSON body"}), 400
-
-            results = []
-            for oid in ids:
-                doc = order_service.read_order(str(oid))
-                if doc:
-                    results.append(doc)
-
-            if len(results) == 1:
-                return jsonify(results[0])
-            return jsonify(results)
-        except Exception as exc:
-            import traceback
-            print(traceback.format_exc())
-            return jsonify({"status": "error", "message": str(exc), "trace": traceback.format_exc()}), 500
+        return create_simple_fetch_handler(order_service, "read_order")()
 
     @bp.route("/orders/date", methods=["GET"])
+    @handle_api_errors
     def get_orders_by_date():
-        try:
-            date = request.args.get('date')
-            if not date:
-                return jsonify({"status": "error", "message": "date is required"}), 400
-            orders = order_service.get_orders_by_date(date)
-            return jsonify(orders)
-        except Exception as exc:
-            import traceback
-            print(traceback.format_exc())
-            return jsonify({"status": "error", "message": str(exc), "trace": traceback.format_exc()}), 500
+        date = request.args.get('date')
+        if not date:
+            return jsonify({"status": "error", "message": "date is required"}), 400
+        orders = order_service.get_orders_by_date(date)
+        return jsonify(orders)
 
     return bp

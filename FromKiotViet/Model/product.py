@@ -49,6 +49,8 @@ class Product:
         Edited: bool,
         Master: bool,
         Id: int,
+        TradeMarkId: Optional[int] = None,
+        TradeMarkName: Optional[str] = None,
         discountBasePrice: Optional[float] = None
     ):
         self.Image = Image
@@ -77,6 +79,8 @@ class Product:
         self.Edited = Edited
         self.Master = Master
         self.Id = Id
+        self.TradeMarkId = TradeMarkId
+        self.TradeMarkName = TradeMarkName
         self.discountBasePrice = discountBasePrice
 
     @staticmethod
@@ -110,5 +114,7 @@ class Product:
             Edited=bool(data.get("Edited", False)),
             Master=bool(data.get("Master", False)),
             Id=int(data.get("Id", 0)),
+            TradeMarkId=int(data["TradeMarkId"]) if data.get("TradeMarkId") is not None else None,
+            TradeMarkName=data.get("TradeMarkName"),
             discountBasePrice=float(data["discountBasePrice"]) if "discountBasePrice" in data else None
         )
