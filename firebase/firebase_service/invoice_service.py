@@ -1,7 +1,9 @@
 from datetime import datetime
 import time
 import traceback
+from concurrent.futures import ThreadPoolExecutor
 from google.api_core.exceptions import DeadlineExceeded
+from google.cloud.firestore_v1 import Increment
 
 from dotenv import load_dotenv
 
@@ -160,11 +162,17 @@ class FirestoreInvoiceService:
             "nvProfit": direction * totals.get("nvProfit", 0),
         }
 
-        self._apply_summary_delta("DailySummary", keys["date"], deltas, direction)
+        # Run all summary updates in parallel (they are independent docs)
+        tasks = [("DailySummary", keys["date"])]
         if keys["month"]:
-            self._apply_summary_delta("MonthlySummary", keys["month"], deltas, direction)
+            tasks.append(("MonthlySummary", keys["month"]))
         if keys["year"]:
-            self._apply_summary_delta("YearlySummary", keys["year"], deltas, direction)
+            tasks.append(("YearlySummary", keys["year"]))
+
+        with ThreadPoolExecutor(max_workers=len(tasks)) as executor:
+            futures = [executor.submit(self._apply_summary_delta, coll, doc_id, deltas) for coll, doc_id in tasks]
+            for f in futures:
+                f.result()
 
         return {
             "updated": True,
@@ -273,54 +281,33 @@ class FirestoreInvoiceService:
 
         return {"date": date_str, "month": month, "year": year}
 
-    def _apply_summary_delta(self, collection: str, doc_id: str, delta: dict, direction: int) -> None:
+    def _apply_summary_delta(self, collection: str, doc_id: str, delta: dict) -> None:
+        """Apply delta to summary doc using Increment (no read needed, atomic server-side)."""
         if not doc_id:
             return
 
         doc_ref = db.collection(collection).document(doc_id)
-        snapshot = doc_ref.get()
-
-        if not snapshot.exists and direction < 0:
-            return
-
-        current = snapshot.to_dict() if snapshot.exists else {}
-
-        revenue = round((current.get("revenue") or 0.0) + delta["revenue"], 2)
-        cost = round((current.get("cost") or 0.0) + delta["cost"], 2)
-        profit = round((current.get("profit") or 0.0) + delta["profit"], 2)
-        buyer_quantity = int((current.get("buyer_quantity") or 0) + delta["buyer_quantity"])
-
-        buyer_quantity = max(buyer_quantity, 0)
-
-        # KV/NV split fields
-        kv_revenue = round((current.get("kvRevenue") or 0.0) + delta.get("kvRevenue", 0), 2)
-        kv_cost = round((current.get("kvCost") or 0.0) + delta.get("kvCost", 0), 2)
-        kv_profit = round((current.get("kvProfit") or 0.0) + delta.get("kvProfit", 0), 2)
-        kv_vat = round((current.get("kvVat") or 0.0) + delta.get("kvVat", 0), 2)
-        nv_revenue = round((current.get("nvRevenue") or 0.0) + delta.get("nvRevenue", 0), 2)
-        nv_cost = round((current.get("nvCost") or 0.0) + delta.get("nvCost", 0), 2)
-        nv_profit = round((current.get("nvProfit") or 0.0) + delta.get("nvProfit", 0), 2)
 
         payload = {
-            "revenue": revenue,
-            "cost": cost,
-            "profit": profit,
-            "buyer_quantity": buyer_quantity,
-            "kvRevenue": kv_revenue,
-            "kvCost": kv_cost,
-            "kvProfit": kv_profit,
-            "kvVat": kv_vat,
-            "nvRevenue": nv_revenue,
-            "nvCost": nv_cost,
-            "nvProfit": nv_profit,
+            "revenue": Increment(delta["revenue"]),
+            "cost": Increment(delta["cost"]),
+            "profit": Increment(delta["profit"]),
+            "buyer_quantity": Increment(delta["buyer_quantity"]),
+            "kvRevenue": Increment(delta.get("kvRevenue", 0)),
+            "kvCost": Increment(delta.get("kvCost", 0)),
+            "kvProfit": Increment(delta.get("kvProfit", 0)),
+            "kvVat": Increment(delta.get("kvVat", 0)),
+            "nvRevenue": Increment(delta.get("nvRevenue", 0)),
+            "nvCost": Increment(delta.get("nvCost", 0)),
+            "nvProfit": Increment(delta.get("nvProfit", 0)),
         }
 
         if collection == "DailySummary":
-            payload.setdefault("date", doc_id)
+            payload["date"] = doc_id
         elif collection == "MonthlySummary":
-            payload.setdefault("month", doc_id)
+            payload["month"] = doc_id
         elif collection == "YearlySummary":
-            payload.setdefault("year", doc_id)
+            payload["year"] = doc_id
 
         payload["lastUpdated"] = datetime.utcnow().isoformat() + "Z"
 
