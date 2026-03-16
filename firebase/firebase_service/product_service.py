@@ -1281,6 +1281,117 @@ class FirestoreProductService:
         print(f"✅ Fetched {len(result)} products from Firestore (fresh)")
         return result
 
+    # ======================== DatHang Hybrid APIs ========================
+
+    def read_products_by_category(self, category_id: int, include_inactive: bool = False) -> List[Dict]:
+        """
+        Lay products theo CategoryId tu Firestore.
+        Dung cho DatHang app: click category -> load san pham category do.
+        Loc bo clones va deleted products.
+        """
+        cache_key = f"products_by_category:{category_id}:inactive={include_inactive}"
+        if self.cache.has(cache_key):
+            return self.cache.get(cache_key)
+
+        docs = self.products_ref.where("CategoryId", "==", category_id).stream()
+        result = []
+        for doc in docs:
+            data = doc.to_dict() or {}
+            is_deleted = self._coerce_bool(data.get("isDeleted"), False)
+            is_active = self._coerce_bool(data.get("isActive"), True)
+            is_clone = self._coerce_bool(data.get("isClone"), False)
+
+            if is_deleted:
+                continue
+            if not include_inactive and not is_active:
+                continue
+            if is_clone:
+                continue
+            # Fallback clone detection: OnHandNV > 0 and OnHand == 0
+            if (data.get("OnHandNV") or 0) > 0 and (data.get("OnHand") or 0) == 0:
+                continue
+
+            result.append(dict(data))
+
+        self.cache.set(cache_key, result, ttl=300)
+        return result
+
+    def search_products(self, query: str, limit: int = 80) -> List[Dict]:
+        """
+        Tim kiem san pham theo ten/code.
+        Server-side search cho DatHang app.
+        Dung NormalizedName de tim kiem khong dau.
+        """
+        if not query or not query.strip():
+            return []
+
+        # Normalize query
+        normalized_query = self._normalize_string(query.strip()).upper()
+        tokens = normalized_query.split("_")
+        tokens = [t for t in tokens if t]  # Remove empty tokens
+
+        if not tokens:
+            return []
+
+        # Read all products (cached) and filter in-memory
+        # Firestore khong ho tro full-text search, nen phai filter sau khi doc
+        all_products = self.read_all_products(include_inactive=False, include_deleted=False)
+
+        results = []
+        for product in all_products:
+            # Skip clones
+            is_clone = self._coerce_bool(product.get("isClone"), False)
+            if is_clone:
+                continue
+            if (product.get("OnHandNV") or 0) > 0 and (product.get("OnHand") or 0) == 0:
+                continue
+
+            name = (product.get("NormalizedName") or product.get("Name") or "").upper()
+            code = (product.get("NormalizedCode") or product.get("Code") or "").upper()
+
+            if all(token in name or token in code for token in tokens):
+                results.append(product)
+                if len(results) >= limit:
+                    break
+
+        return results
+
+    def get_featured_products(self, limit: int = 50) -> List[Dict]:
+        """
+        Lay san pham noi bat: moi nhat theo CreatedDate.
+        Dung cho DatHang app: hien thi khi vao trang lan dau.
+        """
+        cache_key = f"featured_products:{limit}"
+        if self.cache.has(cache_key):
+            return self.cache.get(cache_key)
+
+        all_products = self.read_all_products(include_inactive=False, include_deleted=False)
+
+        # Filter: non-clone, active
+        filtered = []
+        for product in all_products:
+            is_clone = self._coerce_bool(product.get("isClone"), False)
+            if is_clone:
+                continue
+            if (product.get("OnHandNV") or 0) > 0 and (product.get("OnHand") or 0) == 0:
+                continue
+            filtered.append(product)
+
+        # Sort by CreatedDate descending (newest first), fallback to ModifiedDate
+        def sort_key(p):
+            date_str = p.get("CreatedDate") or p.get("ModifiedDate") or ""
+            if not date_str:
+                return ""
+            if isinstance(date_str, str):
+                return date_str
+            return str(date_str)
+
+        filtered.sort(key=sort_key, reverse=True)
+        result = filtered[:limit]
+
+        self.cache.set(cache_key, result, ttl=300)
+        return result
+
     def invalidate_all_product_caches(self):
         """Invalidate tất cả các cache keys liên quan đến products"""
         cache_keys_to_invalidate = [

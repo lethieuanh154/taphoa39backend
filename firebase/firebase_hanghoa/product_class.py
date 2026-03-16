@@ -71,6 +71,7 @@ class Product:
     Name: Optional[str] = None
     FullName: Optional[str] = None
     CategoryId: Optional[int] = None
+    CategoryName: Optional[str] = None
     isActive: bool = True
     isDeleted: bool = False
     Cost: float = 0.0
@@ -157,6 +158,7 @@ class Product:
             Name=data.get("Name"),
             FullName=data.get("FullName"),
             CategoryId=safe_int(data.get("CategoryId")),
+            CategoryName=data.get("CategoryName"),
             isActive=safe_bool(data.get("isActive"), True),
             isDeleted=safe_bool(data.get("isDeleted"), False),
             Cost=safe_float(data.get("Cost"), 0.0),

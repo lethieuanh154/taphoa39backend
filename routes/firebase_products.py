@@ -314,6 +314,56 @@ def create_firebase_products_bp(product_service, socketio) -> Blueprint:
         result = product_service.get_product_variants(product_id)
         return jsonify(result)
 
+    # ======================== DatHang Hybrid APIs ========================
+
+    @bp.route("/get/products/by-category/<int:category_id>", methods=["GET"])
+    @handle_api_errors
+    def get_products_by_category(category_id: int):
+        """
+        Lay san pham theo CategoryId. Dung cho DatHang app hybrid loading.
+        Loc bo clones va deleted products.
+        GET /api/firebase/get/products/by-category/1425784
+        """
+        products = product_service.read_products_by_category(category_id)
+        return jsonify({"products": products, "count": len(products), "categoryId": category_id})
+
+    @bp.route("/products/search", methods=["GET"])
+    @handle_api_errors
+    def search_products():
+        """
+        Tim kiem san pham theo ten/code. Server-side search cho DatHang app.
+        GET /api/firebase/products/search?q=sua&limit=80
+        """
+        query = request.args.get("q", "").strip()
+        if not query:
+            return jsonify({"products": [], "count": 0, "query": ""})
+
+        try:
+            limit = int(request.args.get("limit", 80))
+        except ValueError:
+            limit = 80
+        limit = min(max(limit, 1), 200)  # Clamp between 1-200
+
+        products = product_service.search_products(query, limit=limit)
+        return jsonify({"products": products, "count": len(products), "query": query})
+
+    @bp.route("/products/featured", methods=["GET"])
+    @handle_api_errors
+    def get_featured_products():
+        """
+        Lay san pham noi bat (moi nhat).
+        Dung cho DatHang app: hien thi khi vao trang lan dau thay vi load tat ca.
+        GET /api/firebase/products/featured?limit=50
+        """
+        try:
+            limit = int(request.args.get("limit", 50))
+        except ValueError:
+            limit = 50
+        limit = min(max(limit, 1), 200)
+
+        products = product_service.get_featured_products(limit=limit)
+        return jsonify({"products": products, "count": len(products)})
+
     @bp.route("/products/modified-since", methods=["POST"])
     @handle_api_errors
     def fetch_products_modified_since():
