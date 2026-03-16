@@ -124,4 +124,22 @@ def create_kiotviet_routes_bp() -> Blueprint:
         customers = get_entire_customer()
         return jsonify(customers)
 
+    @bp.route("/product-images/<int:product_id>", methods=["GET"])
+    @handle_api_errors
+    def get_product_images(product_id: int):
+        """Proxy KiotViet product images API. Returns list of image URLs."""
+        from FromKiotViet.get_authorization import auth_token as _auth
+        url = f"https://api-man1.kiotviet.vn/api/productimage/{product_id}?limit=10"
+        headers = {
+            "Authorization": _auth,
+            "retailer": retailer,
+            "branchid": LatestBranchId,
+        }
+        resp = requests.get(url, headers=headers, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            images = [item.get("Image") for item in data.get("Data", []) if item.get("Image")]
+            return jsonify({"images": images, "total": data.get("Total", 0), "productId": product_id})
+        return jsonify({"images": [], "total": 0, "productId": product_id})
+
     return bp
