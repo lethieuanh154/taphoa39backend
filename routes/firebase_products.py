@@ -316,6 +316,29 @@ def create_firebase_products_bp(product_service, socketio) -> Blueprint:
 
     # ======================== DatHang Hybrid APIs ========================
 
+    def _enrich_clone_stock(products):
+        """Enrich original products with clone OnHandNV for total stock calculation.
+        Uses CloneSourceId to map clones back to their originals."""
+        all_products = product_service.read_all_products(include_inactive=False, include_deleted=False)
+        # Build map: original_id -> sum of clone OnHandNV
+        clone_stock = {}
+        for p in all_products:
+            is_clone = p.get("isClone") is True or p.get("isClone") == "true"
+            on_hand_nv = float(p.get("OnHandNV") or 0)
+            on_hand = float(p.get("OnHand") or 0)
+            if not (is_clone or (on_hand_nv > 0 and on_hand == 0)):
+                continue
+            if on_hand_nv <= 0:
+                continue
+            source_id = str(p.get("CloneSourceId") or "")
+            if source_id:
+                clone_stock[source_id] = clone_stock.get(source_id, 0) + on_hand_nv
+        # Enrich each original product
+        for p in products:
+            pid = str(p.get("Id", ""))
+            p["CloneOnHandNV"] = clone_stock.get(pid, 0)
+        return products
+
     @bp.route("/get/products/by-category/<int:category_id>", methods=["GET"])
     @handle_api_errors
     def get_products_by_category(category_id: int):
@@ -325,6 +348,7 @@ def create_firebase_products_bp(product_service, socketio) -> Blueprint:
         GET /api/firebase/get/products/by-category/1425784
         """
         products = product_service.read_products_by_category(category_id)
+        products = _enrich_clone_stock(products)
         return jsonify({"products": products, "count": len(products), "categoryId": category_id})
 
     @bp.route("/products/search", methods=["GET"])
@@ -345,6 +369,7 @@ def create_firebase_products_bp(product_service, socketio) -> Blueprint:
         limit = min(max(limit, 1), 200)  # Clamp between 1-200
 
         products = product_service.search_products(query, limit=limit)
+        products = _enrich_clone_stock(products)
         return jsonify({"products": products, "count": len(products), "query": query})
 
     @bp.route("/products/featured", methods=["GET"])
@@ -362,6 +387,7 @@ def create_firebase_products_bp(product_service, socketio) -> Blueprint:
         limit = min(max(limit, 1), 200)
 
         products = product_service.get_featured_products(limit=limit)
+        products = _enrich_clone_stock(products)
         return jsonify({"products": products, "count": len(products)})
 
     @bp.route("/products/modified-since", methods=["POST"])
