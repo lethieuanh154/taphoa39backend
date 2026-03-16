@@ -34,6 +34,8 @@ from routes.customer_registration import create_customer_registration_bp
 from routes.zalo_routes import create_zalo_routes_bp
 from routes.gmail_routes import create_gmail_routes_bp
 from routes.merged_products_audit_routes import create_merged_products_audit_bp
+from routes.chat_routes import create_chat_routes_bp
+from firebase.firebase_service.chat_service import FirestoreChatService
 
 
 def _build_app() -> Flask:
@@ -93,6 +95,10 @@ def _build_app() -> Flask:
     app.register_blueprint(create_zalo_routes_bp())
     app.register_blueprint(create_gmail_routes_bp())
 
+    # Chat messaging
+    chat_service = FirestoreChatService()
+    app.register_blueprint(create_chat_routes_bp(chat_service, socketio, customer_service))
+
     # Merged products audit (lightweight backup)
     audit_bp, audit_service = create_merged_products_audit_bp()
     app.register_blueprint(audit_bp)
@@ -100,10 +106,31 @@ def _build_app() -> Flask:
     # Attach socketio to app for external use if needed
     app.socketio = socketio
 
+    # Pre-warm product cache to avoid 17s cold start on first search/featured request
+    _warmup_product_cache(product_service)
+
     # Schedule daily audit cleanup at 5:00 AM
     _schedule_audit_cleanup(audit_service)
 
     return app
+
+
+def _warmup_product_cache(product_service):
+    """Pre-warm product cache in background thread so first API call is fast."""
+    import threading
+
+    def _warmup():
+        try:
+            import time
+            t0 = time.time()
+            products = product_service.read_all_products(include_inactive=False, include_deleted=False)
+            elapsed = (time.time() - t0) * 1000
+            print(f"🔥 [Warmup] Product cache loaded: {len(products)} products in {elapsed:.0f}ms")
+        except Exception as e:
+            print(f"❌ [Warmup] Product cache warmup failed: {e}")
+
+    thread = threading.Thread(target=_warmup, daemon=True)
+    thread.start()
 
 
 def _schedule_audit_cleanup(audit_service):

@@ -49,7 +49,7 @@ def _get_auth_app():
         print(f"[AUTH] Initialized Firebase Auth app with project: {cred_dict.get('project_id')}")
         return _auth_app
     except json.JSONDecodeError as e:
-        raise ValueError(f"Invalid JSON in FIREBASE_SERVICE_ACCOUNT_AUTH: {e}")
+        raise ValueError(f"Invalid JSON in FIREBASE_SERVICE_ACCOUNT_GMAIL: {e}")
 
 
 def verify_firebase_token(id_token: str) -> dict:

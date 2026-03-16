@@ -119,6 +119,7 @@ def register_namespaces(socketio) -> None:
     socketio.on_namespace(BaseNamespace('/api/websocket/customers'))
     socketio.on_namespace(BaseNamespace('/api/websocket/invoices'))
     socketio.on_namespace(BaseNamespace('/api/websocket/orders'))
+    socketio.on_namespace(BaseNamespace('/api/websocket/messages'))
 
 
 # In-memory store for last notifications per namespace. Structure:
