@@ -30,9 +30,9 @@ def create_chat_routes_bp(chat_service, socketio, customer_service=None):
             name = c.get("Name") or ""
 
             if code and code == identity:
-                return jsonify({"verified": True, "name": name, "identity": code, "type": "code"})
+                return jsonify({"verified": True, "name": name, "identity": code, "phone": phone, "type": "code"})
             if phone and phone == identity:
-                return jsonify({"verified": True, "name": name, "identity": phone, "type": "phone"})
+                return jsonify({"verified": True, "name": name, "identity": phone, "phone": phone, "type": "phone"})
 
         return jsonify({"verified": False, "message": "Không tìm thấy khách hàng với mã/SĐT này"}), 404
 
