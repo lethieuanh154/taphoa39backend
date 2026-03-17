@@ -316,49 +316,28 @@ def create_firebase_products_bp(product_service, socketio) -> Blueprint:
 
     # ======================== DatHang Hybrid APIs ========================
 
-    def _build_clone_stock_map() -> dict:
-        """Build clone stock map with separate cache (TTL 600s).
-        Query only clone products from Firestore instead of all products."""
-        cache_key = "clone_stock_map"
-        if product_service.cache.has(cache_key):
-            return product_service.cache.get(cache_key)
-
-        clone_stock = {}
-        # Query 1: products co isClone == True
-        try:
-            clone_docs = product_service.products_ref.where("isClone", "==", True).stream()
-            for doc in clone_docs:
-                p = doc.to_dict() or {}
-                on_hand_nv = float(p.get("OnHandNV") or 0)
-                if on_hand_nv <= 0:
-                    continue
-                source_id = str(p.get("CloneSourceId") or "")
-                if source_id:
-                    clone_stock[source_id] = clone_stock.get(source_id, 0) + on_hand_nv
-        except Exception as e:
-            print(f"⚠️ Error querying clone products: {e}")
-
-        # Query 2: fallback clones (isClone == "true" dang string)
-        try:
-            clone_docs_str = product_service.products_ref.where("isClone", "==", "true").stream()
-            for doc in clone_docs_str:
-                p = doc.to_dict() or {}
-                on_hand_nv = float(p.get("OnHandNV") or 0)
-                if on_hand_nv <= 0:
-                    continue
-                source_id = str(p.get("CloneSourceId") or "")
-                if source_id:
-                    clone_stock[source_id] = clone_stock.get(source_id, 0) + on_hand_nv
-        except Exception as e:
-            print(f"⚠️ Error querying string clone products: {e}")
-
-        product_service.cache.set(cache_key, clone_stock, ttl=600)
-        return clone_stock
-
     def _enrich_clone_stock(products):
         """Enrich original products with clone OnHandNV for total stock calculation.
-        Uses cached clone stock map instead of reading all products."""
-        clone_stock = _build_clone_stock_map()
+        Dung read_all_products (co cache 300s) thay vi query rieng de tiet kiem quota."""
+        cache_key = "clone_stock_map"
+        if product_service.cache.has(cache_key):
+            clone_stock = product_service.cache.get(cache_key)
+        else:
+            all_products = product_service.read_all_products(include_inactive=False, include_deleted=False)
+            clone_stock = {}
+            for p in all_products:
+                is_clone = p.get("isClone") is True or p.get("isClone") == "true"
+                on_hand_nv = float(p.get("OnHandNV") or 0)
+                on_hand = float(p.get("OnHand") or 0)
+                if not (is_clone or (on_hand_nv > 0 and on_hand == 0)):
+                    continue
+                if on_hand_nv <= 0:
+                    continue
+                source_id = str(p.get("CloneSourceId") or "")
+                if source_id:
+                    clone_stock[source_id] = clone_stock.get(source_id, 0) + on_hand_nv
+            product_service.cache.set(cache_key, clone_stock, ttl=600)
+
         for p in products:
             pid = str(p.get("Id", ""))
             p["CloneOnHandNV"] = clone_stock.get(pid, 0)

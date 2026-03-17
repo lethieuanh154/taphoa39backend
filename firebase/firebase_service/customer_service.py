@@ -666,7 +666,9 @@ class FirestoreCustomerService:
         result = [doc.to_dict() | {"Id": doc.id} for doc in docs]
 
         if self.cache:
-            self.cache.set(cache_key, result, ttl=300)
+            # TTL 1800s (30 phut) - customers it thay doi, giam Firestore reads
+            # Cache duoc invalidate khi add/update/delete customer
+            self.cache.set(cache_key, result, ttl=1800)
         return result
 
     def get_invoices_by_customer_id(self, customer_id):
