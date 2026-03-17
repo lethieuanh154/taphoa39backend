@@ -1384,41 +1384,40 @@ class FirestoreProductService:
         """
         Lay san pham noi bat: moi nhat theo CreatedDate.
         Dung cho DatHang app: hien thi khi vao trang lan dau.
-        Dung Firestore query truc tiep thay vi load all products.
+        Dung read_all_products (co cache 300s) roi sort/filter trong Python.
+        Khong dung Firestore order_by("CreatedDate") vi docs co CreatedDate=null
+        se bi Firestore loai khoi ket qua query.
         """
         cache_key = f"featured_products:{limit}"
         if self.cache.has(cache_key):
             return self.cache.get(cache_key)
 
-        # Query Firestore truc tiep voi order_by + limit
-        # Fetch nhieu hon limit de bu cho products bi filter (clones, inactive)
-        fetch_limit = min(limit * 4, 500)
+        # Reuse cached read_all_products (already filters inactive/deleted)
+        all_products = self.read_all_products(include_inactive=False, include_deleted=False)
 
-        query = (self.products_ref
-                 .order_by("CreatedDate", direction=firestore.Query.DESCENDING)
-                 .limit(fetch_limit))
-
-        docs = query.stream()
+        # Filter out clones
         filtered = []
-        for doc in docs:
-            data = doc.to_dict() or {}
-
-            is_active = self._coerce_bool(data.get("isActive"), True)
-            is_deleted = self._coerce_bool(data.get("isDeleted"), False)
+        for data in all_products:
             is_clone = self._coerce_bool(data.get("isClone"), False)
-
-            if is_deleted or not is_active or is_clone:
+            if is_clone:
                 continue
             # Fallback clone detection
             if (data.get("OnHandNV") or 0) > 0 and (data.get("OnHand") or 0) == 0:
                 continue
+            filtered.append(data)
 
-            filtered.append(dict(data))
-            if len(filtered) >= limit:
-                break
+        # Sort by CreatedDate descending (None/missing goes to end)
+        def _sort_key(p):
+            cd = p.get("CreatedDate")
+            if cd is None:
+                return ""
+            return str(cd)
 
-        self.cache.set(cache_key, filtered, ttl=CACHE_TTL)
-        return filtered
+        filtered.sort(key=_sort_key, reverse=True)
+
+        result = filtered[:limit]
+        self.cache.set(cache_key, result, ttl=CACHE_TTL)
+        return result
 
     def invalidate_all_product_caches(self):
         """Invalidate tất cả các cache keys liên quan đến products.
