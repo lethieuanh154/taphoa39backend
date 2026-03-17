@@ -19,3 +19,9 @@ class Cache:
 
     def invalidate(self, key):
         self.store.pop(key, None)
+
+    def invalidate_prefix(self, prefix):
+        """Invalidate all keys starting with prefix."""
+        keys_to_remove = [k for k in self.store if k.startswith(prefix)]
+        for k in keys_to_remove:
+            self.store.pop(k, None)

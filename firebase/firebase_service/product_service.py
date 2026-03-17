@@ -1360,37 +1360,41 @@ class FirestoreProductService:
         """
         Lay san pham noi bat: moi nhat theo CreatedDate.
         Dung cho DatHang app: hien thi khi vao trang lan dau.
+        Dung Firestore query truc tiep thay vi load all products.
         """
         cache_key = f"featured_products:{limit}"
         if self.cache.has(cache_key):
             return self.cache.get(cache_key)
 
-        all_products = self.read_all_products(include_inactive=False, include_deleted=False)
+        # Query Firestore truc tiep voi order_by + limit
+        # Fetch nhieu hon limit de bu cho products bi filter (clones, inactive)
+        fetch_limit = min(limit * 4, 500)
 
-        # Filter: non-clone, active
+        query = (self.products_ref
+                 .order_by("CreatedDate", direction=firestore.Query.DESCENDING)
+                 .limit(fetch_limit))
+
+        docs = query.stream()
         filtered = []
-        for product in all_products:
-            is_clone = self._coerce_bool(product.get("isClone"), False)
-            if is_clone:
+        for doc in docs:
+            data = doc.to_dict() or {}
+
+            is_active = self._coerce_bool(data.get("isActive"), True)
+            is_deleted = self._coerce_bool(data.get("isDeleted"), False)
+            is_clone = self._coerce_bool(data.get("isClone"), False)
+
+            if is_deleted or not is_active or is_clone:
                 continue
-            if (product.get("OnHandNV") or 0) > 0 and (product.get("OnHand") or 0) == 0:
+            # Fallback clone detection
+            if (data.get("OnHandNV") or 0) > 0 and (data.get("OnHand") or 0) == 0:
                 continue
-            filtered.append(product)
 
-        # Sort by CreatedDate descending (newest first), fallback to ModifiedDate
-        def sort_key(p):
-            date_str = p.get("CreatedDate") or p.get("ModifiedDate") or ""
-            if not date_str:
-                return ""
-            if isinstance(date_str, str):
-                return date_str
-            return str(date_str)
+            filtered.append(dict(data))
+            if len(filtered) >= limit:
+                break
 
-        filtered.sort(key=sort_key, reverse=True)
-        result = filtered[:limit]
-
-        self.cache.set(cache_key, result, ttl=300)
-        return result
+        self.cache.set(cache_key, filtered, ttl=300)
+        return filtered
 
     def invalidate_all_product_caches(self):
         """Invalidate tất cả các cache keys liên quan đến products"""
@@ -1400,9 +1404,14 @@ class FirestoreProductService:
             "all_products:inactive=True:deleted=False",
             "all_products:inactive=False:deleted=True",
             "all_products:inactive=True:deleted=True",
+            "clone_stock_map",
         ]
 
         for key in cache_keys_to_invalidate:
             self.cache.invalidate(key)
 
-        print(f"🗑️ Invalidated {len(cache_keys_to_invalidate)} product cache keys")
+        # Invalidate dynamic cache keys (featured_products:*, products_by_category:*)
+        self.cache.invalidate_prefix("featured_products:")
+        self.cache.invalidate_prefix("products_by_category:")
+
+        print(f"🗑️ Invalidated product cache keys")
