@@ -11,28 +11,34 @@ def create_chat_routes_bp(chat_service, socketio, customer_service=None):
     @bp.route("/verify-identity", methods=["POST"])
     @handle_api_errors
     def verify_identity():
-        """Verify customer code or phone number against Firestore customers."""
+        """Verify customer code or phone number against Firestore customers.
+        Dung Firestore query truc tiep thay vi load all customers."""
         data = request.get_json(silent=True) or {}
         identity = (data.get("identity") or "").strip()
         if not identity:
             return jsonify({"verified": False, "message": "Vui lòng nhập mã thành viên hoặc số điện thoại"}), 400
 
         if not customer_service:
-            # No customer service available — allow by default
             return jsonify({"verified": True, "name": identity, "identity": identity})
 
-        customers = customer_service.read_all_customers()
-        for c in customers:
-            if not isinstance(c, dict):
-                continue
-            code = (c.get("Code") or "").strip()
-            phone = (c.get("ContactNumber") or "").strip()
-            name = c.get("Name") or ""
+        # Query by Code
+        try:
+            for doc in customer_service.customers_ref.where("Code", "==", identity).limit(1).stream():
+                c = doc.to_dict() or {}
+                name = c.get("Name") or ""
+                phone = (c.get("ContactNumber") or "").strip()
+                return jsonify({"verified": True, "name": name, "identity": identity, "phone": phone, "type": "code"})
+        except Exception:
+            pass
 
-            if code and code == identity:
-                return jsonify({"verified": True, "name": name, "identity": code, "phone": phone, "type": "code"})
-            if phone and phone == identity:
-                return jsonify({"verified": True, "name": name, "identity": phone, "phone": phone, "type": "phone"})
+        # Query by ContactNumber
+        try:
+            for doc in customer_service.customers_ref.where("ContactNumber", "==", identity).limit(1).stream():
+                c = doc.to_dict() or {}
+                name = c.get("Name") or ""
+                return jsonify({"verified": True, "name": name, "identity": identity, "phone": identity, "type": "phone"})
+        except Exception:
+            pass
 
         return jsonify({"verified": False, "message": "Không tìm thấy khách hàng với mã/SĐT này"}), 404
 
