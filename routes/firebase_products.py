@@ -336,7 +336,7 @@ def create_firebase_products_bp(product_service, socketio) -> Blueprint:
                 source_id = str(p.get("CloneSourceId") or "")
                 if source_id:
                     clone_stock[source_id] = clone_stock.get(source_id, 0) + on_hand_nv
-            product_service.cache.set(cache_key, clone_stock, ttl=600)
+            product_service.cache.set(cache_key, clone_stock, ttl=3600)
 
         for p in products:
             pid = str(p.get("Id", ""))

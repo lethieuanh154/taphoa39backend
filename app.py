@@ -116,12 +116,27 @@ def _build_app() -> Flask:
 
 
 def _warmup_product_cache(product_service):
-    """Pre-warm product cache in background thread so first API call is fast."""
+    """Pre-warm product cache and schedule background refresh every 55 minutes.
+    TTL cache = 1h, refresh at 55min = cache luôn warm, không có cold miss."""
     import threading
+    import time
 
-    def _warmup():
+    REFRESH_INTERVAL = 55 * 60  # 55 phút (trước khi TTL 1h hết hạn)
+
+    def _refresh_cache():
         try:
-            import time
+            t0 = time.time()
+            # Invalidate để force re-fetch từ Firestore
+            product_service.invalidate_all_product_caches()
+            products = product_service.read_all_products(include_inactive=False, include_deleted=False)
+            elapsed = (time.time() - t0) * 1000
+            print(f"🔄 [CacheRefresh] Refreshed {len(products)} products in {elapsed:.0f}ms")
+        except Exception as e:
+            print(f"❌ [CacheRefresh] Failed: {e}")
+
+    def _warmup_and_schedule():
+        # Initial warmup
+        try:
             t0 = time.time()
             products = product_service.read_all_products(include_inactive=False, include_deleted=False)
             elapsed = (time.time() - t0) * 1000
@@ -129,8 +144,14 @@ def _warmup_product_cache(product_service):
         except Exception as e:
             print(f"❌ [Warmup] Product cache warmup failed: {e}")
 
-    thread = threading.Thread(target=_warmup, daemon=True)
+        # Schedule periodic refresh
+        while True:
+            time.sleep(REFRESH_INTERVAL)
+            _refresh_cache()
+
+    thread = threading.Thread(target=_warmup_and_schedule, daemon=True)
     thread.start()
+    print(f"⏰ [CacheRefresh] Scheduled every {REFRESH_INTERVAL // 60} minutes")
 
 
 def _schedule_audit_cleanup(audit_service):
