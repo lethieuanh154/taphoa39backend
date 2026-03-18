@@ -9,7 +9,6 @@ from FromKiotViet.get_all_customer import get_entire_customer
 from FromKiotViet.get_all_product_by_category import get_items_category
 from FromKiotViet.get_category import get_category
 from FromKiotViet.get_entire_product import get_all as get_all_products_from_kiotviet
-from FromKiotViet.get_all_out_of_stock import get_out_of_stock_master_products_data
 from FromKiotViet.get_one_product import get_item
 from routes.shared import handle_api_errors
 from Utility.get_env import LatestBranchId, retailer
@@ -79,30 +78,6 @@ def create_kiotviet_routes_bp() -> Blueprint:
         categories = get_category()
         return jsonify(categories)
 
-    @bp.route("/items/out_of_stock", methods=["GET"])
-    @handle_api_errors
-    def get_items_out_of_stock_route():
-        api_items = get_out_of_stock_master_products_data()
-        sanitized_items = []
-        for item in api_items or []:
-            if item.get("Id") in (-1, "-1"):
-                continue
-            sanitized_items.append({
-                "Id": item.get("Id"),
-                "MasterProductId": item.get("Id"),
-                "Code": item.get("Code"),
-                "Image": item.get("Image"),
-                "FullName": item.get("FullName"),
-                "Cost": item.get("Cost"),
-                "BasePrice": item.get("BasePrice"),
-                "OnHand": item.get("OnHand"),
-                "Unit": item.get("Unit"),
-                "AttributeLabel": item.get("AttributeLabel"),
-            })
-
-        sanitized_items.sort(key=lambda x: x.get("OnHand", 0.0))
-
-        return jsonify({"items": sanitized_items, "total_items": len(sanitized_items)})
 
     @bp.route("/items/category/<category_name>", methods=["GET"])
     @handle_api_errors
