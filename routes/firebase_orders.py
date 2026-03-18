@@ -8,6 +8,7 @@ from routes.shared import (
     notify_order_deleted,
     notify_order_updated,
 )
+from firebase.firebase_service.order_notification_service import notify_order_realtime
 
 
 def create_firebase_orders_bp(order_service, customer_service, socketio) -> Blueprint:
@@ -49,10 +50,13 @@ def create_firebase_orders_bp(order_service, customer_service, socketio) -> Blue
                 persisted = order_service.read_order(str(order_id))
                 if persisted:
                     notify_order_created(socketio, persisted)
+                    notify_order_realtime('created', persisted)
                 else:
                     notify_order_created(socketio, order_id)
+                    notify_order_realtime('created', order)
             except Exception:
                 notify_order_created(socketio, order_id or order)
+                notify_order_realtime('created', order)
 
         return jsonify(result)
 
@@ -63,12 +67,14 @@ def create_firebase_orders_bp(order_service, customer_service, socketio) -> Blue
         updated_order = order_service.read_order(order_id)
         if updated_order:
             notify_order_updated(socketio, updated_order)
+            notify_order_realtime('updated', updated_order)
         return jsonify(result)
 
     @bp.route("/orders/<order_id>", methods=["DELETE"])
     def delete_order(order_id: str):
         result = order_service.delete_order(order_id)
         notify_order_deleted(socketio, order_id)
+        notify_order_realtime('deleted', None, order_id=order_id)
         return jsonify(result)
 
     @bp.route("/orders/fetch", methods=["POST"])
