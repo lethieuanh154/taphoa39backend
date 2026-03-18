@@ -337,11 +337,13 @@ def create_firebase_customers_bp(customer_service, socketio) -> Blueprint:
                 reg_bonus = updated_customer.get("RegistrationBonus", 0) or 0
                 redeemed = updated_customer.get("RedeemedPoints", 0) or 0
                 gift_point = max(0, base + reg_bonus + new_bonus - redeemed)
-                socketio.emit("bonus_updated", {
+                bonus_payload = {
                     "code": customer_code,
                     "giftPoint": gift_point,
                     "bonusAdded": amount,
-                }, namespace="/api/websocket/customers")
+                }
+                logger.info("[bonus_updated] Emitting WS: %s", bonus_payload)
+                socketio.emit("bonus_updated", bonus_payload, namespace="/api/websocket/customers")
 
             # Send Zalo notification (best-effort)
             zalo_sent = False
