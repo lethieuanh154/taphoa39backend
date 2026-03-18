@@ -326,6 +326,23 @@ def create_firebase_customers_bp(customer_service, socketio) -> Blueprint:
                 {"applied": True, "customer": updated_customer}
             ])
 
+            # Emit bonus_updated for customer-facing app (TapHoa39DatHang)
+            customer_code = updated_customer.get("Code") or ""
+            if customer_code and socketio:
+                total_point = updated_customer.get("TotalPoint", 0) or 0
+                raw_gift = total_point * 0.02
+                base = round(raw_gift / 100) * 100
+                if not isinstance(base, (int, float)) or base != base:
+                    base = 0
+                reg_bonus = updated_customer.get("RegistrationBonus", 0) or 0
+                redeemed = updated_customer.get("RedeemedPoints", 0) or 0
+                gift_point = max(0, base + reg_bonus + new_bonus - redeemed)
+                socketio.emit("bonus_updated", {
+                    "code": customer_code,
+                    "giftPoint": gift_point,
+                    "bonusAdded": amount,
+                }, namespace="/api/websocket/customers")
+
             # Send Zalo notification (best-effort)
             zalo_sent = False
             zalo_user_id = current_customer.get("ZaloUserId") or ""
