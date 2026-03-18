@@ -10,7 +10,7 @@ from routes.shared import (
 )
 
 
-def create_firebase_orders_bp(order_service, socketio) -> Blueprint:
+def create_firebase_orders_bp(order_service, customer_service, socketio) -> Blueprint:
     bp = Blueprint("firebase_orders", __name__, url_prefix="/api/firebase")
 
     @bp.route("/orders", methods=["GET"])
@@ -31,6 +31,9 @@ def create_firebase_orders_bp(order_service, socketio) -> Blueprint:
     def add_order():
         order = request.json
         result = order_service.add_order(order)
+
+        # Deduct redeemed points from customer if points were used
+        _deduct_redeemed_points(order, customer_service)
 
         # Try to determine the persisted order id and fetch the stored document
         order_id = None
@@ -86,3 +89,37 @@ def create_firebase_orders_bp(order_service, socketio) -> Blueprint:
         return jsonify(orders)
 
     return bp
+
+
+def _deduct_redeemed_points(order, customer_service):
+    """Increment RedeemedPoints on customer after order uses reward points."""
+    if not customer_service or not isinstance(order, dict):
+        return
+
+    points_for_ship = order.get("pointsUsedForShip", 0) or 0
+    points_for_order = order.get("pointsUsedForOrder", 0) or 0
+    total_used = points_for_ship + points_for_order
+    if total_used <= 0:
+        return
+
+    # Find customer by phone
+    phone = ""
+    customer_info = order.get("customer")
+    if isinstance(customer_info, dict):
+        phone = (customer_info.get("ContactNumber") or "").strip()
+    if not phone:
+        return
+
+    try:
+        from google.cloud.firestore_v1 import Increment
+        for doc in customer_service.customers_ref.where("ContactNumber", "==", phone).limit(1).stream():
+            doc.reference.update({"RedeemedPoints": Increment(total_used)})
+            # Invalidate customer cache để BanHang sync lấy data mới
+            if customer_service.cache:
+                customer_service.cache.invalidate(doc.id)
+                customer_service.cache.invalidate("all_customers")
+            print(f"[add_order] Deducted {total_used} points from customer phone={phone}, cache invalidated")
+            return
+        print(f"[add_order] Customer not found for phone={phone}, cannot deduct points")
+    except Exception as e:
+        print(f"[add_order] Error deducting points: {type(e).__name__}: {e}")

@@ -30,6 +30,18 @@ def create_chat_routes_bp(chat_service, socketio, customer_service=None):
 
         print(f"[verify-identity] customer_service exists, customers_ref={customer_service.customers_ref is not None}")
 
+        def _calc_gift_point(c):
+            """Calculate gift point matching frontend calculateGiftValue(), minus redeemed."""
+            total_point = c.get("TotalPoint", 0) or 0
+            raw_gift = total_point * 0.02
+            base = round(raw_gift / 100) * 100
+            if not isinstance(base, (int, float)) or base != base:  # NaN check
+                base = 0
+            registration_bonus = c.get("RegistrationBonus", 0) or 0
+            bonus_point = c.get("BonusPoint", 0) or 0
+            redeemed = c.get("RedeemedPoints", 0) or 0
+            return max(0, base + registration_bonus + bonus_point - redeemed)
+
         # Query by Code
         try:
             t1 = time.time()
@@ -38,8 +50,9 @@ def create_chat_routes_bp(chat_service, socketio, customer_service=None):
                 c = doc.to_dict() or {}
                 name = c.get("Name") or ""
                 phone = (c.get("ContactNumber") or "").strip()
-                print(f"[verify-identity] Found by Code: name='{name}' in {time.time()-t1:.3f}s total={time.time()-t0:.3f}s")
-                return jsonify({"verified": True, "name": name, "identity": identity, "phone": phone, "type": "code"})
+                gift_point = _calc_gift_point(c)
+                print(f"[verify-identity] Found by Code: name='{name}' giftPoint={gift_point} in {time.time()-t1:.3f}s total={time.time()-t0:.3f}s")
+                return jsonify({"verified": True, "name": name, "identity": identity, "phone": phone, "type": "code", "giftPoint": gift_point})
             print(f"[verify-identity] Code query done, no match in {time.time()-t1:.3f}s")
         except Exception as e:
             print(f"[verify-identity] Code query ERROR: {type(e).__name__}: {e} in {time.time()-t1:.3f}s")
@@ -51,8 +64,9 @@ def create_chat_routes_bp(chat_service, socketio, customer_service=None):
             for doc in customer_service.customers_ref.where("ContactNumber", "==", identity).limit(1).stream():
                 c = doc.to_dict() or {}
                 name = c.get("Name") or ""
-                print(f"[verify-identity] Found by Phone: name='{name}' in {time.time()-t2:.3f}s total={time.time()-t0:.3f}s")
-                return jsonify({"verified": True, "name": name, "identity": identity, "phone": identity, "type": "phone"})
+                gift_point = _calc_gift_point(c)
+                print(f"[verify-identity] Found by Phone: name='{name}' giftPoint={gift_point} in {time.time()-t2:.3f}s total={time.time()-t0:.3f}s")
+                return jsonify({"verified": True, "name": name, "identity": identity, "phone": identity, "type": "phone", "giftPoint": gift_point})
             print(f"[verify-identity] Phone query done, no match in {time.time()-t2:.3f}s")
         except Exception as e:
             print(f"[verify-identity] Phone query ERROR: {type(e).__name__}: {e} in {time.time()-t2:.3f}s")
