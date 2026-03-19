@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import time
 from datetime import datetime, timezone
 
 from flask import Blueprint, jsonify, request
@@ -12,12 +13,28 @@ from FromKiotViet.Model.customer import Customer
 from FromKiotViet.add_customer import add_customer_to_kiotviet
 from Utility.get_env import LatestBranchId
 from routes.shared import broadcast_customer_updates, notify_customer_created
-from routes.zalo_routes import rate_limit_check, send_zalo_cs_message
+from routes.zalo_routes import send_zalo_cs_message
 
 logger = logging.getLogger(__name__)
 
 VN_PHONE_RE = re.compile(r"^0[35789]\d{8}$")
 FRONTEND_DOMAIN = os.getenv("FRONTEND_DOMAIN", "https://songminh-dangky.web.app")
+
+# Rate limit riêng cho registration - chỉ chặn tạo mới, không chặn duplicate check
+_registration_timestamps: dict[str, float] = {}
+_REGISTRATION_RATE_LIMIT = 10  # seconds
+
+
+def _registration_rate_limited(ip: str) -> bool:
+    """Check if IP is rate limited. Does NOT record timestamp (call _record_registration after success)."""
+    now = time.time()
+    last = _registration_timestamps.get(ip, 0)
+    return now - last < _REGISTRATION_RATE_LIMIT
+
+
+def _record_registration(ip: str):
+    """Record timestamp after successful new customer creation."""
+    _registration_timestamps[ip] = time.time()
 
 
 def _firestore_transaction_run(db, func):
@@ -103,10 +120,7 @@ def create_customer_registration_bp(customer_service, socketio) -> Blueprint:
     @bp.route("/register", methods=["POST"])
     def register_customer():
         try:
-            # Rate limit
             client_ip = request.remote_addr or "unknown"
-            if rate_limit_check(client_ip):
-                return jsonify({"success": False, "message": "Vui lòng chờ trước khi đăng ký lại"}), 429
 
             payload = request.get_json(silent=True)
             if not isinstance(payload, dict):
@@ -147,6 +161,10 @@ def create_customer_registration_bp(customer_service, socketio) -> Blueprint:
                     "phone": phone,
                     "existing": True,
                 }), 200
+
+            # Rate limit chỉ cho tạo mới (duplicate check ở trên không bị chặn)
+            if _registration_rate_limited(client_ip):
+                return jsonify({"success": False, "message": "Vui lòng chờ trước khi đăng ký lại"}), 429
 
             # Default name if not provided
             if not name:
@@ -194,6 +212,8 @@ def create_customer_registration_bp(customer_service, socketio) -> Blueprint:
                     send_zalo_cs_message(zalo_user_id, msg)
                 except Exception as exc:
                     logger.error("Zalo CS message failed (non-fatal): %s", exc)
+
+            _record_registration(client_ip)
 
             return jsonify({
                 "success": True,
