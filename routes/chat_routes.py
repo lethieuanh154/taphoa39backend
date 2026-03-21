@@ -65,14 +65,15 @@ def create_chat_routes_bp(chat_service, socketio, customer_service=None):
 
         def _build_response(c, identity_val, phone_val, type_val):
             name = c.get("Name") or ""
+            code = c.get("Code") or ""
             gift_point = _calc_gift_point(c)
             ok, has_pw = _check_password(c, password)
             if not ok and not password:
                 # Client didn't send password but customer has one → ask for it
-                return jsonify({"verified": False, "requirePassword": True, "name": name, "identity": identity_val, "phone": phone_val}), 200
+                return jsonify({"verified": False, "requirePassword": True, "name": name, "identity": identity_val, "phone": phone_val, "code": code}), 200
             if not ok:
                 return jsonify({"verified": False, "message": "Sai mật khẩu"}), 401
-            return jsonify({"verified": True, "name": name, "identity": identity_val, "phone": phone_val, "type": type_val, "giftPoint": gift_point, "hasPassword": has_pw})
+            return jsonify({"verified": True, "name": name, "identity": identity_val, "phone": phone_val, "code": code, "type": type_val, "giftPoint": gift_point, "hasPassword": has_pw})
 
         # Query by Code
         try:
