@@ -6,6 +6,8 @@ import re
 import time
 from datetime import datetime, timezone
 
+import bcrypt
+
 from flask import Blueprint, jsonify, request
 from google.api_core.exceptions import ResourceExhausted
 
@@ -194,6 +196,7 @@ def create_customer_registration_bp(customer_service, socketio) -> Blueprint:
                 data["ZaloUserId"] = zalo_user_id
             data["CreatedDate"] = datetime.now(timezone.utc).isoformat()
             data["RegistrationBonus"] = 1000
+            data["Password"] = bcrypt.hashpw(phone.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
 
             customer_service.add_customer(data)
 
