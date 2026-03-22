@@ -146,6 +146,38 @@ class MergedProductsService:
                 "error": str(e)
             }
 
+    def update_merged_items(
+        self,
+        updates: List[Dict[str, Any]],
+        remove_ids: List[str],
+        modified_by: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Atomic update: remove items by IDs AND update specific items in one operation.
+        Reads current Firestore state (not client state) to avoid stale overwrites.
+        - remove_ids: item IDs to completely remove
+        - updates: items to replace (matched by 'id' field)
+        """
+        try:
+            current = self.get_merged_products()
+            items = current.get("items", [])
+
+            # Remove items by IDs
+            id_set = set(remove_ids)
+            items = [item for item in items if item.get("id") not in id_set]
+
+            # Update items (replace matching items with new versions)
+            update_map = {u.get("id"): u for u in updates if u.get("id")}
+            items = [update_map.pop(item.get("id"), item) for item in items]
+
+            return self.save_merged_products(items, modified_by)
+        except Exception as e:
+            print(f"❌ Error in atomic update: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
     def clear_all(self, modified_by: Optional[str] = None) -> Dict[str, Any]:
         """
         Clear all merged products.
