@@ -36,6 +36,8 @@ from routes.gmail_routes import create_gmail_routes_bp
 from routes.merged_products_audit_routes import create_merged_products_audit_bp
 from routes.chat_routes import create_chat_routes_bp
 from firebase.firebase_service.chat_service import FirestoreChatService
+from firebase.firebase_service.promotion_service import FirestorePromotionService
+from routes.firebase_promotions import create_firebase_promotions_bp
 
 
 def _build_app() -> Flask:
@@ -47,6 +49,7 @@ def _build_app() -> Flask:
     customer_service = FirestoreCustomerService(Cache())
     order_service = FirestoreorderService(Cache())
     employee_service = FirestoreEmployeeService(Cache())
+    promotion_service = FirestorePromotionService(Cache())
 
     # Initialize SocketIO without async_mode (uses threading by default)
     # Frontend uses polling transport only, so no WebSocket needed
@@ -94,6 +97,9 @@ def _build_app() -> Flask:
     app.register_blueprint(create_customer_registration_bp(customer_service, socketio))
     app.register_blueprint(create_zalo_routes_bp())
     app.register_blueprint(create_gmail_routes_bp())
+
+    # Promotions (khuyến mại)
+    app.register_blueprint(create_firebase_promotions_bp(promotion_service, socketio))
 
     # Chat messaging
     chat_service = FirestoreChatService()

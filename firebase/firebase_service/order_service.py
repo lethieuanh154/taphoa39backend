@@ -8,7 +8,7 @@ load_dotenv()
 COLLECTION_NAME = "orders"
 
 # Đặt tên app duy nhất cho mỗi service account
-db = init_firestore("FIREBASE_SERVICE_ACCOUNT_HOADON")
+db = init_firestore("FIREBASE_SERVICE_ACCOUNT_DATHANG")
 # Chuyển chuỗi JSON thành dict và tạo credential
 
 
