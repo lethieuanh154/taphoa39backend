@@ -99,7 +99,7 @@ def _build_app() -> Flask:
     app.register_blueprint(create_gmail_routes_bp())
 
     # Promotions (khuyến mại)
-    app.register_blueprint(create_firebase_promotions_bp(promotion_service, socketio))
+    app.register_blueprint(create_firebase_promotions_bp(promotion_service, product_service, socketio))
 
     # Chat messaging
     chat_service = FirestoreChatService()

@@ -4,7 +4,7 @@ from flask import Blueprint, jsonify, request
 from routes.shared import handle_api_errors
 
 
-def create_firebase_promotions_bp(promotion_service, socketio) -> Blueprint:
+def create_firebase_promotions_bp(promotion_service, product_service, socketio) -> Blueprint:
     bp = Blueprint("firebase_promotions", __name__, url_prefix="/api/firebase")
 
     # ──────────────────────────────────────────────
@@ -22,8 +22,27 @@ def create_firebase_promotions_bp(promotion_service, socketio) -> Blueprint:
     @bp.route("/promotions/active", methods=["GET"])
     @handle_api_errors
     def get_active_promotions():
-        """Get currently active promotions (enabled + within date range)."""
+        """Get currently active promotions (enabled + within date range).
+        Enriches each promotion with targetProduct data for DatHang app."""
         promos = promotion_service.read_active_promotions()
+
+        # Embed product data so frontend doesn't need IndexedDB lookup
+        _PRODUCT_FIELDS = (
+            "Id", "Code", "Name", "FullName", "Image", "BasePrice",
+            "OnHand", "Unit", "CategoryId", "NormalizedName", "NormalizedCode",
+            "isActive", "isDeleted", "isClone", "OnHandNV", "Description",
+            "ConversionValue", "MasterUnitId", "MasterProductId", "ModifiedDate",
+        )
+        for promo in promos:
+            pid = promo.get("targetProductId")
+            if not pid:
+                continue
+            product = product_service.read_product(str(pid))
+            if product:
+                promo["targetProduct"] = {k: product.get(k) for k in _PRODUCT_FIELDS if k in product}
+            else:
+                promo["targetProduct"] = None
+
         return jsonify(promos)
 
     @bp.route("/promotions/<promo_id>", methods=["GET"])
