@@ -92,7 +92,6 @@ class FirestorePromotionService:
         data["createdDate"] = now
         data["modifiedDate"] = now
         data.setdefault("isEnabled", True)
-        data.setdefault("allowStacking", False)
         data.setdefault("minQuantity", 1)
 
         # Set default priority: gift promotions get higher priority
@@ -209,34 +208,70 @@ class FirestorePromotionService:
                         "discountAmount": 0
                     })
 
-                # Percentage discount
-                if has_pct and promo.get("discountPercent"):
-                    if item_pid not in discounted_products or promo.get("allowStacking"):
-                        pct = promo.get("discountPercent", 0)
-                        disc = round(item_price * item_qty * pct / 100)
+                # Discount handling — phân biệt Type 2 vs Type 3
+                has_discount = has_pct or has_fixed
+                has_gift_product = bool(promo.get("giftProductId"))
+
+                if has_discount and has_gift_product:
+                    # Type 3: Mua A được mua B giảm giá → tạo discounted item cho SP B
+                    trigger_count = item_qty // min_qty
+                    disc_qty = promo.get("giftQuantity", 1) * trigger_count
+                    gift_base_price = promo.get("giftProductBasePrice", 0)
+
+                    disc_per_unit = 0
+                    if has_pct and promo.get("discountPercent"):
+                        raw = gift_base_price * promo["discountPercent"] / 100
+                        disc_per_unit = (int(raw) // 1000) * 1000  # Floor to nearest 1,000
+                    elif has_fixed and promo.get("discountAmount"):
+                        disc_per_unit = promo["discountAmount"]
+
+                    disc_total = disc_per_unit * disc_qty
+                    total_discount += disc_total
+
+                    gift_items.append({
+                        "productId": str(promo.get("giftProductId", "")),
+                        "code": promo.get("giftProductCode", ""),
+                        "name": promo.get("giftProductName", ""),
+                        "quantity": disc_qty,
+                        "basePrice": gift_base_price,
+                        "isGift": False,
+                        "isDiscounted": True,
+                        "discountPercent": promo.get("discountPercent"),
+                        "discountAmount": promo.get("discountAmount"),
+                        "promotionId": promo.get("id"),
+                        "promotionName": promo.get("name", ""),
+                    })
+                    applied.append({
+                        "promotionId": promo.get("id"),
+                        "promotionName": promo.get("name", ""),
+                        "type": "percentage" if has_pct else "fixed_amount",
+                        "targetProductId": item_pid,
+                        "discountAmount": disc_total,
+                        "discountPercent": promo.get("discountPercent"),
+                    })
+
+                elif has_discount and not has_gift_product:
+                    # Type 2: Giảm giá trực tiếp cho chính SP trigger
+                    if item_pid not in discounted_products:
+                        if has_pct and promo.get("discountPercent"):
+                            pct = promo.get("discountPercent", 0)
+                            raw_per_unit = item_price * pct / 100
+                            disc_per_unit_rounded = (int(raw_per_unit) // 1000) * 1000
+                            disc = disc_per_unit_rounded * item_qty
+                        elif has_fixed and promo.get("discountAmount"):
+                            disc = promo.get("discountAmount", 0) * (item_qty // min_qty)
+                        else:
+                            disc = 0
+
                         total_discount += disc
                         discounted_products.add(item_pid)
                         applied.append({
                             "promotionId": promo.get("id"),
                             "promotionName": promo.get("name", ""),
-                            "type": "percentage",
+                            "type": "percentage" if has_pct else "fixed_amount",
                             "targetProductId": item_pid,
                             "discountAmount": disc,
                             "discountPercent": promo.get("discountPercent"),
-                        })
-
-                # Fixed amount discount
-                if has_fixed and promo.get("discountAmount"):
-                    if item_pid not in discounted_products or promo.get("allowStacking"):
-                        disc = promo.get("discountAmount", 0) * (item_qty // min_qty)
-                        total_discount += disc
-                        discounted_products.add(item_pid)
-                        applied.append({
-                            "promotionId": promo.get("id"),
-                            "promotionName": promo.get("name", ""),
-                            "type": "fixed_amount",
-                            "targetProductId": item_pid,
-                            "discountAmount": disc,
                         })
 
         # Deduplicate gift items (same product from different promotions)

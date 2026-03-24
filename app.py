@@ -19,6 +19,7 @@ from routes.firebase_orders import create_firebase_orders_bp
 from routes.firebase_products import create_firebase_products_bp
 from routes.firebase_employees import create_firebase_employees_bp
 from routes.kiotviet_routes import create_kiotviet_routes_bp
+from routes.kiotviet_campaign import create_kiotviet_campaign_bp
 from routes.sync_routes import create_sync_routes_bp
 from routes.static_routes import create_static_routes_bp
 from routes.firebase_websocket import register_namespaces
@@ -74,6 +75,7 @@ def _build_app() -> Flask:
     app.register_blueprint(auth_bp)
     app.register_blueprint(create_static_routes_bp())
     app.register_blueprint(create_kiotviet_routes_bp())
+    app.register_blueprint(create_kiotviet_campaign_bp())
     app.register_blueprint(create_sync_routes_bp(product_service))
     app.register_blueprint(create_firebase_products_bp(product_service, socketio))
     app.register_blueprint(
