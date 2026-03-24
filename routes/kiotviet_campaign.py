@@ -50,10 +50,17 @@ def create_kiotviet_campaign_bp() -> Blueprint:
 
             if resp.status_code in (200, 201):
                 result = resp.json()
-                campaign_id = result.get("Id") or result.get("Data", {}).get("Id")
+                campaign_data = result.get("Data", result)
+                campaign_id = campaign_data.get("Id") or result.get("Id")
+
+                # Extract SalePromotionId from the campaign's child promotions
+                sale_promotions = campaign_data.get("SalePromotions", [])
+                sale_promotion_id = sale_promotions[0].get("Id") if sale_promotions else None
+
                 return jsonify({
                     "success": True,
                     "kiotVietCampaignId": campaign_id,
+                    "kiotVietSalePromotionId": sale_promotion_id,
                     "kiotVietResponse": result,
                 }), 200
             else:
