@@ -73,6 +73,54 @@ def create_kiotviet_campaign_bp() -> Blueprint:
         except requests.RequestException as e:
             return jsonify({"success": False, "error": str(e)}), 500
 
+    @bp.route("/campaigns/<int:campaign_id>", methods=["GET"])
+    def get_campaign(campaign_id: int):
+        """
+        Lấy thông tin campaign từ KiotViet.
+        GET /api/kiotviet/campaigns/{campaign_id}
+        Dùng để backfill kiotVietSalePromotionId cho promotions cũ.
+        """
+        try:
+            headers = {
+                "Authorization": _auth,
+                "branchid": str(LatestBranchId),
+                "retailer": retailer,
+                "Content-Type": "application/json",
+            }
+
+            resp = requests.get(
+                f"{KIOTVIET_PROMOTION_API}/{campaign_id}",
+                headers=headers,
+                timeout=30,
+            )
+
+            if resp.status_code in (200, 201):
+                result = resp.json()
+                campaign_data = result.get("Data", result)
+
+                # Extract SalePromotionId
+                sale_promotions = campaign_data.get("SalePromotions", [])
+                sale_promotion_id = sale_promotions[0].get("Id") if sale_promotions else None
+
+                # Extract PromotionType
+                promotion_type = campaign_data.get("PromotionType")
+
+                return jsonify({
+                    "success": True,
+                    "kiotVietCampaignId": campaign_id,
+                    "kiotVietSalePromotionId": sale_promotion_id,
+                    "kiotVietPromotionType": promotion_type,
+                }), 200
+            else:
+                return jsonify({
+                    "success": False,
+                    "error": f"KiotViet returned {resp.status_code}",
+                    "detail": resp.text[:500],
+                }), resp.status_code
+
+        except requests.RequestException as e:
+            return jsonify({"success": False, "error": str(e)}), 500
+
     @bp.route("/campaigns/<int:campaign_id>", methods=["DELETE"])
     def delete_campaign(campaign_id: int):
         """
