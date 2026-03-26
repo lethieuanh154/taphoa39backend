@@ -134,7 +134,7 @@ class InvoiceValidator:
         return errors
 
     def _validate_summary(self, invoice: ProcessedInvoice) -> List[ValidationError]:
-        """Validate summary - check values exist, do NOT recalculate"""
+        """Validate summary - check values exist and math consistency"""
         errors = []
 
         # Check total_amount_before_vat exists
@@ -161,6 +161,56 @@ class InvoiceValidator:
                 message="Thuế suất chưa được trích xuất",
                 severity="warning"
             ))
+
+        # === Math validation ===
+        math_errors = self._validate_math(invoice)
+        errors.extend(math_errors)
+
+        return errors
+
+    def _validate_math(self, invoice: ProcessedInvoice) -> List[ValidationError]:
+        """Validate arithmetic consistency of invoice data"""
+        errors = []
+
+        if not invoice.items:
+            return errors
+
+        # Check each item: amount ≈ quantity × unit_price
+        for idx, item in enumerate(invoice.items):
+            if item.quantity > 0 and item.unit_price > 0 and item.amount > 0:
+                expected_amount = item.quantity * item.unit_price
+                if not self._is_close(expected_amount, item.amount):
+                    errors.append(ValidationError(
+                        field=f"items[{idx}].amount",
+                        message=f"Dòng {idx + 1}: Thành tiền ({item.amount:,.0f}) ≠ SL ({item.quantity}) × Đơn giá ({item.unit_price:,.0f}) = {expected_amount:,.0f}",
+                        severity="warning",
+                        expected_value=expected_amount,
+                        actual_value=item.amount
+                    ))
+
+        # Check: total_amount_before_vat ≈ sum(items.amount)
+        items_total = sum(item.amount for item in invoice.items)
+        if items_total > 0 and invoice.summary.total_amount_before_vat > 0:
+            if not self._is_close(items_total, invoice.summary.total_amount_before_vat):
+                errors.append(ValidationError(
+                    field="summary.total_amount_before_vat",
+                    message=f"Tổng tiền hàng ({invoice.summary.total_amount_before_vat:,.0f}) ≠ Tổng các dòng ({items_total:,.0f})",
+                    severity="warning",
+                    expected_value=items_total,
+                    actual_value=invoice.summary.total_amount_before_vat
+                ))
+
+        # Check: total_payment ≈ total_amount_before_vat + vat_amount
+        if invoice.summary.total_amount_before_vat > 0 and invoice.summary.total_payment > 0:
+            expected_total = invoice.summary.total_amount_before_vat + invoice.summary.vat_amount
+            if not self._is_close(expected_total, invoice.summary.total_payment):
+                errors.append(ValidationError(
+                    field="summary.total_payment",
+                    message=f"Tổng thanh toán ({invoice.summary.total_payment:,.0f}) ≠ Tiền hàng ({invoice.summary.total_amount_before_vat:,.0f}) + VAT ({invoice.summary.vat_amount:,.0f}) = {expected_total:,.0f}",
+                    severity="warning",
+                    expected_value=expected_total,
+                    actual_value=invoice.summary.total_payment
+                ))
 
         return errors
 

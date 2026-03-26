@@ -76,6 +76,8 @@ class ProcessingResult(BaseModel):
     processing_time_ms: int = 0
     error: Optional[str] = None
     processing_log: List[ProcessingLogEntry] = Field(default_factory=list)
+    confidence: float = 1.0
+    low_confidence_fields: List[str] = Field(default_factory=list)
 
 
 class OCRResult(BaseModel):
