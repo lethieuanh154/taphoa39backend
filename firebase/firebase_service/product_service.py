@@ -1380,15 +1380,15 @@ class FirestoreProductService:
 
         return results
 
-    def get_featured_products(self, limit: int = 50) -> List[Dict]:
+    def get_featured_products(self) -> List[Dict]:
         """
-        Lay san pham noi bat: moi nhat theo CreatedDate.
-        Dung cho DatHang app: hien thi khi vao trang lan dau.
+        Lay tat ca san pham (non-clone, active) sort theo CreatedDate desc.
+        Dung cho DatHang app: hien thi khi vao trang, phan trang o route level.
         Dung read_all_products (co cache 300s) roi sort/filter trong Python.
         Khong dung Firestore order_by("CreatedDate") vi docs co CreatedDate=null
         se bi Firestore loai khoi ket qua query.
         """
-        cache_key = f"featured_products:{limit}"
+        cache_key = "featured_products:all"
         if self.cache.has(cache_key):
             return self.cache.get(cache_key)
 
@@ -1415,9 +1415,8 @@ class FirestoreProductService:
 
         filtered.sort(key=_sort_key, reverse=True)
 
-        result = filtered[:limit]
-        self.cache.set(cache_key, result, ttl=CACHE_TTL)
-        return result
+        self.cache.set(cache_key, filtered, ttl=CACHE_TTL)
+        return filtered
 
     def invalidate_all_product_caches(self):
         """Invalidate tất cả các cache keys liên quan đến products.

@@ -405,13 +405,7 @@ def create_firebase_products_bp(product_service, socketio) -> Blueprint:
         Dung cho DatHang app: hien thi khi vao trang lan dau thay vi load tat ca.
         GET /api/firebase/products/featured?limit=20&offset=0
         """
-        try:
-            total_limit = int(request.args.get("total_limit", 200))
-        except ValueError:
-            total_limit = 200
-        total_limit = min(max(total_limit, 1), 500)
-
-        products = product_service.get_featured_products(limit=total_limit)
+        products = product_service.get_featured_products()
         products = _enrich_clone_stock(products)
         total = len(products)
 
