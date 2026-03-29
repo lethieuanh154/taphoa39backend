@@ -486,6 +486,7 @@ class TaxInvoiceXMLParser:
                     # Lấy thành tiền
                     item_amount = TaxInvoiceXMLParser._parse_amount(find_direct_child_text(hhdv_element, 'ThTien', 'ThanhTien'))
 
+                    item_tax_amount = TaxInvoiceXMLParser._parse_amount(find_direct_child_text(hhdv_element, 'TThue', 'TienThue'))
                     item = {
                         'stt': stt,
                         'name': item_name,  # Thống nhất dùng 'name' như internalData
@@ -495,6 +496,8 @@ class TaxInvoiceXMLParser:
                         'unitPrice': item_unit_price,
                         'amount': item_amount,
                         'totalAmount': item_amount,  # Backup cho template fallback
+                        'taxAmount': item_tax_amount,
+                        'amountAfterTax': item_amount + item_tax_amount,
                         'vatRate': find_direct_child_text(hhdv_element, 'TSuat', 'ThueSuat')
                     }
                     invoice['items'].append(item)

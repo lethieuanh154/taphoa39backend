@@ -118,12 +118,16 @@ class TaxInvoiceXMLParser:
         items = []
         item_tags = inv_tag.findall('.//HHDVu') # Hang hoa, dich vu
         for item_tag in item_tags:
+            amount = TaxInvoiceXMLParser._get_float(item_tag, 'ThTien')
+            tax_amount = TaxInvoiceXMLParser._get_float(item_tag, 'TThue')
             item = {
                 'name': TaxInvoiceXMLParser._get_text(item_tag, 'THHDVu'),
                 'unit': TaxInvoiceXMLParser._get_text(item_tag, 'DVTinh'),
                 'quantity': TaxInvoiceXMLParser._get_float(item_tag, 'SLuong'),
                 'unitPrice': TaxInvoiceXMLParser._get_float(item_tag, 'DGia'),
-                'total': TaxInvoiceXMLParser._get_float(item_tag, 'ThTien'),
+                'total': amount,
+                'taxAmount': tax_amount,
+                'amountAfterTax': amount + tax_amount,
             }
             items.append(item)
 
