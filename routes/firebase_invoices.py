@@ -364,6 +364,16 @@ def create_firebase_invoices_bp(invoice_service, product_service, customer_servi
         notify_daily_summary(socketio, date, summary)
         return jsonify(summary)
 
+    @bp.route("/date_range_summary", methods=["GET"])
+    @handle_api_errors
+    def get_date_range_summary():
+        start_date = request.args.get('start_date')
+        end_date = request.args.get('end_date')
+        if not start_date or not end_date:
+            return jsonify({"status": "error", "message": "start_date and end_date are required (YYYY-MM-DD)"}), 400
+        summary = invoice_service.calculate_date_range_summary(start_date, end_date)
+        return jsonify(summary)
+
     @bp.route("/monthly_summary", methods=["GET"])
     @handle_api_errors
     def get_monthly_summary():
