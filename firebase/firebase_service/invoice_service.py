@@ -426,7 +426,12 @@ class FirestoreInvoiceService:
         summary_ref.set(summary)
         return summary
 
-    def get_daily_summary(self, date):
+    def get_daily_summary(self, date, recalculate=False):
+        """Đọc từ DailySummary collection (1 read). Fallback calculate nếu chưa có."""
+        if not recalculate:
+            doc = db.collection('DailySummary').document(date).get()
+            if doc.exists:
+                return doc.to_dict()
         return self.calculate_daily_summary(date)
 
     def calculate_monthly_summary(self, year, month):
@@ -478,7 +483,13 @@ class FirestoreInvoiceService:
         summary_ref = db.collection('MonthlySummary').document(doc_id)
         summary_ref.set(summary)
         return summary
-    def get_monthly_summary(self, year, month):
+    def get_monthly_summary(self, year, month, recalculate=False):
+        """Đọc từ MonthlySummary collection (1 read). Fallback calculate nếu chưa có."""
+        doc_id = f"{year}-{str(month).zfill(2)}"
+        if not recalculate:
+            doc = db.collection('MonthlySummary').document(doc_id).get()
+            if doc.exists:
+                return doc.to_dict()
         return self.calculate_monthly_summary(year, month)
 
     def calculate_yearly_summary(self, year):
@@ -527,7 +538,12 @@ class FirestoreInvoiceService:
         summary_ref.set(summary)
         return summary
 
-    def get_yearly_summary(self, year):
+    def get_yearly_summary(self, year, recalculate=False):
+        """Đọc từ YearlySummary collection (1 read). Fallback calculate nếu chưa có."""
+        if not recalculate:
+            doc = db.collection('YearlySummary').document(str(year)).get()
+            if doc.exists:
+                return doc.to_dict()
         return self.calculate_yearly_summary(year)
 
     def calculate_date_range_summary(self, start_date, end_date):

@@ -360,7 +360,8 @@ def create_firebase_invoices_bp(invoice_service, product_service, customer_servi
         date = request.args.get('date')
         if not date:
             return jsonify({"status": "error", "message": "date is required (YYYY-MM-DD)"}), 400
-        summary = invoice_service.get_daily_summary(date)
+        recalculate = request.args.get('recalculate', '').lower() == 'true'
+        summary = invoice_service.get_daily_summary(date, recalculate=recalculate)
         notify_daily_summary(socketio, date, summary)
         return jsonify(summary)
 
@@ -381,7 +382,8 @@ def create_firebase_invoices_bp(invoice_service, product_service, customer_servi
         month = request.args.get('month')
         if not year or not month:
             return jsonify({"status": "error", "message": "year and month are required"}), 400
-        summary = invoice_service.get_monthly_summary(year, month)
+        recalculate = request.args.get('recalculate', '').lower() == 'true'
+        summary = invoice_service.get_monthly_summary(year, month, recalculate=recalculate)
         notify_monthly_summary(socketio, year, month, summary)
         return jsonify(summary)
 
@@ -391,7 +393,8 @@ def create_firebase_invoices_bp(invoice_service, product_service, customer_servi
         year = request.args.get('year')
         if not year:
             return jsonify({"status": "error", "message": "year is required"}), 400
-        summary = invoice_service.get_yearly_summary(year)
+        recalculate = request.args.get('recalculate', '').lower() == 'true'
+        summary = invoice_service.get_yearly_summary(year, recalculate=recalculate)
         notify_yearly_summary(socketio, year, summary)
         return jsonify(summary)
 
