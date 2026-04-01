@@ -157,6 +157,8 @@ class FirestoreInvoiceService:
             "kvCost": direction * totals.get("kvCost", 0),
             "kvProfit": direction * totals.get("kvProfit", 0),
             "kvVat": direction * totals.get("kvVat", 0),
+            "kvVatInput": direction * totals.get("kvVatInput", 0),
+            "kvVatPayable": direction * totals.get("kvVatPayable", 0),
             "nvRevenue": direction * totals.get("nvRevenue", 0),
             "nvCost": direction * totals.get("nvCost", 0),
             "nvProfit": direction * totals.get("nvProfit", 0),
