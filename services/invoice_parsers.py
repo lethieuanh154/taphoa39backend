@@ -240,6 +240,38 @@ class TaxInvoiceXMLParser:
                         return child.text.strip()
                 return ''
 
+            # Helper để tìm giá trị trong TTKhac section của một element
+            def find_in_ttkhac(parent, *field_names):
+                """
+                Tìm giá trị trong TTKhac/TTin của parent element.
+                TTKhac chứa các TTin, mỗi TTin có TTruong (tên field) và DLieu (giá trị).
+
+                Ví dụ XML:
+                <TTKhac>
+                    <TTin><TTruong>VATAmount</TTruong><DLieu>27439.0</DLieu></TTin>
+                    <TTin><TTruong>Amount</TTruong><DLieu>370439.0</DLieu></TTin>
+                </TTKhac>
+                """
+                for child in parent:
+                    child_tag = child.tag.split('}')[-1] if '}' in child.tag else child.tag
+                    if child_tag == 'TTKhac':
+                        for ttin in child:
+                            ttin_tag = ttin.tag.split('}')[-1] if '}' in ttin.tag else ttin.tag
+                            if ttin_tag != 'TTin':
+                                continue
+                            ttruong_el = None
+                            dlieu_el = None
+                            for sub in ttin:
+                                sub_tag = sub.tag.split('}')[-1] if '}' in sub.tag else sub.tag
+                                if sub_tag == 'TTruong':
+                                    ttruong_el = sub
+                                elif sub_tag == 'DLieu':
+                                    dlieu_el = sub
+                            if ttruong_el is not None and ttruong_el.text and dlieu_el is not None and dlieu_el.text:
+                                if ttruong_el.text.strip() in field_names:
+                                    return dlieu_el.text.strip()
+                return ''
+
             # ================================================================
             # 1. SỐ HÓA ĐƠN - tìm trong TTChung trước
             # ================================================================
@@ -486,7 +518,21 @@ class TaxInvoiceXMLParser:
                     # Lấy thành tiền
                     item_amount = TaxInvoiceXMLParser._parse_amount(find_direct_child_text(hhdv_element, 'ThTien', 'ThanhTien'))
 
+                    # Lấy thuế per-item: ưu tiên TThue direct child, fallback TTKhac/VATAmount
                     item_tax_amount = TaxInvoiceXMLParser._parse_amount(find_direct_child_text(hhdv_element, 'TThue', 'TienThue'))
+                    if item_tax_amount == 0:
+                        item_tax_amount = TaxInvoiceXMLParser._parse_amount(find_in_ttkhac(hhdv_element, 'VATAmount', 'VATAmountOC', 'TongTien_Thue', 'Tiền thuế dòng (Tiền thuế GTGT)'))
+
+                    # Lấy thành tiền sau thuế:
+                    # - TTKhac/Amount có thể = sau thuế (dạng A2: Vinamilk) hoặc = trước thuế (dạng B: MISA)
+                    # - Chỉ dùng TTKhac/Amount nếu nó > ThTien (chứng tỏ đã bao gồm thuế)
+                    # - Nếu không, tự tính amount + taxAmount
+                    ttkhac_amount = TaxInvoiceXMLParser._parse_amount(find_in_ttkhac(hhdv_element, 'Amount', 'AmountOC', 'TongTien_CoThue', 'Thành tiền thanh toán của hàng hóa'))
+                    if ttkhac_amount > item_amount:
+                        item_amount_after_tax = ttkhac_amount
+                    else:
+                        item_amount_after_tax = item_amount + item_tax_amount
+
                     item = {
                         'stt': stt,
                         'name': item_name,  # Thống nhất dùng 'name' như internalData
@@ -497,7 +543,7 @@ class TaxInvoiceXMLParser:
                         'amount': item_amount,
                         'totalAmount': item_amount,  # Backup cho template fallback
                         'taxAmount': item_tax_amount,
-                        'amountAfterTax': item_amount + item_tax_amount,
+                        'amountAfterTax': item_amount_after_tax,
                         'vatRate': find_direct_child_text(hhdv_element, 'TSuat', 'ThueSuat')
                     }
                     invoice['items'].append(item)

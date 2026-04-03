@@ -83,6 +83,29 @@ class TaxInvoiceXMLParser:
             return default
 
     @staticmethod
+    def _get_ttkhac_float(element: ET.Element, *field_names) -> float:
+        """
+        Tìm giá trị số trong TTKhac/TTin của element.
+        TTKhac chứa các TTin, mỗi TTin có TTruong (tên field) và DLieu (giá trị).
+        """
+        for child in element:
+            tag = child.tag.split('}')[-1] if '}' in child.tag else child.tag
+            if tag == 'TTKhac':
+                for ttin in child:
+                    ttin_tag = ttin.tag.split('}')[-1] if '}' in ttin.tag else ttin.tag
+                    if ttin_tag != 'TTin':
+                        continue
+                    ttruong_el = ttin.find('TTruong')
+                    dlieu_el = ttin.find('DLieu')
+                    if ttruong_el is not None and ttruong_el.text and dlieu_el is not None and dlieu_el.text:
+                        if ttruong_el.text.strip() in field_names:
+                            try:
+                                return float(dlieu_el.text.strip())
+                            except (ValueError, TypeError):
+                                return 0.0
+        return 0.0
+
+    @staticmethod
     def _extract_invoice_data(inv_tag: ET.Element, root: ET.Element) -> Dict:
         """Extracts data from a single invoice XML element."""
         
@@ -119,7 +142,18 @@ class TaxInvoiceXMLParser:
         item_tags = inv_tag.findall('.//HHDVu') # Hang hoa, dich vu
         for item_tag in item_tags:
             amount = TaxInvoiceXMLParser._get_float(item_tag, 'ThTien')
+            # Lấy thuế per-item: ưu tiên TThue direct tag, fallback TTKhac/VATAmount
             tax_amount = TaxInvoiceXMLParser._get_float(item_tag, 'TThue')
+            if tax_amount == 0:
+                tax_amount = TaxInvoiceXMLParser._get_ttkhac_float(item_tag, 'VATAmount', 'VATAmountOC', 'TongTien_Thue', 'Tiền thuế dòng (Tiền thuế GTGT)')
+            # Lấy thành tiền sau thuế:
+            # - TTKhac/Amount có thể = sau thuế (dạng A2) hoặc = trước thuế (dạng B: MISA)
+            # - Chỉ dùng nếu > ThTien (chứng tỏ đã bao gồm thuế)
+            ttkhac_amount = TaxInvoiceXMLParser._get_ttkhac_float(item_tag, 'Amount', 'AmountOC', 'TongTien_CoThue', 'Thành tiền thanh toán của hàng hóa')
+            if ttkhac_amount > amount:
+                amount_after_tax = ttkhac_amount
+            else:
+                amount_after_tax = amount + tax_amount
             item = {
                 'name': TaxInvoiceXMLParser._get_text(item_tag, 'THHDVu'),
                 'unit': TaxInvoiceXMLParser._get_text(item_tag, 'DVTinh'),
@@ -127,7 +161,7 @@ class TaxInvoiceXMLParser:
                 'unitPrice': TaxInvoiceXMLParser._get_float(item_tag, 'DGia'),
                 'total': amount,
                 'taxAmount': tax_amount,
-                'amountAfterTax': amount + tax_amount,
+                'amountAfterTax': amount_after_tax,
             }
             items.append(item)
 
