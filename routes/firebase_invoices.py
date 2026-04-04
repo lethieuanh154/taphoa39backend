@@ -274,7 +274,7 @@ def create_firebase_invoices_bp(invoice_service, product_service, customer_servi
                     current_onhand = to_number(product_doc.get('OnHand'))
                     if current_onhand is None:
                         continue
-                    new_onhand = int(current_onhand) + quantity
+                    new_onhand = round(float(current_onhand) + quantity, 1)
                     try:
                         product_service.update_product(pid_str, {"OnHand": new_onhand})
                         restocked_updates.append({"Id": pid_str, "OnHand": new_onhand, "updateType": "OnHand"})
