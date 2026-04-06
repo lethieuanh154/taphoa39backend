@@ -447,7 +447,7 @@ def create_firebase_invoices_bp(invoice_service, product_service, customer_servi
                         }
                     product_sales[product_id]['totalProfit'] += total_profit
                     product_sales[product_id]['totalQuantity'] += quantity
-        top_products = sorted(product_sales.values(), key=lambda x: x['totalProfit'], reverse=True)[:20]
+        top_products = sorted(product_sales.values(), key=lambda x: x['totalProfit'], reverse=True)[:50]
         filters = {}
         if date:
             filters['date'] = date

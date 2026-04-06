@@ -652,8 +652,8 @@ class FirestoreInvoiceService:
                     product_sales[product_id]['totalProfit'] += total_profit
                     product_sales[product_id]['totalQuantity'] += quantity
 
-        # Sắp xếp theo lợi nhuận giảm dần và lấy top 20
-        top_products = sorted(product_sales.values(), key=lambda x: x['totalProfit'], reverse=True)[:20]
+        # Sắp xếp theo lợi nhuận giảm dần và lấy top 50
+        top_products = sorted(product_sales.values(), key=lambda x: x['totalProfit'], reverse=True)[:50]
 
         # Lưu vào Firestore
         summary_ref = db.collection('TopProductsSummary').document(doc_id)
