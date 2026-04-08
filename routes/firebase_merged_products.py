@@ -158,4 +158,22 @@ def create_firebase_merged_products_bp(socketio=None) -> Blueprint:
 
         return jsonify(result)
 
+    # --- Auto-Merge History Routes ---
+
+    @bp.route("/history", methods=["GET"])
+    def get_auto_merge_history():
+        """Get all auto-merge history entries from Firestore."""
+        result = service.get_auto_merge_history()
+        return jsonify(result)
+
+    @bp.route("/history/add", methods=["POST"])
+    def add_auto_merge_history():
+        """Add new auto-merge history entries."""
+        data = request.get_json()
+        entries = data.get("entries", [])
+        modified_by = data.get("modifiedBy", None)
+
+        result = service.add_auto_merge_history(entries, modified_by)
+        return jsonify(result)
+
     return bp

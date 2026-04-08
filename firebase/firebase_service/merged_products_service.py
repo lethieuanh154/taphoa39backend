@@ -183,3 +183,71 @@ class MergedProductsService:
         Clear all merged products.
         """
         return self.save_merged_products([], modified_by)
+
+    # --- Auto-Merge History ---
+
+    HISTORY_DOC_ID = "auto_merge_history"
+    MAX_HISTORY_ENTRIES = 500
+
+    def get_auto_merge_history(self) -> Dict[str, Any]:
+        """Get all auto-merge history entries from Firestore."""
+        try:
+            doc_ref = self.db.collection(self.COLLECTION_NAME).document(self.HISTORY_DOC_ID)
+            doc = doc_ref.get()
+
+            if doc.exists:
+                data = doc.to_dict()
+                return {
+                    "success": True,
+                    "entries": data.get("entries", []),
+                    "lastModified": data.get("lastModified", None)
+                }
+            else:
+                return {
+                    "success": True,
+                    "entries": [],
+                    "lastModified": None
+                }
+        except Exception as e:
+            print(f"❌ Error getting auto-merge history: {e}")
+            return {
+                "success": False,
+                "error": str(e),
+                "entries": []
+            }
+
+    def add_auto_merge_history(
+        self,
+        entries: List[Dict[str, Any]],
+        modified_by: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Append new history entries to Firestore. Keeps max 500 entries."""
+        try:
+            current = self.get_auto_merge_history()
+            all_entries = current.get("entries", [])
+            all_entries.extend(entries)
+
+            # Keep only the most recent entries (sort by timestamp desc, keep first N)
+            all_entries.sort(key=lambda e: e.get("timestamp", ""), reverse=True)
+            all_entries = all_entries[:self.MAX_HISTORY_ENTRIES]
+
+            doc_ref = self.db.collection(self.COLLECTION_NAME).document(self.HISTORY_DOC_ID)
+            data = {
+                "entries": all_entries,
+                "lastModified": datetime.utcnow().isoformat(),
+                "modifiedBy": modified_by or "unknown"
+            }
+            doc_ref.set(data)
+
+            print(f"✅ Saved {len(entries)} new history entries (total: {len(all_entries)})")
+            return {
+                "success": True,
+                "count": len(all_entries),
+                "lastModified": data["lastModified"]
+            }
+        except Exception as e:
+            print(f"❌ Error adding auto-merge history: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
