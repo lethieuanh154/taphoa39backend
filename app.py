@@ -62,8 +62,8 @@ def _build_app() -> Flask:
         engineio_logger=False,
         ping_timeout=60,
         ping_interval=25,
-        # Allow both polling and websocket, but frontend will use polling only
-        transports=['polling', 'websocket']
+        # Only allow polling - Werkzeug dev server doesn't support WebSocket in threading mode
+        transports=['polling']
     )
 
     # Register Socket.IO namespaces so clients can connect and receive events
