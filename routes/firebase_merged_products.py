@@ -176,4 +176,14 @@ def create_firebase_merged_products_bp(socketio=None) -> Blueprint:
         result = service.add_auto_merge_history(entries, modified_by)
         return jsonify(result)
 
+    @bp.route("/history/mark-returned", methods=["POST"])
+    def mark_history_returned():
+        """Mark auto-merge history entries as returned."""
+        data = request.get_json()
+        entry_ids = data.get("entryIds", [])
+        modified_by = data.get("modifiedBy", None)
+
+        result = service.mark_history_returned(entry_ids, modified_by)
+        return jsonify(result)
+
     return bp

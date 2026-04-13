@@ -251,3 +251,44 @@ class MergedProductsService:
                 "success": False,
                 "error": str(e)
             }
+
+    def mark_history_returned(
+        self,
+        entry_ids: List[str],
+        modified_by: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Mark specific auto-merge history entries as returned in Firestore."""
+        if not entry_ids:
+            return {"success": True, "updated": 0}
+
+        try:
+            current = self.get_auto_merge_history()
+            all_entries = current.get("entries", [])
+
+            updated_count = 0
+            ids_set = set(entry_ids)
+            for entry in all_entries:
+                if entry.get("id") in ids_set:
+                    entry["returned"] = True
+                    updated_count += 1
+
+            doc_ref = self.db.collection(self.COLLECTION_NAME).document(self.HISTORY_DOC_ID)
+            data = {
+                "entries": all_entries,
+                "lastModified": datetime.utcnow().isoformat(),
+                "modifiedBy": modified_by or "unknown"
+            }
+            doc_ref.set(data)
+
+            print(f"✅ Marked {updated_count}/{len(entry_ids)} history entries as returned")
+            return {
+                "success": True,
+                "updated": updated_count,
+                "lastModified": data["lastModified"]
+            }
+        except Exception as e:
+            print(f"❌ Error marking history returned: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
