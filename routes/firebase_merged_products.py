@@ -186,4 +186,14 @@ def create_firebase_merged_products_bp(socketio=None) -> Blueprint:
         result = service.mark_history_returned(entry_ids, modified_by)
         return jsonify(result)
 
+    @bp.route("/history/delete", methods=["DELETE"])
+    def delete_history_entries():
+        """Delete auto-merge history entries."""
+        data = request.get_json()
+        entry_ids = data.get("entryIds", [])
+        modified_by = data.get("modifiedBy", None)
+
+        result = service.delete_history_entries(entry_ids, modified_by)
+        return jsonify(result)
+
     return bp

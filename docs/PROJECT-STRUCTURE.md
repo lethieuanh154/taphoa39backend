@@ -49,6 +49,7 @@ TapHoa39BackEnd/
 │   ├── firebase_invoices.py        # /api/firebase/...invoices
 │   ├── firebase_employees.py       # /api/firebase/...employees
 │   ├── firebase_orders.py          # /api/firebase/...orders
+│   ├── firebase_merged_products.py  # /api/firebase/merged-products
 │   ├── firebase_websocket.py       # WebSocket handlers
 │   ├── invoice_processing.py       # /api/invoice/... (OCR/AI processing)
 │   ├── auth_routes.py              # /api/auth/...
@@ -107,6 +108,7 @@ Firebase Firestore / KiotViet API
 | `/api/firebase/` | firebase_invoices.py | Quản lý hóa đơn |
 | `/api/firebase/` | firebase_employees.py | Nhân viên, chấm công, lương |
 | `/api/firebase/` | firebase_orders.py | Quản lý đơn hàng |
+| `/api/firebase/merged-products` | firebase_merged_products.py | Merged products, auto-merge history (GET/POST/DELETE) |
 | `/api/kiotviet/` | kiotviet_routes.py | Đồng bộ KiotViet |
 | `/api/sync/` | sync_routes.py | Data synchronization |
 | `/api/auth/` | auth_routes.py | Authentication |

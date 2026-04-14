@@ -292,3 +292,42 @@ class MergedProductsService:
                 "success": False,
                 "error": str(e)
             }
+
+    def delete_history_entries(
+        self,
+        entry_ids: List[str],
+        modified_by: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Delete specific auto-merge history entries from Firestore."""
+        if not entry_ids:
+            return {"success": True, "deleted": 0}
+
+        try:
+            current = self.get_auto_merge_history()
+            all_entries = current.get("entries", [])
+
+            ids_set = set(entry_ids)
+            remaining = [e for e in all_entries if e.get("id") not in ids_set]
+            deleted_count = len(all_entries) - len(remaining)
+
+            doc_ref = self.db.collection(self.COLLECTION_NAME).document(self.HISTORY_DOC_ID)
+            data = {
+                "entries": remaining,
+                "lastModified": datetime.utcnow().isoformat(),
+                "modifiedBy": modified_by or "unknown"
+            }
+            doc_ref.set(data)
+
+            print(f"✅ Deleted {deleted_count}/{len(entry_ids)} history entries")
+            return {
+                "success": True,
+                "deleted": deleted_count,
+                "remaining": len(remaining),
+                "lastModified": data["lastModified"]
+            }
+        except Exception as e:
+            print(f"❌ Error deleting history entries: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
