@@ -760,6 +760,34 @@ class FirestoreCustomerService:
             self.cache.set(cache_key, invoices, ttl=120)
         return invoices
 
+    def clear_customer_debt(self, customer_id):
+        if customer_id is None:
+            return {"updated": False, "reason": "customer_id_required"}
+
+        normalized_id = str(customer_id).strip()
+        if not normalized_id:
+            return {"updated": False, "reason": "customer_id_invalid"}
+
+        doc_ref = self.customers_ref.document(normalized_id)
+        snapshot = doc_ref.get()
+        if not snapshot.exists:
+            return {"updated": False, "reason": "not_found", "customer_id": normalized_id}
+
+        try:
+            doc_ref.update({"Debt": 0})
+        except Exception as exc:
+            return {"updated": False, "reason": str(exc), "customer_id": normalized_id}
+
+        data = snapshot.to_dict() or {}
+        data["Debt"] = 0
+        data["id"] = normalized_id
+
+        if self.cache:
+            self.cache.invalidate("all_customers")
+            self.cache.invalidate(normalized_id)
+
+        return {"updated": True, "customer_id": normalized_id, "customer": data}
+
     def invalidate_invoices_cache(self, customer_ids):
         if not self.cache:
             return

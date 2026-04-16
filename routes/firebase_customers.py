@@ -375,6 +375,22 @@ def create_firebase_customers_bp(customer_service, socketio) -> Blueprint:
         status_code = 404 if result.get("reason") == "not_found" else 400
         return jsonify(result), status_code
 
+    @bp.route("/customers/<customer_id>/clear_debt", methods=["POST"])
+    @handle_api_errors
+    def clear_customer_debt(customer_id: str):
+        if not customer_id:
+            return jsonify({"status": "error", "message": "Customer ID is required"}), 400
+
+        result = customer_service.clear_customer_debt(customer_id)
+        if result.get("updated"):
+            broadcast_customer_updates(socketio, [
+                {"applied": True, "customer": result.get("customer")}
+            ])
+            return jsonify({"status": "ok", **result})
+
+        status_code = 404 if result.get("reason") == "not_found" else 400
+        return jsonify(result), status_code
+
     @bp.route("/customers/fetch", methods=["POST"])
     def fetch_customers_changed():
         """
