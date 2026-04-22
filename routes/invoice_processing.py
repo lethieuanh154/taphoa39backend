@@ -104,38 +104,30 @@ def create_invoice_processing_bp() -> Blueprint:
 
         logger.info(f"Processing file: {file.filename} ({file_size / 1024:.1f}KB)")
 
-        # STEP 1: Gemini Flash - Read file with confidence scoring
-        flash_invoice, flash_duration, confidence, low_fields = ai_extractor.extract_from_image_with_flash(
+        # STEP 1a: MarkItDown → Gemini Flash (text-based, faster + cheaper)
+        flash_invoice, flash_duration, confidence, low_fields = ai_extractor.extract_from_pdf_with_markitdown(
             file_bytes,
             file.filename,
-            processing_log,
-            use_image_prompt=False
+            processing_log
         )
 
+        # STEP 1b: Fallback to Gemini Vision if MarkItDown fails (e.g. scanned PDF)
         if flash_invoice is None:
-            logger.warning("Flash extraction failed, trying Pro...")
-            pro_invoice, pro_duration, confidence, low_fields = ai_extractor.recheck_with_pro(
+            logger.info("MarkItDown failed, falling back to Gemini Vision...")
+            flash_invoice, flash_duration, confidence, low_fields = ai_extractor.extract_from_image_with_flash(
                 file_bytes,
                 file.filename,
-                None,
-                [],
-                processing_log
-            ) if False else (None, 0, 0.0, [])
-
-            # Fallback to legacy PDF method if new method fails
-            flash_invoice, flash_duration = ai_extractor.extract_from_pdf_with_flash(
-                file_bytes, processing_log
+                processing_log,
+                use_image_prompt=False
             )
-            confidence = 0.5
-            low_fields = []
 
-            if flash_invoice is None:
-                return jsonify(ProcessingResult(
-                    success=False,
-                    error="Không thể trích xuất thông tin từ hóa đơn",
-                    processing_time_ms=int((time.time() - total_start_time) * 1000),
-                    processing_log=processing_log
-                ).model_dump()), 500
+        if flash_invoice is None:
+            return jsonify(ProcessingResult(
+                success=False,
+                error="Không thể trích xuất thông tin từ hóa đơn",
+                processing_time_ms=int((time.time() - total_start_time) * 1000),
+                processing_log=processing_log
+            ).model_dump()), 500
 
         # STEP 2: Validate
         validate_log = ProcessingLogEntry(

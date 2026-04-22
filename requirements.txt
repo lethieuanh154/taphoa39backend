@@ -35,3 +35,6 @@ google-genai>=1.0.0
 python-multipart>=0.0.6
 gunicorn>=21.0.0
 bcrypt>=4.1.0
+
+# MarkItDown - PDF to Markdown conversion (Microsoft)
+markitdown[pdf]>=0.1.0

@@ -429,6 +429,91 @@ Hãy đọc lại PDF và trích xuất chính xác."""
             logger.exception(f"Pro PDF extraction failed: {e}")
             return None, elapsed
 
+    def extract_from_pdf_with_markitdown(
+        self,
+        pdf_bytes: bytes,
+        filename: str,
+        processing_log: List[ProcessingLogEntry]
+    ) -> Tuple[Optional[ProcessedInvoice], int, float, List[str]]:
+        """
+        Extract invoice data from PDF using MarkItDown (PDF → Markdown text) + Gemini Flash (text).
+        Returns (None, ...) if MarkItDown fails — caller should fallback to Gemini Vision.
+        """
+        self._ensure_initialized()
+
+        log_entry = ProcessingLogEntry(
+            step="markitdown",
+            status="processing",
+            message="Đang đọc PDF với MarkItDown..."
+        )
+        processing_log.append(log_entry)
+
+        start_time = time.time()
+
+        try:
+            from markitdown import MarkItDown
+            import io
+
+            ext = "." + filename.rsplit(".", 1)[-1].lower() if "." in filename else ".pdf"
+            md_converter = MarkItDown()
+            result = md_converter.convert_stream(io.BytesIO(pdf_bytes), file_extension=ext)
+            markdown_text = result.text_content
+
+            if not markdown_text or len(markdown_text.strip()) < 50:
+                elapsed = int((time.time() - start_time) * 1000)
+                log_entry.status = "error"
+                log_entry.message = "MarkItDown: không trích xuất được text (có thể là PDF scan)"
+                log_entry.duration_ms = elapsed
+                logger.warning("MarkItDown returned empty/short text, caller should fallback to Vision")
+                return None, elapsed, 0.0, []
+
+            logger.info(f"MarkItDown extracted {len(markdown_text)} chars from {filename}")
+            log_entry.message = f"MarkItDown OK ({len(markdown_text)} ký tự), đang gọi Gemini Flash..."
+
+            prompt = INVOICE_EXTRACTION_PROMPT.format(ocr_text=markdown_text)
+            response = self._client.models.generate_content(
+                model=self._flash_model_name,
+                contents=prompt,
+                config=self._generation_config
+            )
+            response_text = response.text.strip()
+
+            invoice = self._parse_response(response_text)
+            confidence, low_fields = self._calculate_confidence(invoice)
+
+            elapsed = int((time.time() - start_time) * 1000)
+
+            if invoice is None:
+                log_entry.status = "error"
+                log_entry.message = "Không thể parse JSON từ Gemini response"
+                log_entry.duration_ms = elapsed
+                log_entry.details = f"Response: {response_text[:200]}..."
+                return None, elapsed, 0.0, []
+
+            log_entry.status = "completed"
+            log_entry.message = f"MarkItDown + Flash hoàn tất (confidence: {confidence:.0%})"
+            log_entry.duration_ms = elapsed
+            log_entry.details = f"Extracted {len(invoice.items)} items, confidence={confidence}"
+
+            logger.info(f"MarkItDown + Flash completed in {elapsed}ms, confidence={confidence}")
+            return invoice, elapsed, confidence, low_fields
+
+        except ImportError:
+            elapsed = int((time.time() - start_time) * 1000)
+            log_entry.status = "error"
+            log_entry.message = "MarkItDown chưa được cài đặt (pip install markitdown[pdf])"
+            log_entry.duration_ms = elapsed
+            logger.warning("MarkItDown not installed, falling back to Gemini Vision")
+            return None, elapsed, 0.0, []
+
+        except Exception as e:
+            elapsed = int((time.time() - start_time) * 1000)
+            log_entry.status = "error"
+            log_entry.message = f"Lỗi MarkItDown: {str(e)}"
+            log_entry.duration_ms = elapsed
+            logger.exception(f"MarkItDown extraction failed: {e}")
+            return None, elapsed, 0.0, []
+
     def _get_mime_type(self, file_bytes: bytes, filename: str = "") -> str:
         """Detect MIME type from file extension or magic bytes"""
         ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
