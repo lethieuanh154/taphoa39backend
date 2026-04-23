@@ -117,4 +117,88 @@ def create_kiotviet_routes_bp() -> Blueprint:
             return jsonify({"images": images, "total": data.get("Total", 0), "productId": product_id})
         return jsonify({"images": [], "total": 0, "productId": product_id})
 
+    @bp.route("/products/addmany", methods=["POST"])
+    @handle_api_errors
+    def add_original_products():
+        """Create new products in KiotViet via addmany API."""
+        import json as _json
+        from FromKiotViet.get_authorization import auth_token as _auth
+
+        data = request.get_json()
+        name = data.get("name", "")
+        category_id = data.get("categoryId", 0)
+        trademark_id = data.get("trademarkId", None)
+        tax_rate = int(data.get("taxRate", 0))
+        units = data.get("units", [])
+        description = data.get("description", "")
+        order_template = data.get("orderTemplate", "")
+
+        if not name or not units:
+            return jsonify({"error": "name and units are required"}), 400
+
+        tax_id_map = {0: 1, 5: 2, 8: 3, 10: 4}
+        tax_id = tax_id_map.get(tax_rate, 1)
+
+        def price_include_vat(price):
+            if tax_rate == 0:
+                return float(price)
+            return round(float(price) / (1 + tax_rate / 100), 2)
+
+        base_units = [u for u in units if u.get("isBase")]
+        child_units = [u for u in units if not u.get("isBase")]
+
+        if not base_units:
+            return jsonify({"error": "Missing base unit"}), 400
+        base = base_units[0]
+
+        def repeat_guarantee():
+            return {"Uuid": -1, "TimeType": 2, "ProductId": 0, "RetailerId": 0, "Description": "Toàn bộ sản phẩm"}
+
+        def base_fields(unit, done_created, product_units, max_quantity):
+            return {
+                "Id": 0, "ProductType": 2, "CategoryId": category_id, "CategoryName": "",
+                "isActive": False, "HasVariants": True, "VariantCount": 0, "AllowsSale": True,
+                "isDeleted": False, "Code": "", "BasePrice": unit["price"], "Cost": unit["cost"],
+                "LatestPurchasePrice": 0, "OnHand": unit.get("onHand", 0), "OnOrder": 0,
+                "MinQuantity": 0, "MaxQuantity": max_quantity, "CustomId": 0, "CustomValue": 0,
+                "MasterProductId": 0, "Unit": unit["unit"], "ConversionValue": unit.get("conversion", 1),
+                "OrderTemplate": order_template, "IsLotSerialControl": False, "IsRewardPoint": True,
+                "FormulaCount": 0, "Barcode": "", "PageSize": 0, "TaxId": tax_id,
+                "PriceIncludeVat": price_include_vat(unit["price"]), "Type4": 2, "oldBaseUnit": "",
+                "Description": description, "GenuineGuarantees": [], "StoreGuarantees": [],
+                "RepeatGuarantee": repeat_guarantee(), "ProductFormulas": [], "Name": name,
+                "ProductAttributes": [], "isDraft": False, "showEditButton": True, "IsNewUnit": True,
+                "ProductUnits": product_units, "ProductUnit": [], "doneCreated": done_created,
+                "ListPriceBookDetail": [], "FullName": name, "MasterCode": "",
+                "CompareFullName": f"{name} ({unit['unit']})", "ListUnitPriceBookDetail": None if done_created is False else [],
+                "RewardPoint": 0, "MasterUnitIdClone": None, "TradeMarkId": trademark_id,
+                "ProductFormulasOld": [], "ProductImages": []
+            }
+
+        def build_unit_ref(child, done):
+            return {
+                "Id": 0, "Unit": child["unit"], "Code": "", "BasePrice": child["price"],
+                "AllowsSale": True, "PriceIncludeVat": price_include_vat(child["price"]),
+                "isDraft": False, "showEditButton": True, "IsNewUnit": True,
+                "ConversionValue": child.get("conversion", 1), "doneCreated": done
+            }
+
+        products_list = [base_fields(base, False, [], 999999999)]
+
+        for i, child in enumerate(child_units):
+            pus = [build_unit_ref(child_units[j], done=(j < i)) for j in range(i + 1)]
+            products_list.append(base_fields(child, True, pus, 0))
+
+        kv_url = "https://api-man1.kiotviet.vn/api/products/addmany?apiversion=5"
+        headers = {"Authorization": _auth, "branchid": LatestBranchId, "retailer": retailer}
+        branch_info = [{"Id": int(LatestBranchId), "Name": "Chi nhánh trung tâm"}]
+        payload = {
+            "ListProductsString": _json.dumps(products_list, ensure_ascii=False),
+            "CloneProductId": "0",
+            "BranchForProductCostss": _json.dumps(branch_info, ensure_ascii=False)
+        }
+
+        resp = requests.post(kv_url, headers=headers, data=payload, timeout=30)
+        return jsonify(resp.json()), resp.status_code
+
     return bp
