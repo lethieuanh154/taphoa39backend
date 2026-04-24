@@ -43,7 +43,7 @@ from routes.firebase_promotions import create_firebase_promotions_bp
 
 def _build_app() -> Flask:
     app = Flask(__name__)
-    CORS(app, resources={r"/*": {"origins": "*"}})
+    CORS(app)
 
     product_service = FirestoreProductService(Cache())
     invoice_service = FirestoreInvoiceService(Cache())

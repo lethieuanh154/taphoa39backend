@@ -126,6 +126,7 @@ def create_kiotviet_routes_bp() -> Blueprint:
 
         data = request.get_json()
         name = data.get("name", "")
+        code = data.get("code", "")
         category_id = data.get("categoryId", 0)
         trademark_id = data.get("trademarkId", None)
         tax_rate = int(data.get("taxRate", 0))
@@ -158,7 +159,7 @@ def create_kiotviet_routes_bp() -> Blueprint:
             return {
                 "Id": 0, "ProductType": 2, "CategoryId": category_id, "CategoryName": "",
                 "isActive": False, "HasVariants": True, "VariantCount": 0, "AllowsSale": True,
-                "isDeleted": False, "Code": "", "BasePrice": unit["price"], "Cost": unit["cost"],
+                "isDeleted": False, "Code": code, "BasePrice": unit["price"], "Cost": unit["cost"],
                 "LatestPurchasePrice": 0, "OnHand": unit.get("onHand", 0), "OnOrder": 0,
                 "MinQuantity": 0, "MaxQuantity": max_quantity, "CustomId": 0, "CustomValue": 0,
                 "MasterProductId": 0, "Unit": unit["unit"], "ConversionValue": unit.get("conversion", 1),
