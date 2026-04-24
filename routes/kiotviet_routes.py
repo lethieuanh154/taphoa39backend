@@ -155,11 +155,11 @@ def create_kiotviet_routes_bp() -> Blueprint:
         def repeat_guarantee():
             return {"Uuid": -1, "TimeType": 2, "ProductId": 0, "RetailerId": 0, "Description": "Toàn bộ sản phẩm"}
 
-        def base_fields(unit, done_created, product_units, max_quantity):
+        def base_fields(unit, done_created, product_units, max_quantity, unit_code=""):
             return {
                 "Id": 0, "ProductType": 2, "CategoryId": category_id, "CategoryName": "",
-                "isActive": False, "HasVariants": True, "VariantCount": 0, "AllowsSale": True,
-                "isDeleted": False, "Code": code, "BasePrice": unit["price"], "Cost": unit["cost"],
+                "isActive": False, "HasVariants": False, "VariantCount": 0, "AllowsSale": True,
+                "isDeleted": False, "Code": unit_code or code, "BasePrice": unit["price"], "Cost": unit["cost"],
                 "LatestPurchasePrice": 0, "OnHand": unit.get("onHand", 0), "OnOrder": 0,
                 "MinQuantity": 0, "MaxQuantity": max_quantity, "CustomId": 0, "CustomValue": 0,
                 "MasterProductId": 0, "Unit": unit["unit"], "ConversionValue": unit.get("conversion", 1),
@@ -176,19 +176,20 @@ def create_kiotviet_routes_bp() -> Blueprint:
                 "ProductFormulasOld": [], "ProductImages": []
             }
 
-        def build_unit_ref(child, done):
+        def build_unit_ref(child, done, child_code=""):
             return {
-                "Id": 0, "Unit": child["unit"], "Code": "", "BasePrice": child["price"],
+                "Id": 0, "Unit": child["unit"], "Code": child_code, "BasePrice": child["price"],
                 "AllowsSale": True, "PriceIncludeVat": price_include_vat(child["price"]),
                 "isDraft": False, "showEditButton": True, "IsNewUnit": True,
                 "ConversionValue": child.get("conversion", 1), "doneCreated": done
             }
 
-        products_list = [base_fields(base, False, [], 999999999)]
+        products_list = [base_fields(base, False, [], 999999999, unit_code=code)]
 
         for i, child in enumerate(child_units):
-            pus = [build_unit_ref(child_units[j], done=(j < i)) for j in range(i + 1)]
-            products_list.append(base_fields(child, True, pus, 0))
+            child_code = f"{code}-{i + 1}" if code else ""
+            pus = [build_unit_ref(child_units[j], done=(j < i), child_code=(f"{code}-{j + 1}" if code else "")) for j in range(i + 1)]
+            products_list.append(base_fields(child, True, pus, 0, unit_code=child_code))
 
         kv_url = "https://api-man1.kiotviet.vn/api/products/addmany?apiversion=5"
         headers = {"Authorization": _auth, "branchid": LatestBranchId, "retailer": retailer}
