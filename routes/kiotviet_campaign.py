@@ -53,14 +53,30 @@ def create_kiotviet_campaign_bp() -> Blueprint:
                 campaign_data = result.get("Data", result)
                 campaign_id = campaign_data.get("Id") or result.get("Id")
 
-                # Extract SalePromotionId from the campaign's child promotions
-                sale_promotions = campaign_data.get("SalePromotions", [])
-                sale_promotion_id = sale_promotions[0].get("Id") if sale_promotions else None
+                # POST response returns SalePromotions:[] — GET to fetch actual SalePromotion IDs
+                sale_promotion_id = None
+                sale_promotion_id_map = {}
+                if campaign_id:
+                    get_resp = requests.get(
+                        f"{KIOTVIET_PROMOTION_API}/{campaign_id}",
+                        headers=headers,
+                        timeout=30,
+                    )
+                    if get_resp.status_code in (200, 201):
+                        get_data = get_resp.json().get("Data", get_resp.json())
+                        sale_promotions = get_data.get("SalePromotions", [])
+                        sale_promotion_id = sale_promotions[0].get("Id") if sale_promotions else None
+                        sale_promotion_id_map = {
+                            str(sp.get("ReceivedProductId")): sp.get("Id")
+                            for sp in sale_promotions
+                            if sp.get("ReceivedProductId") and sp.get("Id")
+                        }
 
                 return jsonify({
                     "success": True,
                     "kiotVietCampaignId": campaign_id,
                     "kiotVietSalePromotionId": sale_promotion_id,
+                    "kiotVietSalePromotionIds": sale_promotion_id_map,
                     "kiotVietResponse": result,
                 }), 200
             else:
@@ -98,9 +114,14 @@ def create_kiotviet_campaign_bp() -> Blueprint:
                 result = resp.json()
                 campaign_data = result.get("Data", result)
 
-                # Extract SalePromotionId
+                # Extract SalePromotionId(s)
                 sale_promotions = campaign_data.get("SalePromotions", [])
                 sale_promotion_id = sale_promotions[0].get("Id") if sale_promotions else None
+                sale_promotion_id_map = {
+                    str(sp.get("ReceivedProductId")): sp.get("Id")
+                    for sp in sale_promotions
+                    if sp.get("ReceivedProductId") and sp.get("Id")
+                }
 
                 # Extract PromotionType
                 promotion_type = campaign_data.get("PromotionType")
@@ -109,6 +130,7 @@ def create_kiotviet_campaign_bp() -> Blueprint:
                     "success": True,
                     "kiotVietCampaignId": campaign_id,
                     "kiotVietSalePromotionId": sale_promotion_id,
+                    "kiotVietSalePromotionIds": sale_promotion_id_map,
                     "kiotVietPromotionType": promotion_type,
                 }), 200
             else:
@@ -176,54 +198,97 @@ def _build_campaign_payload(promo: dict) -> dict:
     else:
         promotion_type = 6  # Default: tặng hàng
 
-    # Build SalePromotion entry
-    sale_promo = {
-        "Type": 1,
-        "PromotionType": promotion_type,
-        "InvoiceValue": 0,
-        "PrereqProductId": int(promo.get("targetProductId", 0)),
-        "PrereqCategoryId": None,
-        "PrereqCategoryIds": None,
-        "PrereqQuantity": promo.get("minQuantity", 1),
-        "PrereqApplySameKind": False,
-        "ReceivedProductId": int(promo.get("giftProductId", 0)) if promo.get("giftProductId") else None,
-        "ReceivedCategoryId": None,
-        "ReceivedQuantity": promo.get("giftQuantity", 1),
-        "ReceivedApplySameKind": False,
-        "ReceivedVoucherCampaignIds": None,
-        "RetailerId": RETAILER_ID,
-        "GiftIsBuyProduct": False,
-        "PrereqProductCode": promo.get("targetProductCode", ""),
-        "PrereqProductIds": str(promo.get("targetProductId", "")),
-        "ReceivedProductCode": promo.get("giftProductCode", ""),
-        "ReceivedProductIds": str(promo.get("giftProductId", "")) if promo.get("giftProductId") else "",
-    }
+    # Handle multi-gift entries (new) or fallback to scalar (old data)
+    gift_entries = promo.get("giftItems", [])
+    if not gift_entries and promo.get("giftProductId"):
+        gift_entries = [{
+            "productId": str(promo.get("giftProductId", "")),
+            "code": promo.get("giftProductCode", ""),
+            "quantity": promo.get("giftQuantity", 1),
+        }]
 
-    # Discount fields (chỉ cho PromotionType 5)
-    if promotion_type == 5:
-        if has_percent and promo.get("discountPercent"):
-            sale_promo["ProductDiscount"] = None
-            sale_promo["ProductDiscountRatio"] = promo["discountPercent"]
-            sale_promo["ProductDiscountType"] = "%"
-        elif has_fixed and promo.get("discountAmount"):
-            sale_promo["ProductDiscount"] = promo["discountAmount"]
-            sale_promo["ProductDiscountRatio"] = None
-            sale_promo["ProductDiscountType"] = "VND"
-        else:
-            sale_promo["ProductDiscount"] = None
-            sale_promo["ProductDiscountRatio"] = None
-            sale_promo["ProductDiscountType"] = "%"
-        sale_promo["Discount"] = None
-        sale_promo["DiscountRatio"] = None
-        sale_promo["DiscountType"] = "%"
+    prereq_id = int(promo.get("targetProductId", 0))
+    prereq_code = promo.get("targetProductCode", "")
+    prereq_qty = promo.get("minQuantity", 1)
+    prereq_ids_str = str(promo.get("targetProductId", ""))
+
+    def _base_sale_promo(received_id, received_qty, received_code):
+        return {
+            "Type": 1,
+            "PromotionType": promotion_type,
+            "InvoiceValue": 0,
+            "PrereqProductId": prereq_id,
+            "PrereqCategoryId": None,
+            "PrereqCategoryIds": None,
+            "PrereqQuantity": prereq_qty,
+            "PrereqApplySameKind": False,
+            "ReceivedProductId": received_id,
+            "ReceivedCategoryId": None,
+            "ReceivedQuantity": received_qty,
+            "ReceivedApplySameKind": False,
+            "ReceivedVoucherCampaignIds": None,
+            "RetailerId": RETAILER_ID,
+            "GiftIsBuyProduct": False,
+            "PrereqProductCode": prereq_code,
+            "PrereqProductIds": prereq_ids_str,
+            "ReceivedProductCode": received_code,
+            "ReceivedProductCodes": received_code,
+            "ReceivedProductIds": str(received_id) if received_id else "",
+            "ProductDiscount": None,
+            "ProductDiscountRatio": None,
+            "ProductDiscountType": "%",
+            "Discount": None,
+            "DiscountRatio": None,
+            "DiscountType": "%",
+        }
+
+    if promotion_type == 6:
+        # Type 6 (gift): single SalePromotion, ReceivedEntity carries all gift products
+        all_pids = [int(e.get("productId", 0)) for e in gift_entries if e.get("productId")]
+        all_codes = [e.get("code", "") for e in gift_entries]
+        all_names = [e.get("name", "") for e in gift_entries]
+        all_qtys = [e.get("quantity", 1) for e in gift_entries]
+
+        last_pid = all_pids[-1] if all_pids else None
+        last_code = all_codes[-1] if all_codes else ""
+        last_name = all_names[-1] if all_names else ""
+        first_qty = all_qtys[0] if all_qtys else 1
+
+        received_ids_str = ",".join(str(p) for p in all_pids)
+        received_codes_str = ",".join(all_codes)
+
+        sp = _base_sale_promo(last_pid, first_qty, last_code)
+        sp["ReceivedProductIds"] = received_ids_str
+        sp["ReceivedProductCodes"] = received_codes_str
+        sp["ReceivedEntity"] = {
+            "Id": last_pid,
+            "Name": last_name,
+            "Code": last_code,
+            "Type": 3,
+            "ProductIds": received_ids_str,
+            "ProductCodes": received_codes_str,
+            "MasterProductIds": all_pids,
+            "CurrentProductSelected": last_pid,
+            "ApplySameKind": False,
+            "GiftIsBuyProduct": False,
+            "HasVariants": len(all_pids) > 1,
+            "HasRelated": len(all_pids) > 1,
+        }
+        sale_promotions = [sp]
     else:
-        # Gift type: không có discount
-        sale_promo["ProductDiscount"] = None
-        sale_promo["ProductDiscountRatio"] = None
-        sale_promo["ProductDiscountType"] = "%"
-        sale_promo["Discount"] = None
-        sale_promo["DiscountRatio"] = None
-        sale_promo["DiscountType"] = "%"
+        # Type 5 (buy A get B): single SalePromotion with discount
+        last_gift = gift_entries[-1] if gift_entries else {}
+        received_id = int(last_gift.get("productId", 0)) if last_gift.get("productId") else None
+        sp = _base_sale_promo(received_id, last_gift.get("quantity", 1), last_gift.get("code", ""))
+        if has_percent and promo.get("discountPercent"):
+            sp["ProductDiscount"] = None
+            sp["ProductDiscountRatio"] = promo["discountPercent"]
+            sp["ProductDiscountType"] = "%"
+        elif has_fixed and promo.get("discountAmount"):
+            sp["ProductDiscount"] = promo["discountAmount"]
+            sp["ProductDiscountRatio"] = None
+            sp["ProductDiscountType"] = "VND"
+        sale_promotions = [sp]
 
     return {
         "Campaign": {
@@ -239,7 +304,7 @@ def _build_campaign_payload(promo: dict) -> dict:
             "ForAllCusGroup": True,
             "Type": 1,
             "PromotionType": promotion_type,
-            "SalePromotions": [sale_promo],
+            "SalePromotions": sale_promotions,
             "IsFixedQuantity": False,
             "StartDate": promo.get("fromDate", ""),
             "EndDate": promo.get("toDate", ""),

@@ -183,30 +183,37 @@ class FirestorePromotionService:
                 has_fixed = promo.get("hasFixedDiscount", False) or promo.get("type") == "fixed_amount"
 
                 # Gift
-                if has_gift and promo.get("giftProductId"):
-                    gift_qty = promo.get("giftQuantity", 1)
-                    trigger_count = item_qty // min_qty
-                    total_gift_qty = gift_qty * trigger_count
-
-                    gift_items.append({
-                        "productId": str(promo.get("giftProductId", "")),
-                        "code": promo.get("giftProductCode", ""),
-                        "name": promo.get("giftProductName", ""),
-                        "quantity": total_gift_qty,
-                        "basePrice": promo.get("giftProductBasePrice", 0),
-                        "isGift": True,
-                        "promotionId": promo.get("id")
-                    })
-                    applied.append({
-                        "promotionId": promo.get("id"),
-                        "promotionName": promo.get("name", ""),
-                        "type": "gift",
-                        "targetProductId": item_pid,
-                        "giftProductId": str(promo.get("giftProductId", "")),
-                        "giftProductName": promo.get("giftProductName", ""),
-                        "giftQuantity": total_gift_qty,
-                        "discountAmount": 0
-                    })
+                if has_gift:
+                    raw_gift_entries = promo.get("giftItems", [])
+                    if not raw_gift_entries and promo.get("giftProductId"):
+                        raw_gift_entries = [{
+                            "productId": str(promo.get("giftProductId", "")),
+                            "code": promo.get("giftProductCode", ""),
+                            "name": promo.get("giftProductName", ""),
+                            "basePrice": promo.get("giftProductBasePrice", 0),
+                            "quantity": promo.get("giftQuantity", 1),
+                        }]
+                    if raw_gift_entries:
+                        trigger_count = item_qty // min_qty
+                        for entry in raw_gift_entries:
+                            total_gift_qty = entry.get("quantity", 1) * trigger_count
+                            gift_items.append({
+                                "productId": str(entry.get("productId", "")),
+                                "code": entry.get("code", ""),
+                                "name": entry.get("name", ""),
+                                "quantity": total_gift_qty,
+                                "basePrice": entry.get("basePrice", 0),
+                                "isGift": True,
+                                "promotionId": promo.get("id")
+                            })
+                        applied.append({
+                            "promotionId": promo.get("id"),
+                            "promotionName": promo.get("name", ""),
+                            "type": "gift",
+                            "targetProductId": item_pid,
+                            "giftItems": raw_gift_entries,
+                            "discountAmount": 0
+                        })
 
                 # Discount handling — phân biệt Type 2 vs Type 3
                 has_discount = has_pct or has_fixed

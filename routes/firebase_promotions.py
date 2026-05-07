@@ -91,8 +91,10 @@ def create_firebase_promotions_bp(promotion_service, product_service, socketio) 
             has_pct = legacy_type == "percentage"
             has_fixed = legacy_type == "fixed_amount"
 
-        if has_gift and not data.get("giftProductId"):
-            return jsonify({"status": "error", "message": "Tang kem requires giftProductId"}), 400
+        has_gift_items = bool(data.get("giftItems"))
+        has_gift_product = bool(data.get("giftProductId"))
+        if has_gift and not has_gift_items and not has_gift_product:
+            return jsonify({"status": "error", "message": "Tang kem requires giftProductId or giftItems"}), 400
 
         if has_pct and not data.get("discountPercent"):
             return jsonify({"status": "error", "message": "Giam % requires discountPercent"}), 400
