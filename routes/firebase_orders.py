@@ -94,6 +94,15 @@ def create_firebase_orders_bp(order_service, customer_service, socketio) -> Blue
         orders = order_service.get_orders_by_date(date)
         return jsonify(orders)
 
+    @bp.route("/orders/delivery-date", methods=["GET"])
+    @handle_api_errors
+    def get_orders_by_delivery_date():
+        date = request.args.get('date')
+        if not date:
+            return jsonify({"status": "error", "message": "date is required"}), 400
+        orders = order_service.get_orders_by_delivery_date(date)
+        return jsonify(orders)
+
     return bp
 
 

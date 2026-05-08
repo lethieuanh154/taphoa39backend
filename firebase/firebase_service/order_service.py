@@ -58,6 +58,17 @@ class FirestoreorderService:
         except Exception as e:
             raise Exception(f"Error getting orders by date: {str(e)}")
 
+    def get_orders_by_delivery_date(self, date):
+        """
+        Get delivery orders for a specific desiredDeliveryDate.
+        Expected date format: YYYY-MM-DD (e.g., "2026-05-07")
+        """
+        try:
+            docs = self.orders_ref.where('desiredDeliveryDate', '==', date).stream()
+            return [doc.to_dict() | {"id": doc.id} for doc in docs]
+        except Exception as e:
+            raise Exception(f"Error getting orders by delivery date: {str(e)}")
+
     def get_orders_by_status(self, status: str):
         """
         Get orders by status

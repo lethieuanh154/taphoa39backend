@@ -29,6 +29,7 @@ from routes.supplies_invoice_routes import create_supplies_invoice_routes
 from routes.invoice_routes_v2 import create_invoice_routes_v2
 from routes.output_invoice_routes_v2 import create_output_invoice_routes_v2
 from routes.hddt_proxy_routes import bp as hddt_proxy_bp
+from routes.osrm_proxy_routes import bp as osrm_proxy_bp
 from routes.product_history_routes import bp as product_history_bp
 from routes.firebase_merged_products import create_firebase_merged_products_bp
 from routes.customer_registration import create_customer_registration_bp
@@ -106,6 +107,9 @@ def _build_app() -> Flask:
     # Chat messaging
     chat_service = FirestoreChatService()
     app.register_blueprint(create_chat_routes_bp(chat_service, socketio, customer_service))
+
+    # OSRM routing proxy (avoids CORS from browser)
+    app.register_blueprint(osrm_proxy_bp)
 
     # Merged products audit (lightweight backup)
     audit_bp, audit_service = create_merged_products_audit_bp()
