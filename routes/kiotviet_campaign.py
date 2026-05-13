@@ -32,14 +32,55 @@ def create_kiotviet_campaign_bp() -> Blueprint:
             return jsonify({"error": "Missing promotion data"}), 400
 
         try:
-            campaign_payload = _build_campaign_payload(promo)
-
             headers = {
                 "Authorization": _auth,
                 "branchid": str(LatestBranchId),
                 "retailer": retailer,
                 "Content-Type": "application/json",
             }
+
+            existing_campaign_id = int(promo.get("kiotVietCampaignId") or 0)
+
+            if existing_campaign_id:
+                # UPDATE: GET toàn bộ campaign hiện tại làm base, chỉ override các field thay đổi
+                get_resp = requests.get(
+                    f"{KIOTVIET_PROMOTION_API}/{existing_campaign_id}",
+                    headers=headers,
+                    timeout=30,
+                )
+                if get_resp.status_code not in (200, 201):
+                    return jsonify({
+                        "success": False,
+                        "error": f"Cannot fetch existing campaign: {get_resp.status_code}",
+                        "detail": get_resp.text[:300],
+                    }), 500
+
+                existing = get_resp.json().get("Data", get_resp.json())
+
+                # Patch promo với SalePromotion IDs thực từ KiotViet
+                existing_sps = existing.get("SalePromotions", [])
+                promo["kiotVietCampaignCode"] = existing.get("Code", "")
+                if existing_sps:
+                    promo["kiotVietSalePromotionId"] = existing_sps[0].get("Id")
+                    promo["kiotVietSalePromotionIds"] = {
+                        str(sp["ReceivedProductId"]): sp["Id"]
+                        for sp in existing_sps
+                        if sp.get("ReceivedProductId") and sp.get("Id")
+                    }
+
+                # Build SalePromotions mới với IDs đúng
+                new_sps = _build_campaign_payload(promo)["Campaign"]["SalePromotions"]
+
+                # Merge: dùng existing làm base, override các field được phép thay đổi
+                existing["Name"] = promo.get("name", existing.get("Name", ""))
+                existing["IsActive"] = promo.get("isEnabled", existing.get("IsActive", True))
+                existing["StartDate"] = promo.get("fromDate", existing.get("StartDate", ""))
+                existing["EndDate"] = promo.get("toDate", existing.get("EndDate", ""))
+                existing["SalePromotions"] = new_sps
+                campaign_payload = {"Campaign": existing}
+            else:
+                # CREATE: build từ đầu
+                campaign_payload = _build_campaign_payload(promo)
 
             resp = requests.post(
                 KIOTVIET_PROMOTION_API,
@@ -307,6 +348,7 @@ def _build_campaign_payload(promo: dict) -> dict:
     return {
         "Campaign": {
             "Id": campaign_id,
+            "Code": promo.get("kiotVietCampaignCode", ""),
             "Name": promo.get("name", "Khuyến mại"),
             "IsActive": promo.get("isEnabled", True),
             "ApplyMonths": "",
