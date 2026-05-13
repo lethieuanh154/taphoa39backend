@@ -126,12 +126,14 @@ def create_kiotviet_campaign_bp() -> Blueprint:
                     if sp.get("ReceivedProductId") and sp.get("Id")
                 }
 
-                # Extract PromotionType
+                # Extract PromotionType and Code
                 promotion_type = campaign_data.get("PromotionType")
+                campaign_code = campaign_data.get("Code")
 
                 return jsonify({
                     "success": True,
                     "kiotVietCampaignId": campaign_id,
+                    "kiotVietCampaignCode": campaign_code,
                     "kiotVietSalePromotionId": sale_promotion_id,
                     "kiotVietSalePromotionIds": sale_promotion_id_map,
                     "kiotVietPromotionType": promotion_type,
