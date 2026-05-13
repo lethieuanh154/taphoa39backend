@@ -72,9 +72,12 @@ def create_kiotviet_campaign_bp() -> Blueprint:
                             if sp.get("ReceivedProductId") and sp.get("Id")
                         }
 
+                campaign_code = campaign_data.get("Code")
+
                 return jsonify({
                     "success": True,
                     "kiotVietCampaignId": campaign_id,
+                    "kiotVietCampaignCode": campaign_code,
                     "kiotVietSalePromotionId": sale_promotion_id,
                     "kiotVietSalePromotionIds": sale_promotion_id_map,
                     "kiotVietResponse": result,
@@ -198,6 +201,11 @@ def _build_campaign_payload(promo: dict) -> dict:
     else:
         promotion_type = 6  # Default: tặng hàng
 
+    # Existing KiotViet IDs — nếu có → update, không có → create mới
+    campaign_id = int(promo.get("kiotVietCampaignId") or 0)
+    sale_promo_id_scalar = int(promo.get("kiotVietSalePromotionId") or 0)
+    sale_promo_id_map = promo.get("kiotVietSalePromotionIds") or {}
+
     # Handle multi-gift entries (new) or fallback to scalar (old data)
     gift_entries = promo.get("giftItems", [])
     if not gift_entries and promo.get("giftProductId"):
@@ -212,8 +220,10 @@ def _build_campaign_payload(promo: dict) -> dict:
     prereq_qty = promo.get("minQuantity", 1)
     prereq_ids_str = str(promo.get("targetProductId", ""))
 
-    def _base_sale_promo(received_id, received_qty, received_code):
+    def _base_sale_promo(received_id, received_qty, received_code, sp_id=0):
         return {
+            "Id": sp_id,
+            "CampaignId": campaign_id,
             "Type": 1,
             "PromotionType": promotion_type,
             "InvoiceValue": 0,
@@ -257,7 +267,8 @@ def _build_campaign_payload(promo: dict) -> dict:
         received_ids_str = ",".join(str(p) for p in all_pids)
         received_codes_str = ",".join(all_codes)
 
-        sp = _base_sale_promo(last_pid, first_qty, last_code)
+        sp_id = int(sale_promo_id_map.get(str(last_pid)) or sale_promo_id_scalar or 0)
+        sp = _base_sale_promo(last_pid, first_qty, last_code, sp_id=sp_id)
         sp["ReceivedProductIds"] = received_ids_str
         sp["ReceivedProductCodes"] = received_codes_str
         sp["ReceivedEntity"] = {
@@ -279,7 +290,8 @@ def _build_campaign_payload(promo: dict) -> dict:
         # Type 5 (buy A get B): single SalePromotion with discount
         last_gift = gift_entries[-1] if gift_entries else {}
         received_id = int(last_gift.get("productId", 0)) if last_gift.get("productId") else None
-        sp = _base_sale_promo(received_id, last_gift.get("quantity", 1), last_gift.get("code", ""))
+        sp_id = int(sale_promo_id_map.get(str(received_id)) or sale_promo_id_scalar or 0)
+        sp = _base_sale_promo(received_id, last_gift.get("quantity", 1), last_gift.get("code", ""), sp_id=sp_id)
         if has_percent and promo.get("discountPercent"):
             sp["ProductDiscount"] = None
             sp["ProductDiscountRatio"] = promo["discountPercent"]
@@ -292,7 +304,7 @@ def _build_campaign_payload(promo: dict) -> dict:
 
     return {
         "Campaign": {
-            "Id": 0,
+            "Id": campaign_id,
             "Name": promo.get("name", "Khuyến mại"),
             "IsActive": promo.get("isEnabled", True),
             "ApplyMonths": "",

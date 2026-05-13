@@ -288,9 +288,21 @@ class SuppliesInvoiceService:
 
                 # Metadata
                 'source': 'ai_pdf',
-                'aiModel': 'gemini-3-flash',
+                'aiModel': invoice_data.get('aiModel', 'gemini-3-flash'),
                 'confidence': float(invoice_data.get('confidence', 0)),
-                'createdAt': datetime.utcnow()
+                'createdAt': datetime.utcnow(),
+
+                # Email + Portal metadata
+                'sourceTab': invoice_data.get('sourceTab', ''),
+                'gmailMessageId': invoice_data.get('gmailMessageId', ''),
+                'gmailFrom': invoice_data.get('gmailFrom', ''),
+                'gmailDate': invoice_data.get('gmailDate', ''),
+                'portalUrl': invoice_data.get('portalUrl', ''),
+                'portalPdfUrl': invoice_data.get('portalPdfUrl', ''),
+                'invoiceProvider': invoice_data.get('invoiceProvider', ''),
+                'portalCredentials': invoice_data.get('portalCredentials', {}),
+                'processingMethod': invoice_data.get('processingMethod', ''),
+                'attachmentType': invoice_data.get('attachmentType', ''),
             }
 
             # Lưu vào Firestore

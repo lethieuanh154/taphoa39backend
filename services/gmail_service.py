@@ -196,6 +196,52 @@ class GmailService:
             print(f"Error getting {ext} attachment from {message_id}: {error}")
             return None
 
+    def get_email_body_html(self, message_id: str) -> Optional[str]:
+        """Get email body as HTML string."""
+        try:
+            message = self.service.users().messages().get(
+                userId='me', id=message_id, format='full'
+            ).execute()
+
+            payload = message.get('payload', {})
+            return self._extract_body_html(payload)
+
+        except HttpError as error:
+            print(f"Error getting email body for {message_id}: {error}")
+            return None
+
+    def _extract_body_html(self, payload: Dict) -> Optional[str]:
+        """Recursively extract HTML body from email payload."""
+        mime_type = payload.get('mimeType', '')
+
+        # Direct HTML body
+        if mime_type == 'text/html':
+            data = payload.get('body', {}).get('data', '')
+            if data:
+                return base64.urlsafe_b64decode(data).decode('utf-8', errors='replace')
+
+        # Multipart: search parts recursively
+        parts = payload.get('parts', [])
+        for part in parts:
+            part_mime = part.get('mimeType', '')
+            if part_mime == 'text/html':
+                data = part.get('body', {}).get('data', '')
+                if data:
+                    return base64.urlsafe_b64decode(data).decode('utf-8', errors='replace')
+            if 'parts' in part:
+                result = self._extract_body_html(part)
+                if result:
+                    return result
+
+        # Fallback: plain text
+        for part in parts:
+            if part.get('mimeType') == 'text/plain':
+                data = part.get('body', {}).get('data', '')
+                if data:
+                    return base64.urlsafe_b64decode(data).decode('utf-8', errors='replace')
+
+        return None
+
     # --- helpers ---
 
     def _extract_email(self, from_header: str) -> str:

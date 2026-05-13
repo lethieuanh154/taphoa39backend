@@ -11,6 +11,7 @@ from firebase.init_firebase import init_firestore
 from services.gmail_service import GmailService, GmailTokenExpiredError
 from services.zip_extractor import extract_xml_from_zip, extract_pdf_from_zip
 from services.invoice_parsers import TaxInvoiceXMLParser
+from services.email_body_parser import EmailBodyParser
 from google_auth_oauthlib.flow import Flow
 
 
@@ -355,12 +356,30 @@ def create_gmail_routes_bp():
                 _save_refreshed_token(gmail)
                 return jsonify({'success': False, 'error': 'Email not found'}), 404
 
+            # Extract portal URL from email body HTML
+            portal_info = {}
+            try:
+                email_body_html = gmail.get_email_body_html(email_id)
+                if email_body_html:
+                    parser = EmailBodyParser()
+                    portal_info = parser.extract_portal_url(email_body_html)
+            except Exception as e:
+                print(f"Warning: Failed to extract portal URL: {e}")
+
             attachments = metadata.get('attachments', [])
             attachments_lower = [a.lower() for a in attachments]
 
             has_xml = any(a.endswith('.xml') for a in attachments_lower)
             has_zip = any(a.endswith('.zip') for a in attachments_lower)
             has_pdf = any(a.endswith('.pdf') for a in attachments_lower)
+
+            # Common portal fields to include in all responses
+            portal_fields = {
+                'portalUrl': portal_info.get('portalUrl', ''),
+                'invoiceProvider': portal_info.get('provider', ''),
+                'portalPdfUrl': portal_info.get('portalPdfUrl', ''),
+                'portalCredentials': portal_info.get('credentials', {}),
+            }
 
             # Priority 1: Direct XML attachment
             if has_xml:
@@ -373,7 +392,8 @@ def create_gmail_routes_bp():
                         'type': 'xml',
                         'invoices': invoices,
                         'parse_errors': errors,
-                        'email': metadata
+                        'email': metadata,
+                        **portal_fields
                     })
 
             # Priority 2: ZIP → extract XML first, then PDF
@@ -394,7 +414,8 @@ def create_gmail_routes_bp():
                             'invoices': invoices,
                             'parse_errors': errors,
                             'source_file': xml_name,
-                            'email': metadata
+                            'email': metadata,
+                            **portal_fields
                         })
 
                     # Try PDF from ZIP
@@ -409,7 +430,8 @@ def create_gmail_routes_bp():
                             'needs_gemini': True,
                             'pdf_base64': pdf_b64,
                             'pdf_filename': pdf_name,
-                            'email': metadata
+                            'email': metadata,
+                            **portal_fields
                         })
 
             # Priority 3: Direct PDF attachment
@@ -425,7 +447,8 @@ def create_gmail_routes_bp():
                         'needs_gemini': True,
                         'pdf_base64': pdf_b64,
                         'pdf_filename': pdf_name,
-                        'email': metadata
+                        'email': metadata,
+                        **portal_fields
                     })
 
             # No processable attachment
@@ -434,7 +457,8 @@ def create_gmail_routes_bp():
                 'success': True,
                 'type': 'none',
                 'message': 'Không có file đính kèm xử lý được. Vui lòng import XML thủ công.',
-                'email': metadata
+                'email': metadata,
+                **portal_fields
             })
 
         except GmailTokenExpiredError as e:
