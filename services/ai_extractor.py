@@ -115,7 +115,10 @@ Hãy trích xuất thông tin và trả về JSON với cấu trúc sau (chỉ t
       "unit": "đơn vị tính",
       "quantity": 0,
       "unit_price": 0,
-      "amount": 0
+      "amount": 0,
+      "vat_rate": "8%",
+      "vat_amount": 0,
+      "amount_after_vat": 0
     }}
   ],
   "summary": {{
@@ -131,11 +134,14 @@ LƯU Ý QUAN TRỌNG:
 1. Tất cả giá trị số tiền phải là số nguyên (không có dấu phẩy, dấu chấm)
 2. quantity có thể là số thập phân
 3. unit_price và amount phải là số nguyên
-4. Đảm bảo: amount = quantity × unit_price (cho mỗi item)
-5. Đảm bảo: total_amount_before_vat = tổng các amount
-6. Đảm bảo: total_payment = total_amount_before_vat + vat_amount
-7. Nếu không tìm thấy thông tin, để trống hoặc 0
-8. vat_rate phải có dạng "X%" (ví dụ: "10%", "8%", "5%", "0%")
+4. Đảm bảo: amount = quantity × unit_price (cho mỗi item, thành tiền TRƯỚC thuế)
+5. vat_rate của mỗi item phải có dạng "X%" (ví dụ: "10%", "8%", "5%", "0%")
+6. vat_amount = amount × vat_rate (tiền thuế của mỗi item)
+7. amount_after_vat = amount + vat_amount (thành tiền SAU thuế của mỗi item)
+8. Đảm bảo: total_amount_before_vat = tổng các amount
+9. Đảm bảo: total_payment = total_amount_before_vat + vat_amount
+10. Nếu không tìm thấy thông tin, để trống hoặc 0
+11. summary.vat_rate là thuế suất chung, nếu các item có thuế suất khác nhau thì để "mixed"
 """
 
 INVOICE_IMAGE_EXTRACTION_PROMPT = """Bạn là một AI chuyên trích xuất thông tin từ hóa đơn/phiếu giao hàng Việt Nam.
@@ -165,7 +171,10 @@ Hãy đọc ảnh đính kèm và trích xuất thông tin, trả về JSON vớ
       "unit": "đơn vị tính",
       "quantity": 0,
       "unit_price": 0,
-      "amount": 0
+      "amount": 0,
+      "vat_rate": "8%",
+      "vat_amount": 0,
+      "amount_after_vat": 0
     }
   ],
   "summary": {
@@ -183,9 +192,11 @@ LƯU Ý QUAN TRỌNG:
 3. Tất cả giá trị số tiền phải là số nguyên (không có dấu phẩy, dấu chấm)
 4. quantity có thể là số thập phân
 5. unit_price và amount phải là số nguyên
-6. Nếu không tìm thấy thông tin, để trống hoặc 0
-7. Nếu không có VAT, để vat_rate = "0%", vat_amount = 0
-8. total_payment = tổng tiền thanh toán cuối cùng
+6. amount = thành tiền TRƯỚC thuế, amount_after_vat = thành tiền SAU thuế
+7. vat_rate của mỗi item phải có dạng "X%" (ví dụ: "10%", "8%", "5%", "0%")
+8. Nếu không tìm thấy thông tin, để trống hoặc 0
+9. Nếu không có VAT, để vat_rate = "0%", vat_amount = 0, amount_after_vat = amount
+10. total_payment = tổng tiền thanh toán cuối cùng
 """
 
 INVOICE_CORRECTION_PROMPT = """Bạn là một AI chuyên xử lý hóa đơn VAT Việt Nam.

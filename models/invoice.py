@@ -29,6 +29,9 @@ class InvoiceItem(BaseModel):
     quantity: float = 0
     unit_price: float = 0
     amount: float = 0
+    vat_rate: str = ""
+    vat_amount: float = 0
+    amount_after_vat: float = 0
 
 
 class InvoiceSummary(BaseModel):
