@@ -232,7 +232,7 @@ class AIExtractor:
 
     # Fallback models when primary models are unavailable (503/429)
     FLASH_FALLBACKS = ["gemini-2.5-flash", "gemini-2.5-flash-lite"]
-    PRO_FALLBACKS = ["gemini-2.5-flash-lite", "gemini-2.0-flash"]
+    PRO_FALLBACKS = ["gemini-3.1-flash-lite-preview", "gemini-2.5-flash"]
 
     def __init__(self):
         self._client = None
