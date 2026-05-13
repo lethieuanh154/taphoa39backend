@@ -230,6 +230,10 @@ class AIExtractor:
     Updated to use new google.genai SDK
     """
 
+    # Fallback models when primary models are unavailable (503/429)
+    FLASH_FALLBACKS = ["gemini-2.5-flash", "gemini-2.5-flash-lite"]
+    PRO_FALLBACKS = ["gemini-2.5-flash-lite", "gemini-2.0-flash"]
+
     def __init__(self):
         self._client = None
         self._flash_model_name = None
@@ -266,6 +270,36 @@ class AIExtractor:
         logger.info(f"Pro model: {self._pro_model_name}")
 
         self._initialized = True
+
+    def _generate_with_fallback(self, model_name: str, contents, config, fallbacks: List[str] = None):
+        """
+        Call Gemini generate_content with automatic fallback on 503/429 errors.
+        Returns (response, actual_model_used).
+        """
+        models_to_try = [model_name] + (fallbacks or [])
+        last_error = None
+
+        for model in models_to_try:
+            try:
+                response = self._client.models.generate_content(
+                    model=model,
+                    contents=contents,
+                    config=config
+                )
+                if model != model_name:
+                    logger.info(f"Fallback succeeded: {model_name} → {model}")
+                return response, model
+            except Exception as e:
+                error_str = str(e)
+                is_retriable = any(code in error_str for code in ["503", "429", "UNAVAILABLE", "RESOURCE_EXHAUSTED"])
+                if is_retriable and model != models_to_try[-1]:
+                    logger.warning(f"Model {model} unavailable ({error_str[:80]}), trying next fallback...")
+                    last_error = e
+                    continue
+                else:
+                    raise
+
+        raise last_error
 
     def _list_available_models(self) -> List[str]:
         """List available Gemini models for debugging"""
@@ -314,11 +348,12 @@ class AIExtractor:
                 mime_type="application/pdf"
             )
 
-            # Send to Gemini Flash with PDF
-            response = self._client.models.generate_content(
-                model=self._flash_model_name,
+            # Send to Gemini Flash with PDF (fallback on 503)
+            response, _ = self._generate_with_fallback(
+                model_name=self._flash_model_name,
                 contents=[INVOICE_PDF_EXTRACTION_PROMPT, pdf_part],
-                config=self._generation_config
+                config=self._generation_config,
+                fallbacks=self.FLASH_FALLBACKS
             )
             response_text = response.text.strip()
 
@@ -402,11 +437,12 @@ Hãy đọc lại PDF và trích xuất chính xác."""
             else:
                 prompt = INVOICE_PDF_EXTRACTION_PROMPT
 
-            # Send to Gemini Pro with PDF
-            response = self._client.models.generate_content(
-                model=self._pro_model_name,
+            # Send to Gemini Pro with PDF (fallback on 503)
+            response, _ = self._generate_with_fallback(
+                model_name=self._pro_model_name,
                 contents=[prompt, pdf_part],
-                config=self._generation_config
+                config=self._generation_config,
+                fallbacks=self.PRO_FALLBACKS
             )
             response_text = response.text.strip()
 
@@ -482,10 +518,11 @@ Hãy đọc lại PDF và trích xuất chính xác."""
             log_entry.message = f"MarkItDown OK ({len(markdown_text)} ký tự), đang gọi Gemini Flash..."
 
             prompt = INVOICE_EXTRACTION_PROMPT.format(ocr_text=markdown_text)
-            response = self._client.models.generate_content(
-                model=self._flash_model_name,
+            response, _ = self._generate_with_fallback(
+                model_name=self._flash_model_name,
                 contents=prompt,
-                config=self._generation_config
+                config=self._generation_config,
+                fallbacks=self.FLASH_FALLBACKS
             )
             response_text = response.text.strip()
 
@@ -675,10 +712,11 @@ Hãy đọc lại PDF và trích xuất chính xác."""
 
             prompt = INVOICE_IMAGE_EXTRACTION_PROMPT if use_image_prompt else INVOICE_PDF_EXTRACTION_PROMPT
 
-            response = self._client.models.generate_content(
-                model=self._flash_model_name,
+            response, _ = self._generate_with_fallback(
+                model_name=self._flash_model_name,
                 contents=[prompt, file_part],
-                config=self._generation_config
+                config=self._generation_config,
+                fallbacks=self.FLASH_FALLBACKS
             )
             response_text = response.text.strip()
 
@@ -764,10 +802,11 @@ Các trường cần kiểm tra lại (độ chính xác thấp):
 
 Hãy đọc lại file và trả về kết quả chính xác hơn. Đặc biệt chú ý các trường được đánh dấu ở trên."""
 
-            response = self._client.models.generate_content(
-                model=self._pro_model_name,
+            response, _ = self._generate_with_fallback(
+                model_name=self._pro_model_name,
                 contents=[prompt, file_part],
-                config=self._generation_config
+                config=self._generation_config,
+                fallbacks=self.PRO_FALLBACKS
             )
             response_text = response.text.strip()
 
@@ -830,10 +869,11 @@ Hãy đọc lại file và trả về kết quả chính xác hơn. Đặc biệ
             prompt = INVOICE_EXTRACTION_PROMPT.format(ocr_text=ocr_text)
             logger.debug(f"Sending to Gemini Flash, prompt length: {len(prompt)}")
 
-            response = self._client.models.generate_content(
-                model=self._flash_model_name,
+            response, _ = self._generate_with_fallback(
+                model_name=self._flash_model_name,
                 contents=prompt,
-                config=self._generation_config
+                config=self._generation_config,
+                fallbacks=self.FLASH_FALLBACKS
             )
             response_text = response.text.strip()
 
@@ -901,10 +941,11 @@ Hãy đọc lại file và trả về kết quả chính xác hơn. Đặc biệ
             )
             logger.debug(f"Sending to Gemini Pro, prompt length: {len(prompt)}")
 
-            response = self._client.models.generate_content(
-                model=self._pro_model_name,
+            response, _ = self._generate_with_fallback(
+                model_name=self._pro_model_name,
                 contents=prompt,
-                config=self._generation_config
+                config=self._generation_config,
+                fallbacks=self.PRO_FALLBACKS
             )
             response_text = response.text.strip()
 
@@ -966,6 +1007,18 @@ Hãy đọc lại file và trả về kết quả chính xác hơn. Đặc biệ
 
             # Convert to Pydantic model
             invoice = ProcessedInvoice(**data)
+
+            # Ensure per-item VAT fields are populated
+            for item in invoice.items:
+                if item.amount > 0 and item.amount_after_vat == 0:
+                    # Try to compute from summary vat_rate if per-item vat_rate is missing
+                    rate_str = item.vat_rate or invoice.summary.vat_rate or "0%"
+                    try:
+                        rate = float(rate_str.replace('%', '').strip()) / 100
+                    except (ValueError, AttributeError):
+                        rate = 0.0
+                    item.vat_amount = round(item.amount * rate)
+                    item.amount_after_vat = item.amount + item.vat_amount
 
             logger.debug(f"Parsed invoice: {len(invoice.items)} items")
             return invoice
