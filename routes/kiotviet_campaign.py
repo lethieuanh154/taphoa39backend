@@ -113,7 +113,8 @@ def create_kiotviet_campaign_bp() -> Blueprint:
                             if sp.get("ReceivedProductId") and sp.get("Id")
                         }
 
-                campaign_code = campaign_data.get("Code")
+                # POST response có thể không trả Code khi tạo mới — fallback sang GET response
+                campaign_code = campaign_data.get("Code") or (get_data.get("Code") if "get_data" in locals() else None)
 
                 return jsonify({
                     "success": True,
