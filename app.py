@@ -27,6 +27,7 @@ from routes.auth_routes import auth_bp
 from routes.invoice_processing import create_invoice_processing_bp
 from routes.supplies_invoice_routes import create_supplies_invoice_routes
 from routes.invoice_routes_v2 import create_invoice_routes_v2
+from routes.product_mapping_routes import create_product_mapping_routes
 from routes.output_invoice_routes_v2 import create_output_invoice_routes_v2
 from routes.osrm_proxy_routes import bp as osrm_proxy_bp
 from routes.product_history_routes import bp as product_history_bp
@@ -92,6 +93,7 @@ def _build_app() -> Flask:
     app.register_blueprint(create_invoice_processing_bp())
     app.register_blueprint(create_supplies_invoice_routes())
     app.register_blueprint(create_invoice_routes_v2())
+    app.register_blueprint(create_product_mapping_routes())
     app.register_blueprint(create_output_invoice_routes_v2())
     app.register_blueprint(product_history_bp)
     app.register_blueprint(create_firebase_merged_products_bp(socketio))
