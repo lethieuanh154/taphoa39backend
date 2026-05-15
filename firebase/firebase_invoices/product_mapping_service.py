@@ -11,7 +11,7 @@ from typing import List, Optional, Dict
 from google.cloud.firestore_v1.base_query import FieldFilter
 from firebase_admin import firestore
 
-from firebase.init_firestore import init_firestore
+from firebase.init_firebase import init_firestore
 
 logger = logging.getLogger(__name__)
 
