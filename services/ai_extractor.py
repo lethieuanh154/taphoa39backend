@@ -59,7 +59,10 @@ Hãy đọc file PDF hóa đơn đính kèm và trích xuất thông tin, trả 
       "unit": "đơn vị tính",
       "quantity": 0,
       "unit_price": 0,
-      "amount": 0
+      "amount": 0,
+      "vat_rate": "10%",
+      "vat_amount": 0,
+      "amount_after_vat": 0
     }
   ],
   "summary": {
@@ -79,6 +82,9 @@ LƯU Ý QUAN TRỌNG:
 5. Đọc đúng các giá trị: total_amount_before_vat, vat_amount, total_payment từ hóa đơn
 6. Nếu không tìm thấy thông tin, để trống hoặc 0
 7. vat_rate phải có dạng "X%" (ví dụ: "10%", "8%", "5%", "0%")
+8. amount = thành tiền TRƯỚC thuế, amount_after_vat = thành tiền SAU thuế
+9. vat_amount = tiền thuế của mỗi item (amount_after_vat - amount)
+10. Nếu hóa đơn có cột "Thành tiền" và "Thành tiền sau thuế", đọc cả hai giá trị riêng biệt
 """
 
 # Prompt template for OCR text extraction (legacy, kept for fallback)
