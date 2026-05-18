@@ -361,15 +361,17 @@ def notify_invoice_created(socketio, invoice: Dict[str, Any]):
 def notify_order_created(socketio, order: Dict[str, Any]):
     if isinstance(order, dict):
         oid = order.get('Id') or order.get('id')
+        payload = {'id': str(oid), 'order': order}
     else:
         oid = order
+        payload = {'id': str(oid)}
     if oid is None:
         return
     if not socketio:
         return
-    socketio.emit('order_created', {'id': str(oid)}, namespace='/api/websocket/orders')
+    socketio.emit('order_created', payload, namespace='/api/websocket/orders')
     try:
-        set_last_notify('/api/websocket/orders', 'order_created', {'id': str(oid)})
+        set_last_notify('/api/websocket/orders', 'order_created', payload)
     except Exception:
         pass
 
@@ -377,15 +379,17 @@ def notify_order_created(socketio, order: Dict[str, Any]):
 def notify_order_updated(socketio, order: Dict[str, Any]):
     if isinstance(order, dict):
         oid = order.get('Id') or order.get('id')
+        payload = {'id': str(oid), 'order': order}
     else:
         oid = order
+        payload = {'id': str(oid)}
     if oid is None:
         return
     if not socketio:
         return
-    socketio.emit('order_updated', {'id': str(oid)}, namespace='/api/websocket/orders')
+    socketio.emit('order_updated', payload, namespace='/api/websocket/orders')
     try:
-        set_last_notify('/api/websocket/orders', 'order_updated', {'id': str(oid)})
+        set_last_notify('/api/websocket/orders', 'order_updated', payload)
     except Exception:
         pass
 
@@ -393,9 +397,10 @@ def notify_order_updated(socketio, order: Dict[str, Any]):
 def notify_order_deleted(socketio, order_id: Any):
     if not socketio:
         return
-    socketio.emit('order_deleted', {'id': str(order_id)}, namespace='/api/websocket/orders')
+    payload = {'id': str(order_id)}
+    socketio.emit('order_deleted', payload, namespace='/api/websocket/orders')
     try:
-        set_last_notify('/api/websocket/orders', 'order_deleted', {'id': str(order_id)})
+        set_last_notify('/api/websocket/orders', 'order_deleted', payload)
     except Exception:
         pass
 

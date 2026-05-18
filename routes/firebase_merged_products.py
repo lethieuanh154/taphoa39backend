@@ -103,6 +103,35 @@ def create_firebase_merged_products_bp(socketio=None) -> Blueprint:
 
         return jsonify(result)
 
+    @bp.route("/atomic-update", methods=["POST"])
+    def atomic_update_merged_items():
+        """Atomic update: remove items + update items in one Firestore operation."""
+        data = request.get_json()
+        updates = data.get("updates", [])
+        remove_ids = data.get("removeIds", [])
+        modified_by = data.get("modifiedBy", None)
+
+        result = service.update_merged_items(updates, remove_ids, modified_by)
+
+        # Broadcast to other clients
+        if socketio and result.get("success"):
+            try:
+                current = service.get_merged_products()
+                socketio.emit(
+                    "merged_products_updated",
+                    {
+                        "items": current.get("items", []),
+                        "count": len(current.get("items", [])),
+                        "lastModified": result.get("lastModified"),
+                        "modifiedBy": modified_by
+                    },
+                    namespace="/api/websocket/products"
+                )
+            except Exception as e:
+                print(f"⚠️ Failed to broadcast merged products update: {e}")
+
+        return jsonify(result)
+
     @bp.route("/clear", methods=["POST"])
     def clear_merged_products():
         """Clear all merged products."""
@@ -127,6 +156,44 @@ def create_firebase_merged_products_bp(socketio=None) -> Blueprint:
             except Exception as e:
                 print(f"⚠️ Failed to broadcast merged products clear: {e}")
 
+        return jsonify(result)
+
+    # --- Auto-Merge History Routes ---
+
+    @bp.route("/history", methods=["GET"])
+    def get_auto_merge_history():
+        """Get all auto-merge history entries from Firestore."""
+        result = service.get_auto_merge_history()
+        return jsonify(result)
+
+    @bp.route("/history/add", methods=["POST"])
+    def add_auto_merge_history():
+        """Add new auto-merge history entries."""
+        data = request.get_json()
+        entries = data.get("entries", [])
+        modified_by = data.get("modifiedBy", None)
+
+        result = service.add_auto_merge_history(entries, modified_by)
+        return jsonify(result)
+
+    @bp.route("/history/mark-returned", methods=["POST"])
+    def mark_history_returned():
+        """Mark auto-merge history entries as returned."""
+        data = request.get_json()
+        entry_ids = data.get("entryIds", [])
+        modified_by = data.get("modifiedBy", None)
+
+        result = service.mark_history_returned(entry_ids, modified_by)
+        return jsonify(result)
+
+    @bp.route("/history/delete", methods=["DELETE"])
+    def delete_history_entries():
+        """Delete auto-merge history entries."""
+        data = request.get_json()
+        entry_ids = data.get("entryIds", [])
+        modified_by = data.get("modifiedBy", None)
+
+        result = service.delete_history_entries(entry_ids, modified_by)
         return jsonify(result)
 
     return bp

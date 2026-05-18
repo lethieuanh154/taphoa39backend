@@ -19,6 +19,7 @@ from routes.firebase_orders import create_firebase_orders_bp
 from routes.firebase_products import create_firebase_products_bp
 from routes.firebase_employees import create_firebase_employees_bp
 from routes.kiotviet_routes import create_kiotviet_routes_bp
+from routes.kiotviet_campaign import create_kiotviet_campaign_bp
 from routes.sync_routes import create_sync_routes_bp
 from routes.static_routes import create_static_routes_bp
 from routes.firebase_websocket import register_namespaces
@@ -26,8 +27,9 @@ from routes.auth_routes import auth_bp
 from routes.invoice_processing import create_invoice_processing_bp
 from routes.supplies_invoice_routes import create_supplies_invoice_routes
 from routes.invoice_routes_v2 import create_invoice_routes_v2
+from routes.product_mapping_routes import create_product_mapping_routes
 from routes.output_invoice_routes_v2 import create_output_invoice_routes_v2
-from routes.hddt_proxy_routes import bp as hddt_proxy_bp
+from routes.osrm_proxy_routes import bp as osrm_proxy_bp
 from routes.product_history_routes import bp as product_history_bp
 from routes.firebase_merged_products import create_firebase_merged_products_bp
 from routes.customer_registration import create_customer_registration_bp
@@ -36,17 +38,20 @@ from routes.gmail_routes import create_gmail_routes_bp
 from routes.merged_products_audit_routes import create_merged_products_audit_bp
 from routes.chat_routes import create_chat_routes_bp
 from firebase.firebase_service.chat_service import FirestoreChatService
+from firebase.firebase_service.promotion_service import FirestorePromotionService
+from routes.firebase_promotions import create_firebase_promotions_bp
 
 
 def _build_app() -> Flask:
     app = Flask(__name__)
-    CORS(app, resources={r"/*": {"origins": "*"}})
+    CORS(app)
 
     product_service = FirestoreProductService(Cache())
     invoice_service = FirestoreInvoiceService(Cache())
     customer_service = FirestoreCustomerService(Cache())
     order_service = FirestoreorderService(Cache())
     employee_service = FirestoreEmployeeService(Cache())
+    promotion_service = FirestorePromotionService(Cache())
 
     # Initialize SocketIO without async_mode (uses threading by default)
     # Frontend uses polling transport only, so no WebSocket needed
@@ -58,8 +63,8 @@ def _build_app() -> Flask:
         engineio_logger=False,
         ping_timeout=60,
         ping_interval=25,
-        # Allow both polling and websocket, but frontend will use polling only
-        transports=['polling', 'websocket']
+        # Only allow polling - Werkzeug dev server doesn't support WebSocket in threading mode
+        transports=['polling']
     )
 
     # Register Socket.IO namespaces so clients can connect and receive events
@@ -71,6 +76,7 @@ def _build_app() -> Flask:
     app.register_blueprint(auth_bp)
     app.register_blueprint(create_static_routes_bp())
     app.register_blueprint(create_kiotviet_routes_bp())
+    app.register_blueprint(create_kiotviet_campaign_bp())
     app.register_blueprint(create_sync_routes_bp(product_service))
     app.register_blueprint(create_firebase_products_bp(product_service, socketio))
     app.register_blueprint(
@@ -82,22 +88,28 @@ def _build_app() -> Flask:
         )
     )
     app.register_blueprint(create_firebase_customers_bp(customer_service, socketio))
-    app.register_blueprint(create_firebase_orders_bp(order_service, socketio))
+    app.register_blueprint(create_firebase_orders_bp(order_service, customer_service, socketio))
     app.register_blueprint(create_firebase_employees_bp(employee_service, socketio))
     app.register_blueprint(create_invoice_processing_bp())
     app.register_blueprint(create_supplies_invoice_routes())
     app.register_blueprint(create_invoice_routes_v2())
+    app.register_blueprint(create_product_mapping_routes())
     app.register_blueprint(create_output_invoice_routes_v2())
-    app.register_blueprint(hddt_proxy_bp)
     app.register_blueprint(product_history_bp)
     app.register_blueprint(create_firebase_merged_products_bp(socketio))
     app.register_blueprint(create_customer_registration_bp(customer_service, socketio))
     app.register_blueprint(create_zalo_routes_bp())
     app.register_blueprint(create_gmail_routes_bp())
 
+    # Promotions (khuyến mại)
+    app.register_blueprint(create_firebase_promotions_bp(promotion_service, product_service, socketio))
+
     # Chat messaging
     chat_service = FirestoreChatService()
     app.register_blueprint(create_chat_routes_bp(chat_service, socketio, customer_service))
+
+    # OSRM routing proxy (avoids CORS from browser)
+    app.register_blueprint(osrm_proxy_bp)
 
     # Merged products audit (lightweight backup)
     audit_bp, audit_service = create_merged_products_audit_bp()
@@ -116,12 +128,27 @@ def _build_app() -> Flask:
 
 
 def _warmup_product_cache(product_service):
-    """Pre-warm product cache in background thread so first API call is fast."""
+    """Pre-warm product cache and schedule background refresh every 55 minutes.
+    TTL cache = 1h, refresh at 55min = cache luôn warm, không có cold miss."""
     import threading
+    import time
 
-    def _warmup():
+    REFRESH_INTERVAL = 55 * 60  # 55 phút (trước khi TTL 1h hết hạn)
+
+    def _refresh_cache():
         try:
-            import time
+            t0 = time.time()
+            # Invalidate để force re-fetch từ Firestore
+            product_service.invalidate_all_product_caches()
+            products = product_service.read_all_products(include_inactive=False, include_deleted=False)
+            elapsed = (time.time() - t0) * 1000
+            print(f"🔄 [CacheRefresh] Refreshed {len(products)} products in {elapsed:.0f}ms")
+        except Exception as e:
+            print(f"❌ [CacheRefresh] Failed: {e}")
+
+    def _warmup_and_schedule():
+        # Initial warmup
+        try:
             t0 = time.time()
             products = product_service.read_all_products(include_inactive=False, include_deleted=False)
             elapsed = (time.time() - t0) * 1000
@@ -129,8 +156,14 @@ def _warmup_product_cache(product_service):
         except Exception as e:
             print(f"❌ [Warmup] Product cache warmup failed: {e}")
 
-    thread = threading.Thread(target=_warmup, daemon=True)
+        # Schedule periodic refresh
+        while True:
+            time.sleep(REFRESH_INTERVAL)
+            _refresh_cache()
+
+    thread = threading.Thread(target=_warmup_and_schedule, daemon=True)
     thread.start()
+    print(f"⏰ [CacheRefresh] Scheduled every {REFRESH_INTERVAL // 60} minutes")
 
 
 def _schedule_audit_cleanup(audit_service):

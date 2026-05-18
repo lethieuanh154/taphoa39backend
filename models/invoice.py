@@ -29,6 +29,9 @@ class InvoiceItem(BaseModel):
     quantity: float = 0
     unit_price: float = 0
     amount: float = 0
+    vat_rate: str = ""
+    vat_amount: float = 0
+    amount_after_vat: float = 0
 
 
 class InvoiceSummary(BaseModel):
@@ -76,6 +79,8 @@ class ProcessingResult(BaseModel):
     processing_time_ms: int = 0
     error: Optional[str] = None
     processing_log: List[ProcessingLogEntry] = Field(default_factory=list)
+    confidence: float = 1.0
+    low_confidence_fields: List[str] = Field(default_factory=list)
 
 
 class OCRResult(BaseModel):

@@ -274,7 +274,7 @@ def create_firebase_invoices_bp(invoice_service, product_service, customer_servi
                     current_onhand = to_number(product_doc.get('OnHand'))
                     if current_onhand is None:
                         continue
-                    new_onhand = int(current_onhand) + quantity
+                    new_onhand = round(float(current_onhand) + quantity, 1)
                     try:
                         product_service.update_product(pid_str, {"OnHand": new_onhand})
                         restocked_updates.append({"Id": pid_str, "OnHand": new_onhand, "updateType": "OnHand"})
@@ -360,8 +360,19 @@ def create_firebase_invoices_bp(invoice_service, product_service, customer_servi
         date = request.args.get('date')
         if not date:
             return jsonify({"status": "error", "message": "date is required (YYYY-MM-DD)"}), 400
-        summary = invoice_service.get_daily_summary(date)
+        recalculate = request.args.get('recalculate', '').lower() == 'true'
+        summary = invoice_service.get_daily_summary(date, recalculate=recalculate)
         notify_daily_summary(socketio, date, summary)
+        return jsonify(summary)
+
+    @bp.route("/date_range_summary", methods=["GET"])
+    @handle_api_errors
+    def get_date_range_summary():
+        start_date = request.args.get('start_date')
+        end_date = request.args.get('end_date')
+        if not start_date or not end_date:
+            return jsonify({"status": "error", "message": "start_date and end_date are required (YYYY-MM-DD)"}), 400
+        summary = invoice_service.calculate_date_range_summary(start_date, end_date)
         return jsonify(summary)
 
     @bp.route("/monthly_summary", methods=["GET"])
@@ -371,7 +382,8 @@ def create_firebase_invoices_bp(invoice_service, product_service, customer_servi
         month = request.args.get('month')
         if not year or not month:
             return jsonify({"status": "error", "message": "year and month are required"}), 400
-        summary = invoice_service.get_monthly_summary(year, month)
+        recalculate = request.args.get('recalculate', '').lower() == 'true'
+        summary = invoice_service.get_monthly_summary(year, month, recalculate=recalculate)
         notify_monthly_summary(socketio, year, month, summary)
         return jsonify(summary)
 
@@ -381,7 +393,8 @@ def create_firebase_invoices_bp(invoice_service, product_service, customer_servi
         year = request.args.get('year')
         if not year:
             return jsonify({"status": "error", "message": "year is required"}), 400
-        summary = invoice_service.get_yearly_summary(year)
+        recalculate = request.args.get('recalculate', '').lower() == 'true'
+        summary = invoice_service.get_yearly_summary(year, recalculate=recalculate)
         notify_yearly_summary(socketio, year, summary)
         return jsonify(summary)
 
@@ -434,7 +447,7 @@ def create_firebase_invoices_bp(invoice_service, product_service, customer_servi
                         }
                     product_sales[product_id]['totalProfit'] += total_profit
                     product_sales[product_id]['totalQuantity'] += quantity
-        top_products = sorted(product_sales.values(), key=lambda x: x['totalProfit'], reverse=True)[:20]
+        top_products = sorted(product_sales.values(), key=lambda x: x['totalProfit'], reverse=True)[:50]
         filters = {}
         if date:
             filters['date'] = date

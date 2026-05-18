@@ -326,6 +326,25 @@ def create_firebase_customers_bp(customer_service, socketio) -> Blueprint:
                 {"applied": True, "customer": updated_customer}
             ])
 
+            # Emit bonus_updated for customer-facing app (TapHoa39DatHang)
+            customer_code = updated_customer.get("Code") or ""
+            if customer_code and socketio:
+                total_point = updated_customer.get("TotalPoint", 0) or 0
+                raw_gift = total_point * 0.02
+                base = round(raw_gift / 100) * 100
+                if not isinstance(base, (int, float)) or base != base:
+                    base = 0
+                reg_bonus = updated_customer.get("RegistrationBonus", 0) or 0
+                redeemed = updated_customer.get("RedeemedPoints", 0) or 0
+                gift_point = max(0, base + reg_bonus + new_bonus - redeemed)
+                bonus_payload = {
+                    "code": customer_code,
+                    "giftPoint": gift_point,
+                    "bonusAdded": amount,
+                }
+                logger.info("[bonus_updated] Emitting WS: %s", bonus_payload)
+                socketio.emit("bonus_updated", bonus_payload, namespace="/api/websocket/customers")
+
             # Send Zalo notification (best-effort)
             zalo_sent = False
             zalo_user_id = current_customer.get("ZaloUserId") or ""
@@ -352,6 +371,22 @@ def create_firebase_customers_bp(customer_service, socketio) -> Blueprint:
                 "customer": updated_customer,
                 "zalo_sent": zalo_sent,
             })
+
+        status_code = 404 if result.get("reason") == "not_found" else 400
+        return jsonify(result), status_code
+
+    @bp.route("/customers/<customer_id>/clear_debt", methods=["POST"])
+    @handle_api_errors
+    def clear_customer_debt(customer_id: str):
+        if not customer_id:
+            return jsonify({"status": "error", "message": "Customer ID is required"}), 400
+
+        result = customer_service.clear_customer_debt(customer_id)
+        if result.get("updated"):
+            broadcast_customer_updates(socketio, [
+                {"applied": True, "customer": result.get("customer")}
+            ])
+            return jsonify({"status": "ok", **result})
 
         status_code = 404 if result.get("reason") == "not_found" else 400
         return jsonify(result), status_code

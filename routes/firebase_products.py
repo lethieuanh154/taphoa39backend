@@ -318,22 +318,26 @@ def create_firebase_products_bp(product_service, socketio) -> Blueprint:
 
     def _enrich_clone_stock(products):
         """Enrich original products with clone OnHandNV for total stock calculation.
-        Uses CloneSourceId to map clones back to their originals."""
-        all_products = product_service.read_all_products(include_inactive=False, include_deleted=False)
-        # Build map: original_id -> sum of clone OnHandNV
-        clone_stock = {}
-        for p in all_products:
-            is_clone = p.get("isClone") is True or p.get("isClone") == "true"
-            on_hand_nv = float(p.get("OnHandNV") or 0)
-            on_hand = float(p.get("OnHand") or 0)
-            if not (is_clone or (on_hand_nv > 0 and on_hand == 0)):
-                continue
-            if on_hand_nv <= 0:
-                continue
-            source_id = str(p.get("CloneSourceId") or "")
-            if source_id:
-                clone_stock[source_id] = clone_stock.get(source_id, 0) + on_hand_nv
-        # Enrich each original product
+        Dung read_all_products (co cache 300s) thay vi query rieng de tiet kiem quota."""
+        cache_key = "clone_stock_map"
+        if product_service.cache.has(cache_key):
+            clone_stock = product_service.cache.get(cache_key)
+        else:
+            all_products = product_service.read_all_products(include_inactive=False, include_deleted=False)
+            clone_stock = {}
+            for p in all_products:
+                is_clone = p.get("isClone") is True or p.get("isClone") == "true"
+                on_hand_nv = float(p.get("OnHandNV") or 0)
+                on_hand = float(p.get("OnHand") or 0)
+                if not (is_clone or (on_hand_nv > 0 and on_hand == 0)):
+                    continue
+                if on_hand_nv <= 0:
+                    continue
+                source_id = str(p.get("CloneSourceId") or "")
+                if source_id:
+                    clone_stock[source_id] = clone_stock.get(source_id, 0) + on_hand_nv
+            product_service.cache.set(cache_key, clone_stock, ttl=3600)
+
         for p in products:
             pid = str(p.get("Id", ""))
             p["CloneOnHandNV"] = clone_stock.get(pid, 0)
@@ -344,12 +348,33 @@ def create_firebase_products_bp(product_service, socketio) -> Blueprint:
     def get_products_by_category(category_id: int):
         """
         Lay san pham theo CategoryId. Dung cho DatHang app hybrid loading.
-        Loc bo clones va deleted products.
-        GET /api/firebase/get/products/by-category/1425784
+        Loc bo clones va deleted products. Ho tro phan trang.
+        GET /api/firebase/get/products/by-category/1425784?limit=20&offset=0
         """
         products = product_service.read_products_by_category(category_id)
         products = _enrich_clone_stock(products)
-        return jsonify({"products": products, "count": len(products), "categoryId": category_id})
+        total = len(products)
+
+        # Pagination support
+        try:
+            limit = int(request.args.get("limit", 0))
+        except ValueError:
+            limit = 0
+        try:
+            offset = int(request.args.get("offset", 0))
+        except ValueError:
+            offset = 0
+
+        if limit > 0:
+            products = products[offset:offset + limit]
+
+        return jsonify({
+            "products": products,
+            "count": len(products),
+            "total": total,
+            "categoryId": category_id,
+            "hasMore": (offset + len(products)) < total
+        })
 
     @bp.route("/products/search", methods=["GET"])
     @handle_api_errors
@@ -376,19 +401,33 @@ def create_firebase_products_bp(product_service, socketio) -> Blueprint:
     @handle_api_errors
     def get_featured_products():
         """
-        Lay san pham noi bat (moi nhat).
+        Lay san pham noi bat (moi nhat). Ho tro phan trang.
         Dung cho DatHang app: hien thi khi vao trang lan dau thay vi load tat ca.
-        GET /api/firebase/products/featured?limit=50
+        GET /api/firebase/products/featured?limit=20&offset=0
         """
-        try:
-            limit = int(request.args.get("limit", 50))
-        except ValueError:
-            limit = 50
-        limit = min(max(limit, 1), 200)
-
-        products = product_service.get_featured_products(limit=limit)
+        products = product_service.get_featured_products()
         products = _enrich_clone_stock(products)
-        return jsonify({"products": products, "count": len(products)})
+        total = len(products)
+
+        # Pagination support
+        try:
+            limit = int(request.args.get("limit", 0))
+        except ValueError:
+            limit = 0
+        try:
+            offset = int(request.args.get("offset", 0))
+        except ValueError:
+            offset = 0
+
+        if limit > 0:
+            products = products[offset:offset + limit]
+
+        return jsonify({
+            "products": products,
+            "count": len(products),
+            "total": total,
+            "hasMore": (offset + len(products)) < total
+        })
 
     @bp.route("/products/modified-since", methods=["POST"])
     @handle_api_errors

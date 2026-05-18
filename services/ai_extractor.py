@@ -59,7 +59,10 @@ Hãy đọc file PDF hóa đơn đính kèm và trích xuất thông tin, trả 
       "unit": "đơn vị tính",
       "quantity": 0,
       "unit_price": 0,
-      "amount": 0
+      "amount": 0,
+      "vat_rate": "10%",
+      "vat_amount": 0,
+      "amount_after_vat": 0
     }
   ],
   "summary": {
@@ -79,6 +82,9 @@ LƯU Ý QUAN TRỌNG:
 5. Đọc đúng các giá trị: total_amount_before_vat, vat_amount, total_payment từ hóa đơn
 6. Nếu không tìm thấy thông tin, để trống hoặc 0
 7. vat_rate phải có dạng "X%" (ví dụ: "10%", "8%", "5%", "0%")
+8. amount = thành tiền TRƯỚC thuế, amount_after_vat = thành tiền SAU thuế
+9. vat_amount = tiền thuế của mỗi item (amount_after_vat - amount)
+10. Nếu hóa đơn có cột "Thành tiền" và "Thành tiền sau thuế", đọc cả hai giá trị riêng biệt
 """
 
 # Prompt template for OCR text extraction (legacy, kept for fallback)
@@ -115,7 +121,10 @@ Hãy trích xuất thông tin và trả về JSON với cấu trúc sau (chỉ t
       "unit": "đơn vị tính",
       "quantity": 0,
       "unit_price": 0,
-      "amount": 0
+      "amount": 0,
+      "vat_rate": "8%",
+      "vat_amount": 0,
+      "amount_after_vat": 0
     }}
   ],
   "summary": {{
@@ -131,11 +140,69 @@ LƯU Ý QUAN TRỌNG:
 1. Tất cả giá trị số tiền phải là số nguyên (không có dấu phẩy, dấu chấm)
 2. quantity có thể là số thập phân
 3. unit_price và amount phải là số nguyên
-4. Đảm bảo: amount = quantity × unit_price (cho mỗi item)
-5. Đảm bảo: total_amount_before_vat = tổng các amount
-6. Đảm bảo: total_payment = total_amount_before_vat + vat_amount
-7. Nếu không tìm thấy thông tin, để trống hoặc 0
-8. vat_rate phải có dạng "X%" (ví dụ: "10%", "8%", "5%", "0%")
+4. Đảm bảo: amount = quantity × unit_price (cho mỗi item, thành tiền TRƯỚC thuế)
+5. vat_rate của mỗi item phải có dạng "X%" (ví dụ: "10%", "8%", "5%", "0%")
+6. vat_amount = amount × vat_rate (tiền thuế của mỗi item)
+7. amount_after_vat = amount + vat_amount (thành tiền SAU thuế của mỗi item)
+8. Đảm bảo: total_amount_before_vat = tổng các amount
+9. Đảm bảo: total_payment = total_amount_before_vat + vat_amount
+10. Nếu không tìm thấy thông tin, để trống hoặc 0
+11. summary.vat_rate là thuế suất chung, nếu các item có thuế suất khác nhau thì để "mixed"
+"""
+
+INVOICE_IMAGE_EXTRACTION_PROMPT = """Bạn là một AI chuyên trích xuất thông tin từ hóa đơn/phiếu giao hàng Việt Nam.
+Hãy đọc ảnh đính kèm và trích xuất thông tin, trả về JSON với cấu trúc sau (chỉ trả về JSON, không có text khác):
+
+{
+  "invoice_metadata": {
+    "invoice_date": "dd/mm/yyyy",
+    "invoice_no": "số hóa đơn hoặc số phiếu",
+    "invoice_serial": "ký hiệu (nếu có)",
+    "tax_authority_code": ""
+  },
+  "seller": {
+    "company_name": "tên công ty bán hàng",
+    "tax_code": "mã số thuế người bán (nếu có)",
+    "address": "địa chỉ người bán (nếu có)"
+  },
+  "buyer": {
+    "company_name": "tên công ty/người mua (nếu có)",
+    "tax_code": "",
+    "address": ""
+  },
+  "items": [
+    {
+      "stt": 1,
+      "description": "tên hàng hóa/dịch vụ",
+      "unit": "đơn vị tính",
+      "quantity": 0,
+      "unit_price": 0,
+      "amount": 0,
+      "vat_rate": "8%",
+      "vat_amount": 0,
+      "amount_after_vat": 0
+    }
+  ],
+  "summary": {
+    "total_amount_before_vat": 0,
+    "vat_rate": "0%",
+    "vat_amount": 0,
+    "total_payment": 0,
+    "total_payment_in_words": ""
+  }
+}
+
+LƯU Ý QUAN TRỌNG:
+1. BỎ QUA tất cả chữ viết tay, bút bi xanh, ghi chú bằng tay. CHỈ đọc phần văn bản được IN MÁY
+2. ĐỌC CHÍNH XÁC các giá trị từ hình ảnh, KHÔNG tính toán lại
+3. Tất cả giá trị số tiền phải là số nguyên (không có dấu phẩy, dấu chấm)
+4. quantity có thể là số thập phân
+5. unit_price và amount phải là số nguyên
+6. amount = thành tiền TRƯỚC thuế, amount_after_vat = thành tiền SAU thuế
+7. vat_rate của mỗi item phải có dạng "X%" (ví dụ: "10%", "8%", "5%", "0%")
+8. Nếu không tìm thấy thông tin, để trống hoặc 0
+9. Nếu không có VAT, để vat_rate = "0%", vat_amount = 0, amount_after_vat = amount
+10. total_payment = tổng tiền thanh toán cuối cùng
 """
 
 INVOICE_CORRECTION_PROMPT = """Bạn là một AI chuyên xử lý hóa đơn VAT Việt Nam.
@@ -168,6 +235,10 @@ class AIExtractor:
     Uses Gemini Flash for speed, Pro for accuracy when needed
     Updated to use new google.genai SDK
     """
+
+    # Fallback models when primary models are unavailable (503/429)
+    FLASH_FALLBACKS = ["gemini-2.5-flash", "gemini-2.5-flash-lite"]
+    PRO_FALLBACKS = ["gemini-3.1-flash-lite-preview", "gemini-2.5-flash"]
 
     def __init__(self):
         self._client = None
@@ -205,6 +276,36 @@ class AIExtractor:
         logger.info(f"Pro model: {self._pro_model_name}")
 
         self._initialized = True
+
+    def _generate_with_fallback(self, model_name: str, contents, config, fallbacks: List[str] = None):
+        """
+        Call Gemini generate_content with automatic fallback on 503/429 errors.
+        Returns (response, actual_model_used).
+        """
+        models_to_try = [model_name] + (fallbacks or [])
+        last_error = None
+
+        for model in models_to_try:
+            try:
+                response = self._client.models.generate_content(
+                    model=model,
+                    contents=contents,
+                    config=config
+                )
+                if model != model_name:
+                    logger.info(f"Fallback succeeded: {model_name} → {model}")
+                return response, model
+            except Exception as e:
+                error_str = str(e)
+                is_retriable = any(code in error_str for code in ["503", "429", "UNAVAILABLE", "RESOURCE_EXHAUSTED"])
+                if is_retriable and model != models_to_try[-1]:
+                    logger.warning(f"Model {model} unavailable ({error_str[:80]}), trying next fallback...")
+                    last_error = e
+                    continue
+                else:
+                    raise
+
+        raise last_error
 
     def _list_available_models(self) -> List[str]:
         """List available Gemini models for debugging"""
@@ -253,11 +354,12 @@ class AIExtractor:
                 mime_type="application/pdf"
             )
 
-            # Send to Gemini Flash with PDF
-            response = self._client.models.generate_content(
-                model=self._flash_model_name,
+            # Send to Gemini Flash with PDF (fallback on 503)
+            response, _ = self._generate_with_fallback(
+                model_name=self._flash_model_name,
                 contents=[INVOICE_PDF_EXTRACTION_PROMPT, pdf_part],
-                config=self._generation_config
+                config=self._generation_config,
+                fallbacks=self.FLASH_FALLBACKS
             )
             response_text = response.text.strip()
 
@@ -341,11 +443,12 @@ Hãy đọc lại PDF và trích xuất chính xác."""
             else:
                 prompt = INVOICE_PDF_EXTRACTION_PROMPT
 
-            # Send to Gemini Pro with PDF
-            response = self._client.models.generate_content(
-                model=self._pro_model_name,
+            # Send to Gemini Pro with PDF (fallback on 503)
+            response, _ = self._generate_with_fallback(
+                model_name=self._pro_model_name,
                 contents=[prompt, pdf_part],
-                config=self._generation_config
+                config=self._generation_config,
+                fallbacks=self.PRO_FALLBACKS
             )
             response_text = response.text.strip()
 
@@ -379,6 +482,369 @@ Hãy đọc lại PDF và trích xuất chính xác."""
             logger.exception(f"Pro PDF extraction failed: {e}")
             return None, elapsed
 
+    def extract_from_pdf_with_markitdown(
+        self,
+        pdf_bytes: bytes,
+        filename: str,
+        processing_log: List[ProcessingLogEntry]
+    ) -> Tuple[Optional[ProcessedInvoice], int, float, List[str]]:
+        """
+        Extract invoice data from PDF using MarkItDown (PDF → Markdown text) + Gemini Flash (text).
+        Returns (None, ...) if MarkItDown fails — caller should fallback to Gemini Vision.
+        """
+        self._ensure_initialized()
+
+        log_entry = ProcessingLogEntry(
+            step="markitdown",
+            status="processing",
+            message="Đang đọc PDF với MarkItDown..."
+        )
+        processing_log.append(log_entry)
+
+        start_time = time.time()
+
+        try:
+            from markitdown import MarkItDown
+            import io
+
+            ext = "." + filename.rsplit(".", 1)[-1].lower() if "." in filename else ".pdf"
+            md_converter = MarkItDown()
+            result = md_converter.convert_stream(io.BytesIO(pdf_bytes), file_extension=ext)
+            markdown_text = result.text_content
+
+            if not markdown_text or len(markdown_text.strip()) < 50:
+                elapsed = int((time.time() - start_time) * 1000)
+                log_entry.status = "error"
+                log_entry.message = "MarkItDown: không trích xuất được text (có thể là PDF scan)"
+                log_entry.duration_ms = elapsed
+                logger.warning("MarkItDown returned empty/short text, caller should fallback to Vision")
+                return None, elapsed, 0.0, []
+
+            logger.info(f"MarkItDown extracted {len(markdown_text)} chars from {filename}")
+            log_entry.message = f"MarkItDown OK ({len(markdown_text)} ký tự), đang gọi Gemini Flash..."
+
+            prompt = INVOICE_EXTRACTION_PROMPT.format(ocr_text=markdown_text)
+            response, _ = self._generate_with_fallback(
+                model_name=self._flash_model_name,
+                contents=prompt,
+                config=self._generation_config,
+                fallbacks=self.FLASH_FALLBACKS
+            )
+            response_text = response.text.strip()
+
+            invoice = self._parse_response(response_text)
+            confidence, low_fields = self._calculate_confidence(invoice)
+
+            elapsed = int((time.time() - start_time) * 1000)
+
+            if invoice is None:
+                log_entry.status = "error"
+                log_entry.message = "Không thể parse JSON từ Gemini response"
+                log_entry.duration_ms = elapsed
+                log_entry.details = f"Response: {response_text[:200]}..."
+                return None, elapsed, 0.0, []
+
+            log_entry.status = "completed"
+            log_entry.message = f"MarkItDown + Flash hoàn tất (confidence: {confidence:.0%})"
+            log_entry.duration_ms = elapsed
+            log_entry.details = f"Extracted {len(invoice.items)} items, confidence={confidence}"
+
+            logger.info(f"MarkItDown + Flash completed in {elapsed}ms, confidence={confidence}")
+            return invoice, elapsed, confidence, low_fields
+
+        except ImportError:
+            elapsed = int((time.time() - start_time) * 1000)
+            log_entry.status = "error"
+            log_entry.message = "MarkItDown chưa được cài đặt (pip install markitdown[pdf])"
+            log_entry.duration_ms = elapsed
+            logger.warning("MarkItDown not installed, falling back to Gemini Vision")
+            return None, elapsed, 0.0, []
+
+        except Exception as e:
+            elapsed = int((time.time() - start_time) * 1000)
+            log_entry.status = "error"
+            log_entry.message = f"Lỗi MarkItDown: {str(e)}"
+            log_entry.duration_ms = elapsed
+            logger.exception(f"MarkItDown extraction failed: {e}")
+            return None, elapsed, 0.0, []
+
+    def _get_mime_type(self, file_bytes: bytes, filename: str = "") -> str:
+        """Detect MIME type from file extension or magic bytes"""
+        ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+        mime_map = {
+            "pdf": "application/pdf",
+            "jpg": "image/jpeg",
+            "jpeg": "image/jpeg",
+            "png": "image/png",
+        }
+        if ext in mime_map:
+            return mime_map[ext]
+        # Fallback: check magic bytes
+        if file_bytes[:4] == b'%PDF':
+            return "application/pdf"
+        if file_bytes[:3] == b'\xff\xd8\xff':
+            return "image/jpeg"
+        if file_bytes[:8] == b'\x89PNG\r\n\x1a\n':
+            return "image/png"
+        return "application/octet-stream"
+
+    def _calculate_confidence(self, invoice) -> tuple:
+        """
+        Calculate confidence score for extracted invoice data.
+        Returns (confidence: float, low_confidence_fields: list[str])
+        """
+        if invoice is None:
+            return 0.0, []
+
+        low_fields = []
+        checks = 0
+        passed = 0
+
+        # Check metadata
+        checks += 2
+        if invoice.invoice_metadata.invoice_no:
+            passed += 1
+        else:
+            low_fields.append("invoice_metadata.invoice_no")
+        if invoice.invoice_metadata.invoice_date:
+            passed += 1
+        else:
+            low_fields.append("invoice_metadata.invoice_date")
+
+        # Check seller
+        checks += 1
+        if invoice.seller.company_name:
+            passed += 1
+        else:
+            low_fields.append("seller.company_name")
+
+        # Check items
+        checks += 1
+        if len(invoice.items) > 0:
+            passed += 1
+        else:
+            low_fields.append("items")
+
+        # Check each item quality
+        for i, item in enumerate(invoice.items):
+            checks += 3
+            if item.description:
+                passed += 1
+            else:
+                low_fields.append(f"items[{i}].description")
+            if item.quantity > 0:
+                passed += 1
+            else:
+                low_fields.append(f"items[{i}].quantity")
+            if item.unit_price > 0 or item.amount > 0:
+                passed += 1
+            else:
+                low_fields.append(f"items[{i}].unit_price")
+
+        # Check summary
+        checks += 1
+        if invoice.summary.total_payment > 0:
+            passed += 1
+        else:
+            low_fields.append("summary.total_payment")
+
+        # Math checks: amount = quantity × unit_price per item
+        tolerance = 1.0
+        for i, item in enumerate(invoice.items):
+            if item.quantity > 0 and item.unit_price > 0 and item.amount > 0:
+                checks += 1
+                expected = item.quantity * item.unit_price
+                if abs(expected - item.amount) <= tolerance:
+                    passed += 1
+                else:
+                    low_fields.append(f"items[{i}].amount_math")
+
+        # Math check: total_amount_before_vat = sum(items.amount)
+        items_total = sum(item.amount for item in invoice.items)
+        if items_total > 0 and invoice.summary.total_amount_before_vat > 0:
+            checks += 1
+            if abs(items_total - invoice.summary.total_amount_before_vat) <= tolerance:
+                passed += 1
+            else:
+                low_fields.append("summary.total_amount_before_vat_math")
+
+        # Math check: total_payment = total_amount_before_vat + vat_amount
+        if invoice.summary.total_amount_before_vat > 0 and invoice.summary.total_payment > 0:
+            checks += 1
+            expected_total = invoice.summary.total_amount_before_vat + invoice.summary.vat_amount
+            if abs(expected_total - invoice.summary.total_payment) <= tolerance:
+                passed += 1
+            else:
+                low_fields.append("summary.total_payment_math")
+
+        confidence = passed / checks if checks > 0 else 0.0
+        return round(confidence, 3), low_fields
+
+    def extract_from_image_with_flash(
+        self,
+        file_bytes: bytes,
+        filename: str,
+        processing_log: List[ProcessingLogEntry],
+        use_image_prompt: bool = False
+    ) -> Tuple[Optional[ProcessedInvoice], int, float, List[str]]:
+        """
+        Extract invoice data from image/PDF using Gemini Flash Vision.
+
+        Args:
+            file_bytes: File content as bytes (PDF, JPG, PNG)
+            filename: Original filename for MIME detection
+            processing_log: List to append log entries
+            use_image_prompt: If True, use IMAGE prompt (ignore handwriting)
+
+        Returns:
+            Tuple of (ProcessedInvoice or None, duration_ms, confidence, low_confidence_fields)
+        """
+        self._ensure_initialized()
+
+        log_entry = ProcessingLogEntry(
+            step="flash",
+            status="processing",
+            message="Đang đọc file với Gemini Flash..."
+        )
+        processing_log.append(log_entry)
+
+        start_time = time.time()
+
+        try:
+            mime_type = self._get_mime_type(file_bytes, filename)
+            logger.debug(f"Processing file with Gemini Flash, size: {len(file_bytes)} bytes, mime: {mime_type}")
+
+            file_part = types.Part.from_bytes(data=file_bytes, mime_type=mime_type)
+
+            prompt = INVOICE_IMAGE_EXTRACTION_PROMPT if use_image_prompt else INVOICE_PDF_EXTRACTION_PROMPT
+
+            response, _ = self._generate_with_fallback(
+                model_name=self._flash_model_name,
+                contents=[prompt, file_part],
+                config=self._generation_config,
+                fallbacks=self.FLASH_FALLBACKS
+            )
+            response_text = response.text.strip()
+
+            invoice = self._parse_response(response_text)
+            confidence, low_fields = self._calculate_confidence(invoice)
+
+            elapsed = int((time.time() - start_time) * 1000)
+
+            if invoice is None:
+                log_entry.status = "error"
+                log_entry.message = "Không thể parse JSON từ response"
+                log_entry.duration_ms = elapsed
+                log_entry.details = f"Response: {response_text[:200]}..."
+                logger.error(f"Flash parse failed, response: {response_text[:500]}")
+                return None, elapsed, 0.0, []
+
+            log_entry.status = "completed"
+            log_entry.message = f"Đọc Flash hoàn tất (confidence: {confidence:.0%})"
+            log_entry.duration_ms = elapsed
+            log_entry.details = f"Extracted {len(invoice.items)} items, confidence={confidence}"
+
+            logger.info(f"Flash extraction completed in {elapsed}ms, confidence={confidence}")
+            return invoice, elapsed, confidence, low_fields
+
+        except Exception as e:
+            elapsed = int((time.time() - start_time) * 1000)
+            log_entry.status = "error"
+            log_entry.message = f"Lỗi Flash: {str(e)}"
+            log_entry.duration_ms = elapsed
+
+            logger.exception(f"Flash extraction failed: {e}")
+            return None, elapsed, 0.0, []
+
+    def recheck_with_pro(
+        self,
+        file_bytes: bytes,
+        filename: str,
+        previous_result: ProcessedInvoice,
+        low_confidence_fields: List[str],
+        processing_log: List[ProcessingLogEntry],
+        use_image_prompt: bool = False
+    ) -> Tuple[Optional[ProcessedInvoice], int, float, List[str]]:
+        """
+        Recheck extraction using Gemini Pro when confidence is low.
+
+        Args:
+            file_bytes: File content as bytes
+            filename: Original filename for MIME detection
+            previous_result: Previous extraction result
+            low_confidence_fields: Fields with low confidence
+            processing_log: List to append log entries
+            use_image_prompt: If True, use IMAGE prompt (ignore handwriting)
+
+        Returns:
+            Tuple of (ProcessedInvoice or None, duration_ms, confidence, low_confidence_fields)
+        """
+        self._ensure_initialized()
+
+        log_entry = ProcessingLogEntry(
+            step="pro",
+            status="processing",
+            message="Đang recheck với Gemini Pro..."
+        )
+        processing_log.append(log_entry)
+
+        start_time = time.time()
+
+        try:
+            mime_type = self._get_mime_type(file_bytes, filename)
+            file_part = types.Part.from_bytes(data=file_bytes, mime_type=mime_type)
+
+            base_prompt = INVOICE_IMAGE_EXTRACTION_PROMPT if use_image_prompt else INVOICE_PDF_EXTRACTION_PROMPT
+
+            previous_json = previous_result.model_dump_json(indent=2)
+            fields_text = "\n".join(f"- {f}" for f in low_confidence_fields)
+            prompt = f"""{base_prompt}
+
+Kết quả lần đọc trước (có thể chưa chính xác):
+{previous_json}
+
+Các trường cần kiểm tra lại (độ chính xác thấp):
+{fields_text}
+
+Hãy đọc lại file và trả về kết quả chính xác hơn. Đặc biệt chú ý các trường được đánh dấu ở trên."""
+
+            response, _ = self._generate_with_fallback(
+                model_name=self._pro_model_name,
+                contents=[prompt, file_part],
+                config=self._generation_config,
+                fallbacks=self.PRO_FALLBACKS
+            )
+            response_text = response.text.strip()
+
+            invoice = self._parse_response(response_text)
+            confidence, low_fields = self._calculate_confidence(invoice)
+
+            elapsed = int((time.time() - start_time) * 1000)
+
+            if invoice is None:
+                log_entry.status = "error"
+                log_entry.message = "Không thể parse JSON từ Pro response"
+                log_entry.duration_ms = elapsed
+                log_entry.details = f"Response: {response_text[:200]}..."
+                return None, elapsed, 0.0, []
+
+            log_entry.status = "completed"
+            log_entry.message = f"Recheck Pro hoàn tất (confidence: {confidence:.0%})"
+            log_entry.duration_ms = elapsed
+            log_entry.details = f"Rechecked {len(invoice.items)} items, confidence={confidence}"
+
+            logger.info(f"Pro recheck completed in {elapsed}ms, confidence={confidence}")
+            return invoice, elapsed, confidence, low_fields
+
+        except Exception as e:
+            elapsed = int((time.time() - start_time) * 1000)
+            log_entry.status = "error"
+            log_entry.message = f"Lỗi Pro recheck: {str(e)}"
+            log_entry.duration_ms = elapsed
+
+            logger.exception(f"Pro recheck failed: {e}")
+            return None, elapsed, 0.0, []
+
     def extract_with_flash(
         self,
         ocr_text: str,
@@ -409,10 +875,11 @@ Hãy đọc lại PDF và trích xuất chính xác."""
             prompt = INVOICE_EXTRACTION_PROMPT.format(ocr_text=ocr_text)
             logger.debug(f"Sending to Gemini Flash, prompt length: {len(prompt)}")
 
-            response = self._client.models.generate_content(
-                model=self._flash_model_name,
+            response, _ = self._generate_with_fallback(
+                model_name=self._flash_model_name,
                 contents=prompt,
-                config=self._generation_config
+                config=self._generation_config,
+                fallbacks=self.FLASH_FALLBACKS
             )
             response_text = response.text.strip()
 
@@ -480,10 +947,11 @@ Hãy đọc lại PDF và trích xuất chính xác."""
             )
             logger.debug(f"Sending to Gemini Pro, prompt length: {len(prompt)}")
 
-            response = self._client.models.generate_content(
-                model=self._pro_model_name,
+            response, _ = self._generate_with_fallback(
+                model_name=self._pro_model_name,
                 contents=prompt,
-                config=self._generation_config
+                config=self._generation_config,
+                fallbacks=self.PRO_FALLBACKS
             )
             response_text = response.text.strip()
 
@@ -545,6 +1013,18 @@ Hãy đọc lại PDF và trích xuất chính xác."""
 
             # Convert to Pydantic model
             invoice = ProcessedInvoice(**data)
+
+            # Ensure per-item VAT fields are populated
+            for item in invoice.items:
+                if item.amount > 0 and item.amount_after_vat == 0:
+                    # Try to compute from summary vat_rate if per-item vat_rate is missing
+                    rate_str = item.vat_rate or invoice.summary.vat_rate or "0%"
+                    try:
+                        rate = float(rate_str.replace('%', '').strip()) / 100
+                    except (ValueError, AttributeError):
+                        rate = 0.0
+                    item.vat_amount = round(item.amount * rate)
+                    item.amount_after_vat = item.amount + item.vat_amount
 
             logger.debug(f"Parsed invoice: {len(invoice.items)} items")
             return invoice

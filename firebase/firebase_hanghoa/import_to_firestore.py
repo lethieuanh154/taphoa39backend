@@ -120,8 +120,8 @@ def update_products_from_banhang_app_to_firestore(update_payload):
                 # OnHandNV: preserve decimals, round to 1 decimal place
                 target_value = round(float(current_value) - float(minus_value) + float(plus_value), 1)
             else:
-                # OnHand: integer (KiotViet standard)
-                target_value = int(current_value) - int(minus_value) + int(plus_value)
+                # OnHand: preserve decimals for child units (e.g. "10 lon" = 1.4)
+                target_value = round(float(current_value) - float(minus_value) + float(plus_value), 1)
 
             # ✅ Update product OnHand hoặc OnHandNV tùy theo loại
             # Cập nhật SyncTimestamp và ModifiedDate để:

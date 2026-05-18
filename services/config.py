@@ -12,8 +12,8 @@ class InvoiceProcessingConfig:
 
     # Gemini API
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-    GEMINI_FLASH_MODEL = os.getenv("GEMINI_FLASH_MODEL", "gemini-3-flash")
-    GEMINI_PRO_MODEL = os.getenv("GEMINI_PRO_MODEL", "gemini-3-flash")
+    GEMINI_FLASH_MODEL = os.getenv("GEMINI_FLASH_MODEL")
+    GEMINI_PRO_MODEL = os.getenv("GEMINI_PRO_MODEL")
 
     # OCR
     OCR_LANGUAGES = os.getenv("OCR_LANGUAGES", "vi,en").split(",")
@@ -24,7 +24,7 @@ class InvoiceProcessingConfig:
 
     # File limits
     MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
-    ALLOWED_EXTENSIONS = {"pdf"}
+    ALLOWED_EXTENSIONS = {"pdf", "jpg", "jpeg", "png"}
 
     # Validation thresholds
     AMOUNT_TOLERANCE = 1.0  # Cho phép sai số 1 đồng

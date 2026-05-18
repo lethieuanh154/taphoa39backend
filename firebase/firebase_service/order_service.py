@@ -8,7 +8,7 @@ load_dotenv()
 COLLECTION_NAME = "orders"
 
 # Đặt tên app duy nhất cho mỗi service account
-db = init_firestore("FIREBASE_SERVICE_ACCOUNT_HOADON")
+db = init_firestore("FIREBASE_SERVICE_ACCOUNT_DATHANG")
 # Chuyển chuỗi JSON thành dict và tạo credential
 
 
@@ -57,6 +57,17 @@ class FirestoreorderService:
             return [order.to_dict() for order in orders]
         except Exception as e:
             raise Exception(f"Error getting orders by date: {str(e)}")
+
+    def get_orders_by_delivery_date(self, date):
+        """
+        Get delivery orders for a specific desiredDeliveryDate.
+        Expected date format: YYYY-MM-DD (e.g., "2026-05-07")
+        """
+        try:
+            docs = self.orders_ref.where('desiredDeliveryDate', '==', date).stream()
+            return [doc.to_dict() | {"id": doc.id} for doc in docs]
+        except Exception as e:
+            raise Exception(f"Error getting orders by delivery date: {str(e)}")
 
     def get_orders_by_status(self, status: str):
         """

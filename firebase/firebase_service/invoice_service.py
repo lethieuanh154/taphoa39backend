@@ -157,6 +157,8 @@ class FirestoreInvoiceService:
             "kvCost": direction * totals.get("kvCost", 0),
             "kvProfit": direction * totals.get("kvProfit", 0),
             "kvVat": direction * totals.get("kvVat", 0),
+            "kvVatInput": direction * totals.get("kvVatInput", 0),
+            "kvVatPayable": direction * totals.get("kvVatPayable", 0),
             "nvRevenue": direction * totals.get("nvRevenue", 0),
             "nvCost": direction * totals.get("nvCost", 0),
             "nvProfit": direction * totals.get("nvProfit", 0),
@@ -188,6 +190,7 @@ class FirestoreInvoiceService:
         kv_revenue = 0.0
         kv_cost = 0.0
         kv_vat = 0.0
+        kv_vat_input = 0.0
         nv_revenue = 0.0
         nv_cost = 0.0
 
@@ -218,7 +221,8 @@ class FirestoreInvoiceService:
                     kv_cost += item_cost
                     tax_rate = self.safe_float(product.get("Tax", 0))
                     if tax_rate > 0:
-                        kv_vat += item_revenue * tax_rate / (100 + tax_rate)
+                        kv_vat += item_revenue * tax_rate / 100
+                        kv_vat_input += item_cost * tax_rate / 100
         else:
             # Fallback: dùng invoice-level totals (không thể split)
             total_revenue = self.safe_float(
@@ -247,6 +251,8 @@ class FirestoreInvoiceService:
             "kvCost": round(kv_cost, 2),
             "kvProfit": round(kv_revenue - kv_cost, 2),
             "kvVat": round(kv_vat, 2),
+            "kvVatInput": round(kv_vat_input, 2),
+            "kvVatPayable": round(kv_vat - kv_vat_input, 2),
             "nvRevenue": round(nv_revenue, 2),
             "nvCost": round(nv_cost, 2),
             "nvProfit": round(nv_revenue - nv_cost, 2),
@@ -297,6 +303,8 @@ class FirestoreInvoiceService:
             "kvCost": Increment(delta.get("kvCost", 0)),
             "kvProfit": Increment(delta.get("kvProfit", 0)),
             "kvVat": Increment(delta.get("kvVat", 0)),
+            "kvVatInput": Increment(delta.get("kvVatInput", 0)),
+            "kvVatPayable": Increment(delta.get("kvVatPayable", 0)),
             "nvRevenue": Increment(delta.get("nvRevenue", 0)),
             "nvCost": Increment(delta.get("nvCost", 0)),
             "nvProfit": Increment(delta.get("nvProfit", 0)),
@@ -347,6 +355,7 @@ class FirestoreInvoiceService:
         kv_revenue = 0
         kv_cost = 0
         kv_vat = 0
+        kv_vat_input = 0
         nv_revenue = 0
         nv_cost = 0
         for invoice in invoices:
@@ -379,7 +388,8 @@ class FirestoreInvoiceService:
                         kv_cost += item_cost
                         tax_rate = self.safe_float(product.get('Tax', 0))
                         if tax_rate > 0:
-                            kv_vat += item_revenue * tax_rate / (100 + tax_rate)
+                            kv_vat += item_revenue * tax_rate / 100
+                            kv_vat_input += item_cost * tax_rate / 100
             else:
                 # Fallback: invoice không có cartItems → dùng invoice-level totals
                 total_revenue = self.safe_float(
@@ -408,6 +418,8 @@ class FirestoreInvoiceService:
             'kvCost': round(kv_cost, 2),
             'kvProfit': round(kv_revenue - kv_cost, 2),
             'kvVat': round(kv_vat, 2),
+            'kvVatInput': round(kv_vat_input, 2),
+            'kvVatPayable': round(kv_vat - kv_vat_input, 2),
             'nvRevenue': round(nv_revenue, 2),
             'nvCost': round(nv_cost, 2),
             'nvProfit': round(nv_revenue - nv_cost, 2),
@@ -416,7 +428,12 @@ class FirestoreInvoiceService:
         summary_ref.set(summary)
         return summary
 
-    def get_daily_summary(self, date):
+    def get_daily_summary(self, date, recalculate=False):
+        """Đọc từ DailySummary collection (1 read). Fallback calculate nếu chưa có."""
+        if not recalculate:
+            doc = db.collection('DailySummary').document(date).get()
+            if doc.exists:
+                return doc.to_dict()
         return self.calculate_daily_summary(date)
 
     def calculate_monthly_summary(self, year, month):
@@ -431,6 +448,7 @@ class FirestoreInvoiceService:
         kv_revenue = 0
         kv_cost = 0
         kv_vat = 0
+        kv_vat_input = 0
         nv_revenue = 0
         nv_cost = 0
         for day in range(1, days_in_month + 1):
@@ -443,6 +461,7 @@ class FirestoreInvoiceService:
             kv_revenue += daily.get('kvRevenue', 0)
             kv_cost += daily.get('kvCost', 0)
             kv_vat += daily.get('kvVat', 0)
+            kv_vat_input += daily.get('kvVatInput', 0)
             nv_revenue += daily.get('nvRevenue', 0)
             nv_cost += daily.get('nvCost', 0)
         profit = revenue - cost
@@ -457,6 +476,8 @@ class FirestoreInvoiceService:
             'kvCost': round(kv_cost, 2),
             'kvProfit': round(kv_revenue - kv_cost, 2),
             'kvVat': round(kv_vat, 2),
+            'kvVatInput': round(kv_vat_input, 2),
+            'kvVatPayable': round(kv_vat - kv_vat_input, 2),
             'nvRevenue': round(nv_revenue, 2),
             'nvCost': round(nv_cost, 2),
             'nvProfit': round(nv_revenue - nv_cost, 2),
@@ -464,7 +485,13 @@ class FirestoreInvoiceService:
         summary_ref = db.collection('MonthlySummary').document(doc_id)
         summary_ref.set(summary)
         return summary
-    def get_monthly_summary(self, year, month):
+    def get_monthly_summary(self, year, month, recalculate=False):
+        """Đọc từ MonthlySummary collection (1 read). Fallback calculate nếu chưa có."""
+        doc_id = f"{year}-{str(month).zfill(2)}"
+        if not recalculate:
+            doc = db.collection('MonthlySummary').document(doc_id).get()
+            if doc.exists:
+                return doc.to_dict()
         return self.calculate_monthly_summary(year, month)
 
     def calculate_yearly_summary(self, year):
@@ -477,6 +504,7 @@ class FirestoreInvoiceService:
         kv_revenue = 0
         kv_cost = 0
         kv_vat = 0
+        kv_vat_input = 0
         nv_revenue = 0
         nv_cost = 0
         for month in range(1, 13):
@@ -488,6 +516,7 @@ class FirestoreInvoiceService:
             kv_revenue += monthly.get('kvRevenue', 0)
             kv_cost += monthly.get('kvCost', 0)
             kv_vat += monthly.get('kvVat', 0)
+            kv_vat_input += monthly.get('kvVatInput', 0)
             nv_revenue += monthly.get('nvRevenue', 0)
             nv_cost += monthly.get('nvCost', 0)
         profit = revenue - cost
@@ -501,6 +530,8 @@ class FirestoreInvoiceService:
             'kvCost': round(kv_cost, 2),
             'kvProfit': round(kv_revenue - kv_cost, 2),
             'kvVat': round(kv_vat, 2),
+            'kvVatInput': round(kv_vat_input, 2),
+            'kvVatPayable': round(kv_vat - kv_vat_input, 2),
             'nvRevenue': round(nv_revenue, 2),
             'nvCost': round(nv_cost, 2),
             'nvProfit': round(nv_revenue - nv_cost, 2),
@@ -509,8 +540,63 @@ class FirestoreInvoiceService:
         summary_ref.set(summary)
         return summary
 
-    def get_yearly_summary(self, year):
+    def get_yearly_summary(self, year, recalculate=False):
+        """Đọc từ YearlySummary collection (1 read). Fallback calculate nếu chưa có."""
+        if not recalculate:
+            doc = db.collection('YearlySummary').document(str(year)).get()
+            if doc.exists:
+                return doc.to_dict()
         return self.calculate_yearly_summary(year)
+
+    def calculate_date_range_summary(self, start_date, end_date):
+        """
+        Tính tổng hợp summary cho khoảng ngày từ start_date đến end_date (inclusive).
+        Aggregate từ calculate_daily_summary cho mỗi ngày trong range.
+        """
+        from datetime import datetime as dt, timedelta
+        start = dt.strptime(start_date, "%Y-%m-%d")
+        end = dt.strptime(end_date, "%Y-%m-%d")
+        revenue = 0
+        cost = 0
+        buyer_quantity = 0
+        kv_revenue = 0
+        kv_cost = 0
+        kv_vat = 0
+        kv_vat_input = 0
+        nv_revenue = 0
+        nv_cost = 0
+        current = start
+        while current <= end:
+            date_str = current.strftime("%Y-%m-%d")
+            daily = self.calculate_daily_summary(date_str)
+            revenue += daily.get('revenue', 0)
+            cost += daily.get('cost', 0)
+            buyer_quantity += daily.get('buyer_quantity', 0)
+            kv_revenue += daily.get('kvRevenue', 0)
+            kv_cost += daily.get('kvCost', 0)
+            kv_vat += daily.get('kvVat', 0)
+            kv_vat_input += daily.get('kvVatInput', 0)
+            nv_revenue += daily.get('nvRevenue', 0)
+            nv_cost += daily.get('nvCost', 0)
+            current += timedelta(days=1)
+        profit = revenue - cost
+        return {
+            'buyer_quantity': buyer_quantity,
+            'start_date': start_date,
+            'end_date': end_date,
+            'revenue': round(revenue, 2),
+            'cost': round(cost, 2),
+            'profit': round(profit, 2),
+            'kvRevenue': round(kv_revenue, 2),
+            'kvCost': round(kv_cost, 2),
+            'kvProfit': round(kv_revenue - kv_cost, 2),
+            'kvVat': round(kv_vat, 2),
+            'kvVatInput': round(kv_vat_input, 2),
+            'kvVatPayable': round(kv_vat - kv_vat_input, 2),
+            'nvRevenue': round(nv_revenue, 2),
+            'nvCost': round(nv_cost, 2),
+            'nvProfit': round(nv_revenue - nv_cost, 2),
+        }
     
     def calculate_top_products_summary(self, date=None, year=None, month=None):
         """
@@ -566,8 +652,8 @@ class FirestoreInvoiceService:
                     product_sales[product_id]['totalProfit'] += total_profit
                     product_sales[product_id]['totalQuantity'] += quantity
 
-        # Sắp xếp theo lợi nhuận giảm dần và lấy top 20
-        top_products = sorted(product_sales.values(), key=lambda x: x['totalProfit'], reverse=True)[:20]
+        # Sắp xếp theo lợi nhuận giảm dần và lấy top 50
+        top_products = sorted(product_sales.values(), key=lambda x: x['totalProfit'], reverse=True)[:50]
 
         # Lưu vào Firestore
         summary_ref = db.collection('TopProductsSummary').document(doc_id)

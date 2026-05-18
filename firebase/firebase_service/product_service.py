@@ -28,6 +28,10 @@ API_HEADERS = {
 }
 COLLECTION_NAME = "products"
 
+# Cache TTL: 1 giờ cho tất cả product cache
+CACHE_TTL = 3600
+CACHE_TTL_CLONE_STOCK = 3600
+
 # Sử dụng init_firestore thay vì khởi tạo trực tiếp
 db = init_firestore("FIREBASE_SERVICE_ACCOUNT_PRODUCT", app_name="product_app")
 
@@ -114,7 +118,7 @@ class FirestoreProductService:
             enriched = dict(data)
             result.append(enriched)
 
-        self.cache.set(cache_key, result, ttl=300)
+        self.cache.set(cache_key, result, ttl=CACHE_TTL)
         return result
 
     def read_product(self, product_id):
@@ -124,7 +128,7 @@ class FirestoreProductService:
         doc = self.products_ref.document(str(product_id)).get()
         if doc.exists:
             product = doc.to_dict()
-            self.cache.set(product_id, product, ttl=300)
+            self.cache.set(product_id, product, ttl=CACHE_TTL)
             return product
         return None
 
@@ -206,8 +210,8 @@ class FirestoreProductService:
 
         if not self._should_store_product(product):
             doc_ref.delete()
-            self.cache.invalidate(str(product_id))
-            self.invalidate_all_product_caches()
+            self._smart_invalidate_product(product_id, is_delete=True,
+                                           category_id=product.get("CategoryId"))
             return {"message": "Product skipped because inactive or deleted", "skipped": True}
 
         # Add sync metadata
@@ -218,8 +222,13 @@ class FirestoreProductService:
         product = self._sanitize_inventory_fields(product)
 
         doc_ref.set(product)
+        # Add new product to cached lists
         self.cache.invalidate(str(product_id))
-        self.invalidate_all_product_caches()
+        self.cache.add_item_to_lists("all_products", product)
+        self.cache.invalidate_prefix("featured_products:")
+        if product.get("CategoryId"):
+            self.cache.invalidate(f"products_by_category:{product['CategoryId']}:inactive=False")
+            self.cache.invalidate(f"products_by_category:{product['CategoryId']}:inactive=True")
         return {"message": "Product added", "product_id": str(product_id)}
 
     def add_products_batch(self, products: List[Dict]) -> Dict:
@@ -358,7 +367,7 @@ class FirestoreProductService:
             if added_count % 500 != 0:
                 batch.commit()
 
-            # Invalidate cache
+            # Batch add → invalidate all (nhiều products mới, không thể patch từng cái)
             self.invalidate_all_product_caches()
 
             print(f"✅ Added {added_count} products in batch, skipped {skipped_count}, duplicates {duplicate_count}")
@@ -419,14 +428,16 @@ class FirestoreProductService:
 
         doc_ref = self.products_ref.document(str(product_id))
         doc_ref.update(updates)
-        self.cache.invalidate(product_id)
-        self.invalidate_all_product_caches()
+
+        affects_stock = "OnHand" in updates or "OnHandNV" in updates
+        category_id = updates.get("CategoryId") or (product_doc.get("CategoryId") if product_doc else None)
+        self._smart_invalidate_product(product_id, updated_data=updates,
+                                       category_id=category_id, affects_stock=affects_stock)
 
         current_doc = doc_ref.get()
         if current_doc.exists and not self._should_store_product(current_doc.to_dict()):
             doc_ref.delete()
-            self.cache.invalidate(product_id)
-            self.invalidate_all_product_caches()
+            self._smart_invalidate_product(product_id, is_delete=True, category_id=category_id)
             return {"message": "Product removed because inactive or deleted"}
 
         return {"message": "Product updated"}
@@ -460,7 +471,15 @@ class FirestoreProductService:
             doc_ref.set(prod, merge=True)
             updated.append(product_id)
             self.cache.invalidate(product_id)
-        self.invalidate_all_product_caches()
+            # Patch cached lists in-place
+            self.cache.update_item_in_lists("all_products", "Id", product_id, prod)
+        # Invalidate category and featured caches (batch update may affect multiple categories)
+        self.cache.invalidate_prefix("products_by_category:")
+        self.cache.invalidate("clone_stock_map")
+        if removed:
+            self.cache.invalidate_prefix("featured_products:")
+            for rid in removed:
+                self.cache.remove_item_from_lists("all_products", "Id", rid)
         response = {"message": f"Updated {len(updated)} products", "updated": updated}
         if removed:
             response["removed"] = removed
@@ -468,9 +487,12 @@ class FirestoreProductService:
         return response
 
     def delete_product(self, product_id):
+        # Read product before delete to get category info
+        product_doc = self.read_product(str(product_id))
+        category_id = product_doc.get("CategoryId") if product_doc else None
         self.products_ref.document(str(product_id)).delete()
-        self.cache.invalidate(product_id)
-        self.invalidate_all_product_caches()
+        self._smart_invalidate_product(product_id, is_delete=True,
+                                       category_id=category_id, affects_stock=True)
         return {"message": "Product deleted"}
 
     def delete_product_with_siblings(self, product_id) -> Dict:
@@ -521,7 +543,9 @@ class FirestoreProductService:
                         print(f"  ❌ Error deleting sibling {sibling_id}: {e}")
                         errors.append({"id": sibling_id, "error": str(e)})
 
-            self.invalidate_all_product_caches()
+            # Smart invalidate for each deleted sibling
+            for did in deleted_ids:
+                self._smart_invalidate_product(did, is_delete=True, affects_stock=True)
 
             result = {
                 "message": f"Deleted {len(deleted_ids)} products",
@@ -1313,7 +1337,7 @@ class FirestoreProductService:
 
             result.append(dict(data))
 
-        self.cache.set(cache_key, result, ttl=300)
+        self.cache.set(cache_key, result, ttl=CACHE_TTL)
         return result
 
     def search_products(self, query: str, limit: int = 80) -> List[Dict]:
@@ -1356,53 +1380,99 @@ class FirestoreProductService:
 
         return results
 
-    def get_featured_products(self, limit: int = 50) -> List[Dict]:
+    def get_featured_products(self) -> List[Dict]:
         """
-        Lay san pham noi bat: moi nhat theo CreatedDate.
-        Dung cho DatHang app: hien thi khi vao trang lan dau.
+        Lay tat ca san pham (non-clone, active) sort theo CreatedDate desc.
+        Dung cho DatHang app: hien thi khi vao trang, phan trang o route level.
+        Dung read_all_products (co cache 300s) roi sort/filter trong Python.
+        Khong dung Firestore order_by("CreatedDate") vi docs co CreatedDate=null
+        se bi Firestore loai khoi ket qua query.
         """
-        cache_key = f"featured_products:{limit}"
+        cache_key = "featured_products:all"
         if self.cache.has(cache_key):
             return self.cache.get(cache_key)
 
+        # Reuse cached read_all_products (already filters inactive/deleted)
         all_products = self.read_all_products(include_inactive=False, include_deleted=False)
 
-        # Filter: non-clone, active
+        # Filter out clones
         filtered = []
-        for product in all_products:
-            is_clone = self._coerce_bool(product.get("isClone"), False)
+        for data in all_products:
+            is_clone = self._coerce_bool(data.get("isClone"), False)
             if is_clone:
                 continue
-            if (product.get("OnHandNV") or 0) > 0 and (product.get("OnHand") or 0) == 0:
+            # Fallback clone detection
+            if (data.get("OnHandNV") or 0) > 0 and (data.get("OnHand") or 0) == 0:
                 continue
-            filtered.append(product)
+            filtered.append(data)
 
-        # Sort by CreatedDate descending (newest first), fallback to ModifiedDate
-        def sort_key(p):
-            date_str = p.get("CreatedDate") or p.get("ModifiedDate") or ""
-            if not date_str:
+        # Sort by CreatedDate descending (None/missing goes to end)
+        def _sort_key(p):
+            cd = p.get("CreatedDate")
+            if cd is None:
                 return ""
-            if isinstance(date_str, str):
-                return date_str
-            return str(date_str)
+            return str(cd)
 
-        filtered.sort(key=sort_key, reverse=True)
-        result = filtered[:limit]
+        filtered.sort(key=_sort_key, reverse=True)
 
-        self.cache.set(cache_key, result, ttl=300)
-        return result
+        self.cache.set(cache_key, filtered, ttl=CACHE_TTL)
+        return filtered
 
     def invalidate_all_product_caches(self):
-        """Invalidate tất cả các cache keys liên quan đến products"""
+        """Invalidate tất cả các cache keys liên quan đến products.
+        CHỈ dùng cho: KiotViet full sync, explicit refresh, cleanup batch."""
         cache_keys_to_invalidate = [
             "all_products",
             "all_products:inactive=False:deleted=False",
             "all_products:inactive=True:deleted=False",
             "all_products:inactive=False:deleted=True",
             "all_products:inactive=True:deleted=True",
+            "clone_stock_map",
         ]
 
         for key in cache_keys_to_invalidate:
             self.cache.invalidate(key)
 
-        print(f"🗑️ Invalidated {len(cache_keys_to_invalidate)} product cache keys")
+        # Invalidate dynamic cache keys (featured_products:*, products_by_category:*)
+        self.cache.invalidate_prefix("featured_products:")
+        self.cache.invalidate_prefix("products_by_category:")
+
+        print(f"🗑️ Invalidated ALL product cache keys")
+
+    def _smart_invalidate_product(self, product_id, updated_data=None, category_id=None, is_delete=False, affects_stock=False):
+        """Smart invalidation: cập nhật cache in-place thay vì xóa toàn bộ.
+        Tránh full collection scan (15k reads) mỗi khi update 1 product.
+
+        Args:
+            product_id: ID của product
+            updated_data: Dict chứa dữ liệu đã update (dùng để patch cache)
+            category_id: CategoryId nếu biết (để invalidate cache category cụ thể)
+            is_delete: True nếu product bị xóa
+            affects_stock: True nếu OnHand/OnHandNV thay đổi
+        """
+        product_id_str = str(product_id)
+
+        # 1. Invalidate single product cache
+        self.cache.invalidate(product_id_str)
+
+        # 2. Patch all_products lists in-place (thay vì invalidate → re-fetch 15k docs)
+        if is_delete:
+            self.cache.remove_item_from_lists("all_products", "Id", product_id)
+        elif updated_data:
+            self.cache.update_item_in_lists("all_products", "Id", product_id, updated_data)
+
+        # 3. Invalidate category cache chỉ cho category liên quan
+        if category_id:
+            self.cache.invalidate(f"products_by_category:{category_id}:inactive=False")
+            self.cache.invalidate(f"products_by_category:{category_id}:inactive=True")
+        else:
+            # Không biết category → invalidate all category caches
+            self.cache.invalidate_prefix("products_by_category:")
+
+        # 4. Clone stock map chỉ invalidate khi stock thay đổi
+        if affects_stock:
+            self.cache.invalidate("clone_stock_map")
+
+        # 5. Featured products chỉ invalidate khi add/delete (thay đổi danh sách)
+        if is_delete:
+            self.cache.invalidate_prefix("featured_products:")
