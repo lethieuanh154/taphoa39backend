@@ -519,19 +519,22 @@ class TaxInvoiceXMLParser:
                     item_amount = TaxInvoiceXMLParser._parse_amount(find_direct_child_text(hhdv_element, 'ThTien', 'ThanhTien'))
 
                     # Lấy thuế per-item: ưu tiên TThue direct child, fallback TTKhac/VATAmount
-                    item_tax_amount = TaxInvoiceXMLParser._parse_amount(find_direct_child_text(hhdv_element, 'TThue', 'TienThue'))
-                    if item_tax_amount == 0:
-                        item_tax_amount = TaxInvoiceXMLParser._parse_amount(find_in_ttkhac(hhdv_element, 'VATAmount', 'VATAmountOC', 'TongTien_Thue', 'Tiền thuế dòng (Tiền thuế GTGT)'))
+                    _tthue_str = find_direct_child_text(hhdv_element, 'TThue', 'TienThue')
+                    _ttkhac_vat_str = find_in_ttkhac(hhdv_element, 'VATAmount', 'VATAmountOC', 'TongTien_Thue', 'Tiền thuế dòng (Tiền thuế GTGT)')
+                    has_per_item_tax = bool(_tthue_str or _ttkhac_vat_str)
+                    item_tax_amount = TaxInvoiceXMLParser._parse_amount(_tthue_str or _ttkhac_vat_str)
 
                     # Lấy thành tiền sau thuế:
-                    # - TTKhac/Amount có thể = sau thuế (dạng A2: Vinamilk) hoặc = trước thuế (dạng B: MISA)
-                    # - Chỉ dùng TTKhac/Amount nếu nó > ThTien (chứng tỏ đã bao gồm thuế)
-                    # - Nếu không, tự tính amount + taxAmount
+                    # - TTKhac/Amount > ThTien → dạng sau thuế (Vinamilk)
+                    # - has_per_item_tax → tính amount + taxAmount
+                    # - Không có per-item tax (dạng C26TTH) → None (FE hiển thị "-")
                     ttkhac_amount = TaxInvoiceXMLParser._parse_amount(find_in_ttkhac(hhdv_element, 'Amount', 'AmountOC', 'TongTien_CoThue', 'Thành tiền thanh toán của hàng hóa'))
                     if ttkhac_amount > item_amount:
                         item_amount_after_tax = ttkhac_amount
-                    else:
+                    elif has_per_item_tax:
                         item_amount_after_tax = item_amount + item_tax_amount
+                    else:
+                        item_amount_after_tax = None
 
                     item = {
                         'stt': stt,
