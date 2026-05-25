@@ -598,3 +598,65 @@ def create_invoice_routes_v2():
             return jsonify({'error': str(e)}), 500
 
     return bp
+
+
+def create_invoice_legacy_routes():
+    """Legacy /api/invoices endpoints used by invoice-processing-page (TapHoa39BanHang FE)"""
+    from datetime import datetime, timedelta
+
+    bp = Blueprint('invoices_legacy', __name__, url_prefix='/api/invoices')
+
+    @bp.route('/save-ai-invoice', methods=['POST'])
+    def save_ai_invoice():
+        """Save AI-processed invoice to internal_invoices collection"""
+        try:
+            data = request.get_json()
+            if not data:
+                return jsonify({'success': False, 'message': 'No data'}), 400
+
+            success, message, doc_id = service.create_invoice_from_ai(data)
+            return jsonify({'success': success, 'message': message, 'docId': doc_id})
+
+        except Exception as e:
+            logger.exception(f"Error saving AI invoice: {e}")
+            return jsonify({'success': False, 'message': str(e)}), 500
+
+    @bp.route('/recent-ai-invoices', methods=['GET'])
+    def get_recent_ai_invoices():
+        """Get AI invoices from last N days"""
+        try:
+            days = request.args.get('days', 1, type=int)
+            from_date = (datetime.utcnow() - timedelta(days=days)).strftime('%Y-%m-%d')
+            to_date = datetime.utcnow().strftime('%Y-%m-%d')
+
+            result = service.get_invoices(
+                source='AI_PDF',
+                from_date=from_date,
+                to_date=to_date,
+                page_size=100
+            )
+
+            invoices = result.get('invoices', [])
+            return jsonify({'success': True, 'invoices': invoices, 'total': len(invoices)})
+
+        except Exception as e:
+            logger.exception(f"Error getting recent AI invoices: {e}")
+            return jsonify({'success': False, 'invoices': [], 'total': 0}), 500
+
+    @bp.route('/ai-invoice/<doc_id>', methods=['GET'])
+    def get_ai_invoice_by_id(doc_id):
+        """Get single AI invoice by Firestore doc ID"""
+        try:
+            doc = service.db.collection('internal_invoices').document(doc_id).get()
+            if not doc.exists:
+                return jsonify({'success': False, 'message': 'Not found'}), 404
+
+            data = doc.to_dict()
+            data['id'] = doc.id
+            return jsonify({'success': True, 'invoice': data})
+
+        except Exception as e:
+            logger.exception(f"Error getting AI invoice {doc_id}: {e}")
+            return jsonify({'success': False, 'message': str(e)}), 500
+
+    return bp
