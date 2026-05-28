@@ -526,10 +526,15 @@ class TaxInvoiceXMLParser:
 
                     # Lấy thành tiền sau thuế:
                     # - TTKhac/Amount > ThTien → dạng sau thuế (Vinamilk)
+                    # - TTKhac/Amount > 0 + STCKhau > 0 → VNPT chiết khấu: Amount = (ThTien-CK)+VAT < ThTien
                     # - has_per_item_tax → tính amount + taxAmount
                     # - Không có per-item tax (dạng C26TTH) → None (FE hiển thị "-")
+                    stckhau = TaxInvoiceXMLParser._parse_amount(find_direct_child_text(hhdv_element, 'STCKhau'))
                     ttkhac_amount = TaxInvoiceXMLParser._parse_amount(find_in_ttkhac(hhdv_element, 'Amount', 'AmountOC', 'TongTien_CoThue', 'Thành tiền thanh toán của hàng hóa'))
                     if ttkhac_amount > item_amount:
+                        item_amount_after_tax = ttkhac_amount
+                    elif ttkhac_amount > 0 and stckhau > 0:
+                        # VNPT với chiết khấu: TTKhac/Amount = (ThTien - STCKhau) + VAT = Thành tiền thanh toán
                         item_amount_after_tax = ttkhac_amount
                     elif has_per_item_tax:
                         item_amount_after_tax = item_amount + item_tax_amount

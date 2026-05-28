@@ -70,6 +70,8 @@ def create_kiotviet_routes_bp() -> Blueprint:
     @handle_api_errors
     def get_all_items_from_kiotviet():
         all_items = get_all_products_from_kiotviet()
+        if all_items is None:
+            return jsonify({"status": "error", "message": "KiotViet API trả về lỗi. Kiểm tra token hoặc kết nối."}), 502
         return jsonify(all_items)
 
     @bp.route("/categories", methods=["GET"])
