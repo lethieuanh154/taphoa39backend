@@ -1,7 +1,7 @@
 import requests
 from typing import Any, Dict
 
-from FromKiotViet.get_authorization import auth_token
+from FromKiotViet.get_authorization import get_token
 from Utility.get_env import LatestBranchId, retailer
 
 url = "https://api-man1.kiotviet.vn/api/customers"
@@ -16,7 +16,7 @@ def add_customer_to_kiotviet(customer_payload: Dict[str, Any]) -> Dict[str, Any]
     normalized_payload.setdefault("IsActive", True)
 
     headers = {
-        "Authorization": auth_token,
+        "Authorization": get_token(),
         "branchid": LatestBranchId,
         "retailer": retailer,
         "Content-Type": "application/json",

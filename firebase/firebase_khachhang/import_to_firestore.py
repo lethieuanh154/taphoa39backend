@@ -3,7 +3,7 @@ import firebase_admin
 import requests
 from firebase_admin import credentials, firestore
 from FromKiotViet.get_all_customer import get_entire_customer
-from FromKiotViet.get_authorization import auth_token
+from FromKiotViet.get_authorization import get_token
 from Utility.get_env import LatestBranchId, retailer
 import requests
 import hashlib

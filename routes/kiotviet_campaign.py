@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import requests
 from flask import Blueprint, jsonify, request
-from FromKiotViet.get_authorization import auth_token as _auth
+from FromKiotViet.getget_token()orization import get_token
 from Utility.get_env import LatestBranchId, retailer
 
 
@@ -33,7 +33,7 @@ def create_kiotviet_campaign_bp() -> Blueprint:
 
         try:
             headers = {
-                "Authorization": _auth,
+                "Authorization": get_token(),
                 "branchid": str(LatestBranchId),
                 "retailer": retailer,
                 "Content-Type": "application/json",
@@ -143,7 +143,7 @@ def create_kiotviet_campaign_bp() -> Blueprint:
         """
         try:
             headers = {
-                "Authorization": _auth,
+                "Authorization": get_token(),
                 "branchid": str(LatestBranchId),
                 "retailer": retailer,
                 "Content-Type": "application/json",
@@ -198,7 +198,7 @@ def create_kiotviet_campaign_bp() -> Blueprint:
         """
         try:
             headers = {
-                "Authorization": _auth,
+                "Authorization": get_token(),
                 "branchid": str(LatestBranchId),
                 "retailer": retailer,
                 "Content-Type": "application/json",

@@ -52,5 +52,17 @@ def get_authen() -> str:
     return get_authen_with_credentials(UserName, Password, LatestBranchId, retailer)
 
 
-# Cache the token for reuse
-auth_token = get_authen()
+_cached_token: str | None = None
+
+
+def get_token() -> str | None:
+    global _cached_token
+    if _cached_token is None:
+        _cached_token = get_authen()
+    return _cached_token
+
+
+def refresh_token() -> str | None:
+    global _cached_token
+    _cached_token = get_authen()
+    return _cached_token

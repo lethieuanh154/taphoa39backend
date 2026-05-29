@@ -4,7 +4,7 @@ import os
 from dotenv import load_dotenv
 import json
 import requests
-from FromKiotViet.get_authorization import auth_token
+from FromKiotViet.get_authorization import get_token
 from Utility.get_env import LatestBranchId, retailer
 import hashlib
 from firebase.firebase_hanghoa.product_class import Product
@@ -22,7 +22,7 @@ API_RESOURCE = "Products"
 API_PAGE_SIZE = 500
 API_SINGLE_FETCH_LIMIT = 20000
 API_HEADERS = {
-    "Authorization": auth_token,
+    "Authorization": get_token(),
     "retailer": retailer,
     "branchid": LatestBranchId,
 }

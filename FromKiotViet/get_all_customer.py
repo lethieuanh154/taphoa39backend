@@ -1,5 +1,5 @@
 import requests
-from FromKiotViet.get_authorization import auth_token
+from FromKiotViet.get_authorization import get_token
 from Utility.get_env import LatestBranchId, retailer
 
 
@@ -7,7 +7,7 @@ def get_entire_customer():
     url = "https://api-man1.kiotviet.vn/api/customers"
     payload = {}
     headers = {
-      'Authorization': auth_token,
+      'Authorization': get_token(),
       'branchid': LatestBranchId,
       'retailer': retailer
     }

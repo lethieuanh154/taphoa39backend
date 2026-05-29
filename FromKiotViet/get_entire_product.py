@@ -1,5 +1,5 @@
 import requests
-import FromKiotViet.get_authorization as auth_module
+from FromKiotViet.get_authorization import get_token, refresh_token
 from Utility.get_env import LatestBranchId, retailer
 
 url = f"https://api-kvsync1.kiotviet.vn/api/resource/fetch"
@@ -12,7 +12,7 @@ param = {
 
 def _build_header():
     return {
-        "Authorization": auth_module.auth_token,
+        "Authorization": get_token(),
         "retailer": retailer,
         "branchid": LatestBranchId
     }
@@ -29,8 +29,8 @@ def get_all():
     # Token expired → refresh and retry once
     if response.status_code in (401, 403):
         print(f"⚠️ KiotViet token expired (status={response.status_code}), refreshing...")
-        auth_module.auth_token = auth_module.get_authen()
-        if auth_module.auth_token:
+        refresh_token()
+        if get_token():
             response = requests.get(url, headers=_build_header(), params=param)
             if response.status_code == 200:
                 data = response.json()

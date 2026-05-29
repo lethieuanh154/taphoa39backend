@@ -2,29 +2,25 @@ import requests
 
 import unidecode
 from Utility.get_env import LatestBranchId, retailer
-from FromKiotViet.get_authorization import auth_token
+from FromKiotViet.get_authorization import get_token, refresh_token
 
-
-# URL API for categories
-
-
-# Get the authorization token
-
-# Headers
 
 def get_category():
     url = "https://api-man1.kiotviet.vn/api/categories"
     headers = {
-        "Authorization": auth_token,
+        "Authorization": get_token(),
         "retailer": retailer,
         "branchid": LatestBranchId
     }
     try:
         response = requests.get(url, headers=headers)
-        response.raise_for_status()  # Raise an exception for HTTP errors
+        if response.status_code == 401:
+            headers["Authorization"] = refresh_token()
+            response = requests.get(url, headers=headers)
+        response.raise_for_status()
         data: list = response.json().get("Data", [])
         if not data:
-            return None  # No data found
+            return None
 
         result = [
             {

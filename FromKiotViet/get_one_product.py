@@ -1,6 +1,6 @@
 from unicodedata import category
 import requests
-from FromKiotViet.get_authorization import auth_token
+from FromKiotViet.get_authorization import get_token
 from Utility.get_env import LatestBranchId, retailer
 import os
 import json
@@ -10,7 +10,7 @@ def get_item(tearm):
 
     # Headers
     header = {
-        "Authorization": auth_token,
+        "Authorization": get_token(),
         "retailer": retailer,
         "branchid": LatestBranchId
     }

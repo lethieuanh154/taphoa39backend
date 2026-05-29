@@ -105,10 +105,10 @@ def create_kiotviet_routes_bp() -> Blueprint:
     @handle_api_errors
     def get_product_images(product_id: int):
         """Proxy KiotViet product images API. Returns list of image URLs."""
-        from FromKiotViet.get_authorization import auth_token as _auth
+        from FromKiotViet.get_authorization import get_token
         url = f"https://api-man1.kiotviet.vn/api/productimage/{product_id}?limit=10"
         headers = {
-            "Authorization": _auth,
+            "Authorization": get_token(),
             "retailer": retailer,
             "branchid": LatestBranchId,
         }
@@ -124,7 +124,7 @@ def create_kiotviet_routes_bp() -> Blueprint:
     def add_original_products():
         """Create new products in KiotViet via addmany API."""
         import json as _json
-        from FromKiotViet.get_authorization import auth_token as _auth
+        from FromKiotViet.get_authorization import get_token as _get_token
 
         data = request.get_json()
         name = data.get("name", "")
@@ -194,7 +194,7 @@ def create_kiotviet_routes_bp() -> Blueprint:
             products_list.append(base_fields(child, True, pus, 0, unit_code=child_code))
 
         kv_url = "https://api-man1.kiotviet.vn/api/products/addmany?apiversion=5"
-        headers = {"Authorization": _auth, "branchid": LatestBranchId, "retailer": retailer}
+        headers = {"Authorization": _get_token(), "branchid": LatestBranchId, "retailer": retailer}
         branch_info = [{"Id": int(LatestBranchId), "Name": "Chi nhánh trung tâm"}]
         payload = {
             "ListProductsString": _json.dumps(products_list, ensure_ascii=False),

@@ -4,7 +4,7 @@ import json
 import os
 
 import unidecode
-from FromKiotViet.get_authorization import auth_token
+from FromKiotViet.get_authorization import get_token
 from Utility.get_env import LatestBranchId, retailer
 
 # URL API
@@ -14,7 +14,7 @@ def get_items_category(category_id):
     # Headers
 
     header = {
-        "Authorization": auth_token,
+        "Authorization": get_token(),
         "retailer": retailer,
         "branchid": LatestBranchId
     }

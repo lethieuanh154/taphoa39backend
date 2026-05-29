@@ -1,7 +1,7 @@
 import json
 import requests
 from Utility.get_env import LatestBranchId, retailer
-from FromKiotViet.get_authorization import auth_token
+from FromKiotViet.get_authorization import get_token
 
 # URL API for categories
 url = "https://api-man1.kiotviet.vn/api/products/photo"
@@ -23,7 +23,7 @@ payload = {'Product': f'{{"Id":38080826,"ProductType":2,"CategoryId":1436920,"Ca
 'ListUnitPriceBookDetail': '[]'}
 
 headers = {
-  'Authorization': auth_token,
+  'Authorization': get_token(),
   'retailer': retailer,
   'branchid': LatestBranchId
 }
