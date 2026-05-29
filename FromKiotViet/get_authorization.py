@@ -36,11 +36,18 @@ def get_authen_with_credentials(username: str, password: str, branch_id: str, re
     try:
         response = requests.post(auth_url, json=body, headers=headers, params=params, timeout=30)
         if response.status_code == 200:
-            data = response. json().get("token", "")
-            return "Bearer " + data if data else None
+            data = response.json().get("token", "")
+            if data:
+                print(f"[AUTH] KiotViet login OK for {username}")
+                return "Bearer " + data
+            else:
+                print(f"[AUTH] KiotViet login 200 but empty token for {username}")
+                return None
         else:
+            print(f"[AUTH] KiotViet login failed: status={response.status_code}, body={response.text[:300]}")
             return None
-    except requests.RequestException:
+    except requests.RequestException as e:
+        print(f"[AUTH] KiotViet login exception: {e}")
         return None
 
 

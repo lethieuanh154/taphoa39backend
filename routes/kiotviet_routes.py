@@ -78,6 +78,8 @@ def create_kiotviet_routes_bp() -> Blueprint:
     @handle_api_errors
     def get_categories_from_kiotviet():
         categories = get_category()
+        if categories is None:
+            return jsonify({"status": "error", "message": "Không lấy được danh mục từ KiotViet. Kiểm tra token hoặc kết nối."}), 502
         return jsonify(categories)
 
 

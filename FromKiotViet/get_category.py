@@ -13,13 +13,21 @@ def get_category():
         "branchid": LatestBranchId
     }
     try:
+        token = get_token()
+        if not token:
+            print("[get_category] WARNING: get_token() returned None — auth failed")
+            return None
+        headers["Authorization"] = token
         response = requests.get(url, headers=headers)
+        print(f"[get_category] KiotViet response: status={response.status_code}")
         if response.status_code == 401:
             headers["Authorization"] = refresh_token()
             response = requests.get(url, headers=headers)
+            print(f"[get_category] After refresh: status={response.status_code}")
         response.raise_for_status()
         data: list = response.json().get("Data", [])
         if not data:
+            print("[get_category] WARNING: Data is empty")
             return None
 
         result = [
