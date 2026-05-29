@@ -12,6 +12,7 @@ from services.gmail_service import GmailService, GmailTokenExpiredError
 from services.zip_extractor import extract_xml_from_zip, extract_pdf_from_zip
 from services.invoice_parsers import TaxInvoiceXMLParser
 from services.email_body_parser import EmailBodyParser
+from services.playwright_scraper import scrape_xml_sync, load_provider_configs, get_provider_config
 from google_auth_oauthlib.flow import Flow
 
 
@@ -451,7 +452,35 @@ def create_gmail_routes_bp():
                         **portal_fields
                     })
 
-            # No processable attachment
+            # Priority 4: Portal URL → scrape XML via Playwright
+            if portal_info.get('portalUrl'):
+                provider = portal_info.get('provider', '')
+                print(f"[process_email] No attachment, trying portal scrape ({provider}): {portal_info['portalUrl'][:80]}")
+                try:
+                    db = init_firestore()
+                    pconfig = get_provider_config(db, provider)
+                    xml_bytes = scrape_xml_sync(
+                        portal_info['portalUrl'],
+                        provider,
+                        portal_info.get('credentials'),
+                        provider_config=pconfig
+                    )
+                    if xml_bytes:
+                        invoices, errors = TaxInvoiceXMLParser.parse(xml_bytes)
+                        if invoices:
+                            _save_refreshed_token(gmail)
+                            return jsonify({
+                                'success': True,
+                                'type': 'portal_xml',
+                                'invoices': invoices,
+                                'parse_errors': errors,
+                                'email': metadata,
+                                **portal_fields
+                            })
+                except Exception as e:
+                    print(f"[process_email] Portal scrape failed: {e}")
+
+            # No processable attachment or portal
             _save_refreshed_token(gmail)
             return jsonify({
                 'success': True,
@@ -470,6 +499,54 @@ def create_gmail_routes_bp():
                 return jsonify({'success': False, 'error': str(e)}), 409
         except Exception as e:
             print(f"Error processing email {email_id}: {e}")
+            return jsonify({'success': False, 'error': str(e)}), 500
+
+    # --- Portal Scraper Config (Firestore) ---
+
+    @bp.route('/portal-config', methods=['GET'])
+    def get_portal_config():
+        """GET /api/gmail/portal-config — List all provider scraper configs."""
+        try:
+            db = init_firestore()
+            configs = load_provider_configs(db)
+            return jsonify({'success': True, 'configs': configs})
+        except Exception as e:
+            return jsonify({'success': False, 'error': str(e)}), 500
+
+    @bp.route('/portal-config/<provider>', methods=['GET'])
+    def get_one_portal_config(provider):
+        """GET /api/gmail/portal-config/<provider> — Get one provider config."""
+        try:
+            db = init_firestore()
+            doc = db.collection('portal_scraper_config').document(provider).get()
+            if doc.exists:
+                return jsonify({'success': True, 'provider': provider, 'config': doc.to_dict()})
+            return jsonify({'success': False, 'error': 'not found'}), 404
+        except Exception as e:
+            return jsonify({'success': False, 'error': str(e)}), 500
+
+    @bp.route('/portal-config/<provider>', methods=['PUT'])
+    def update_portal_config(provider):
+        """PUT /api/gmail/portal-config/<provider> — Create or update provider config.
+        Body example:
+        {
+            "enabled": true,
+            "group": "A",
+            "directXmlTransform": { "find": "/thongtinchung?", "replace": "/TaiXml?" },
+            "xmlClickSelectors": ["a:has-text('Tải XML')", "#btnXml"],
+            "credentialFields": { "taxCode": "input#mst", "secretCode": "input#secret", "submit": "button#submit" },
+            "notes": "ghi chú"
+        }"""
+        try:
+            data = request.get_json() or {}
+            db = init_firestore()
+            db.collection('portal_scraper_config').document(provider).set(data, merge=True)
+            # Invalidate cache
+            from services.playwright_scraper import _config_cache_time
+            import services.playwright_scraper as _scraper_mod
+            _scraper_mod._config_cache_time = 0
+            return jsonify({'success': True, 'provider': provider})
+        except Exception as e:
             return jsonify({'success': False, 'error': str(e)}), 500
 
     return bp
