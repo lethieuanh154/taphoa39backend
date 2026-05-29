@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import requests
 from flask import Blueprint, jsonify, request
-from FromKiotViet.getget_token()orization import get_token
+from FromKiotViet.get_authorization import get_token
 from Utility.get_env import LatestBranchId, retailer
 
 
