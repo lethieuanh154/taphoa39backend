@@ -193,4 +193,27 @@ class ProductMappingService:
             return False
 
 
+    def update_unit(self, mapping_id: str, new_unit: str) -> bool:
+        """
+        Update mapping's unit field.
+        """
+        try:
+            doc_ref = self.db.collection(COLLECTION_NAME).document(mapping_id)
+            doc = doc_ref.get()
+
+            if not doc.exists:
+                logger.warning(f"update_unit: doc {mapping_id} not found")
+                return False
+
+            doc_ref.update({
+                "unit": new_unit,
+                "lastSeen": datetime.utcnow(),
+            })
+
+            return True
+        except Exception as e:
+            logger.error(f"update_unit error: {e}")
+            return False
+
+
 product_mapping_service = ProductMappingService()

@@ -3,6 +3,7 @@ Product Mapping Routes
 GET  /api/v2/product-mappings?supplierTaxCode=xxx
 POST /api/v2/product-mappings        (single or batch)
 PUT  /api/v2/product-mappings/rename
+PUT  /api/v2/product-mappings/unit
 """
 
 import logging
@@ -49,6 +50,18 @@ def create_product_mapping_routes():
             return jsonify({"success": False, "error": "Thiếu id hoặc newDescription"}), 400
 
         ok = product_mapping_service.rename_mapping(mapping_id, new_description, normalized_new)
+        return jsonify({"success": ok})
+
+    @bp.route("/unit", methods=["PUT"])
+    def update_unit():
+        data = request.get_json() or {}
+        mapping_id = data.get("id", "").strip()
+        new_unit = data.get("newUnit", "").strip()
+
+        if not mapping_id or not new_unit:
+            return jsonify({"success": False, "error": "Thiếu id hoặc newUnit"}), 400
+
+        ok = product_mapping_service.update_unit(mapping_id, new_unit)
         return jsonify({"success": ok})
 
     return bp
