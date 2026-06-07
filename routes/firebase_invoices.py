@@ -20,6 +20,7 @@ from routes.shared import (
     notify_yearly_summary,
     safe_float,
     safe_int,
+    to_float,
     to_number,
 )
 
@@ -191,7 +192,7 @@ def create_firebase_invoices_bp(invoice_service, product_service, customer_servi
                     # ✅ Clone product: update OnHandNV for ALL siblings in the group
                     # Get MasterUnitId to find all siblings
                     master_unit_id = product_doc.get('MasterUnitId') or product_doc.get('Id')
-                    conversion_value = to_number(product_doc.get('ConversionValue', 1)) or 1
+                    conversion_value = to_float(product_doc.get('ConversionValue', 1)) or 1
 
                     # Calculate delta in master unit terms
                     master_qty_delta = quantity * conversion_value
@@ -203,8 +204,8 @@ def create_firebase_invoices_bp(invoice_service, product_service, customer_servi
                         print(f"  🔄 Clone product {pid_str}: Found {len(siblings)} siblings for MasterUnitId {master_unit_id}")
                         for sibling in siblings:
                             sibling_id = str(sibling.get('Id'))
-                            sibling_conversion = to_number(sibling.get('ConversionValue', 1)) or 1
-                            sibling_current_nv = to_number(sibling.get('OnHandNV', 0)) or 0
+                            sibling_conversion = to_float(sibling.get('ConversionValue', 1)) or 1
+                            sibling_current_nv = to_float(sibling.get('OnHandNV', 0)) or 0
 
                             # Calculate sibling's delta based on its ConversionValue
                             sibling_delta = master_qty_delta / sibling_conversion if sibling_conversion != 0 else 0
@@ -221,7 +222,7 @@ def create_firebase_invoices_bp(invoice_service, product_service, customer_servi
                                 restock_errors.append({"id": sibling_id, "error": str(exc)})
                     else:
                         # Fallback: just update the single product if no siblings found
-                        current_onhand_nv = to_number(product_doc.get('OnHandNV', 0)) or 0
+                        current_onhand_nv = to_float(product_doc.get('OnHandNV', 0)) or 0
                         new_onhand_nv = current_onhand_nv + quantity
                         try:
                             product_service.update_product(pid_str, {"OnHandNV": new_onhand_nv})
@@ -241,7 +242,7 @@ def create_firebase_invoices_bp(invoice_service, product_service, customer_servi
 
                 # Original product: update OnHand for ALL siblings in the group
                 master_unit_id = product_doc.get('MasterUnitId') or product_doc.get('Id')
-                conversion_value = to_number(product_doc.get('ConversionValue', 1)) or 1
+                conversion_value = to_float(product_doc.get('ConversionValue', 1)) or 1
 
                 # Calculate delta in master unit terms
                 master_qty_delta = quantity * conversion_value
@@ -253,8 +254,8 @@ def create_firebase_invoices_bp(invoice_service, product_service, customer_servi
                     print(f"  🔄 Original product {pid_str}: Found {len(siblings)} siblings for MasterUnitId {master_unit_id}")
                     for sibling in siblings:
                         sibling_id = str(sibling.get('Id'))
-                        sibling_conversion = to_number(sibling.get('ConversionValue', 1)) or 1
-                        sibling_current = to_number(sibling.get('OnHand', 0)) or 0
+                        sibling_conversion = to_float(sibling.get('ConversionValue', 1)) or 1
+                        sibling_current = to_float(sibling.get('OnHand', 0)) or 0
 
                         # Calculate sibling's delta based on its ConversionValue
                         sibling_delta = master_qty_delta / sibling_conversion if sibling_conversion != 0 else 0
@@ -271,10 +272,10 @@ def create_firebase_invoices_bp(invoice_service, product_service, customer_servi
                             restock_errors.append({"id": sibling_id, "error": str(exc)})
                 else:
                     # Fallback: just update the single product if no siblings found
-                    current_onhand = to_number(product_doc.get('OnHand'))
+                    current_onhand = to_float(product_doc.get('OnHand'))
                     if current_onhand is None:
                         continue
-                    new_onhand = round(float(current_onhand) + quantity, 1)
+                    new_onhand = round(float(current_onhand) + quantity, 3)
                     try:
                         product_service.update_product(pid_str, {"OnHand": new_onhand})
                         restocked_updates.append({"Id": pid_str, "OnHand": new_onhand, "updateType": "OnHand"})

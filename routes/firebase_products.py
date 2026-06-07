@@ -11,6 +11,7 @@ from routes.shared import (
     create_simple_fetch_handler,
     handle_api_errors,
     normalize_product_updates,
+    to_float,
     to_number,
 )
 
@@ -36,7 +37,7 @@ def create_firebase_products_bp(product_service, socketio) -> Blueprint:
             pid = item.get("Id")
             new_onhand = item.get("new_OnHand")
             update_type = item.get("updateType", "OnHand")
-            converted_onhand = to_number(new_onhand)
+            converted_onhand = to_float(new_onhand)
             if not pid or converted_onhand is None:
                 continue
             # ✅ Broadcast với đúng field: OnHand hoặc OnHandNV

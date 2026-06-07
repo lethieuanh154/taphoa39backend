@@ -93,14 +93,11 @@ def update_products_from_banhang_app_to_firestore(update_payload):
             else:
                 current_value = product_doc.get("OnHand", 0) or 0
 
-            # For OnHandNV (clone products): use float to preserve decimals (e.g. 20.08333)
-            # For OnHand (KiotViet products): use int (KiotViet always uses integers)
-            if is_nv_update:
-                minus_value = _parse_number(item.get("minus", 0)) or 0
-                plus_value = _parse_number(item.get("plus", 0)) or 0
-            else:
-                minus_value = _parse_int(item.get("minus", 0)) or 0
-                plus_value = _parse_int(item.get("plus", 0)) or 0
+            # Use float for both OnHand and OnHandNV to preserve decimals.
+            # Child units can have fractional OnHand (e.g. 1.6 lon = 1 thùng + 6 lon).
+            # Using _parse_int previously truncated these decimals (1.6 → 1).
+            minus_value = _parse_number(item.get("minus", 0)) or 0
+            plus_value = _parse_number(item.get("plus", 0)) or 0
 
             # If proc_ref (event marker) exists, skip to make it idempotent
             if proc_ref is not None:
@@ -115,13 +112,9 @@ def update_products_from_banhang_app_to_firestore(update_payload):
 
             # ✅ Always compute target using current value inside the transaction for atomicity.
             # This ignores any target value sent from the client, making the backend authoritative.
-            # ✅ FIX: Handle both minus (decrease) and plus (increase) for edit invoice restore
-            if is_nv_update:
-                # OnHandNV: preserve decimals, round to 1 decimal place
-                target_value = round(float(current_value) - float(minus_value) + float(plus_value), 1)
-            else:
-                # OnHand: preserve decimals for child units (e.g. "10 lon" = 1.4)
-                target_value = round(float(current_value) - float(minus_value) + float(plus_value), 1)
+            # ✅ FIX: Round to 3 decimal places to preserve child unit fractions (e.g. 1.667)
+            # while avoiding floating point noise.
+            target_value = round(float(current_value) - float(minus_value) + float(plus_value), 3)
 
             # ✅ Update product OnHand hoặc OnHandNV tùy theo loại
             # Cập nhật SyncTimestamp và ModifiedDate để:

@@ -116,7 +116,8 @@ def apply_product_updates(product_service, normalized_items: Iterable[Dict[str, 
 
         for key, value in raw_fields.items():
             if key in ONHAND_KEYS:
-                converted = to_number(value)
+                # ✅ FIX: Use to_float to preserve decimals for child units (e.g. 1.6 lon)
+                converted = to_float(value)
                 if converted is None:
                     invalid_onhand = True
                     continue
