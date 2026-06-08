@@ -60,6 +60,7 @@ TapHoa39BackEnd/
 │
 ├── services/                       # Business logic services
 │   ├── ai_extractor.py             # Gemini AI invoice extraction
+│   ├── invoice_parsers.py          # **Parser XML chính** (TaxInvoiceXMLParser - dùng cho /v1/parse-xml)
 │   ├── ocr_engine.py               # EasyOCR wrapper
 │   ├── invoice_validator.py        # Invoice validation logic
 │   └── config.py                   # Configuration management

@@ -524,6 +524,21 @@ class TaxInvoiceXMLParser:
                     has_per_item_tax = bool(_tthue_str or _ttkhac_vat_str)
                     item_tax_amount = TaxInvoiceXMLParser._parse_amount(_tthue_str or _ttkhac_vat_str)
 
+                    # Fallback: tính tax từ per-item TSuat khi không có TThue
+                    if item_tax_amount == 0 and item_amount > 0:
+                        item_tsuat_str = find_direct_child_text(hhdv_element, 'TSuat', 'ThueSuat') or ''
+                        item_tsuat = 0
+                        if '%' in item_tsuat_str:
+                            try:
+                                item_tsuat = float(item_tsuat_str.replace('%', '').strip())
+                            except ValueError:
+                                item_tsuat = 0
+                        if item_tsuat == 0 and vat_rate > 0:
+                            item_tsuat = vat_rate
+                        if item_tsuat > 0:
+                            item_tax_amount = round(item_amount * item_tsuat / 100)
+                            has_per_item_tax = True
+
                     # Lấy thành tiền sau thuế:
                     # - TTKhac/Amount > ThTien → dạng sau thuế (Vinamilk)
                     # - TTKhac/Amount > 0 + STCKhau > 0 → VNPT chiết khấu: Amount = (ThTien-CK)+VAT < ThTien

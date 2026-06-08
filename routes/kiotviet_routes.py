@@ -174,7 +174,7 @@ def create_kiotviet_routes_bp() -> Blueprint:
                 "RepeatGuarantee": repeat_guarantee(), "ProductFormulas": [], "Name": name,
                 "ProductAttributes": [], "isDraft": False, "showEditButton": True, "IsNewUnit": True,
                 "ProductUnits": product_units, "ProductUnit": [], "doneCreated": done_created,
-                "ListPriceBookDetail": [], "FullName": name, "MasterCode": "",
+                "ListPriceBookDetail": [], "FullName": f"{name} ({unit['unit']})", "MasterCode": "",
                 "CompareFullName": f"{name} ({unit['unit']})", "ListUnitPriceBookDetail": None if done_created is False else [],
                 "RewardPoint": 0, "MasterUnitIdClone": None, "TradeMarkId": trademark_id,
                 "ProductFormulasOld": [], "ProductImages": []
@@ -205,6 +205,12 @@ def create_kiotviet_routes_bp() -> Blueprint:
         }
 
         resp = requests.post(kv_url, headers=headers, data=payload, timeout=30)
-        return jsonify(resp.json()), resp.status_code
+        resp_data = resp.json()
+
+        if resp.status_code != 200:
+            import logging
+            logging.error(f"[addmany] KiotViet returned {resp.status_code}: {resp_data}")
+
+        return jsonify(resp_data), resp.status_code
 
     return bp

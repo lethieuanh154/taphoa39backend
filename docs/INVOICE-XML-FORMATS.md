@@ -4,10 +4,10 @@
 
 Module xử lý hóa đơn điện tử (e-invoice) từ nhiều nguồn phần mềm khác nhau. Parser chính nằm ở 2 file:
 
-- `tax_invoice_xml_parser.py` - Parser cơ bản (dùng cho `firebase_invoices`)
-- `../../services/invoice_parsers.py` - Parser chính của app (dùng cho route `invoice_processing`)
+- `firebase/firebase_invoices/tax_invoice_xml_parser.py` - Parser cũ/backup (KHÔNG dùng cho route `/v1/parse-xml`)
+- **`services/invoice_parsers.py`** - **Parser chính** (dùng cho route `/v1/parse-xml` qua `routes/invoice_processing.py`)
 
-Cả 2 parser đều phải sync logic giống nhau khi cập nhật.
+**QUAN TRỌNG**: Route `/v1/parse-xml` import từ `services/invoice_parsers.py`, KHÔNG phải `firebase/firebase_invoices/tax_invoice_xml_parser.py`. Khi fix bug parse XML, luôn sửa file `services/invoice_parsers.py` trước.
 
 ## Cấu trúc XML hóa đơn điện tử
 
@@ -107,17 +107,34 @@ Cả 2 parser đều phải sync logic giống nhau khi cập nhật.
 </HHDVu>
 ```
 
+### Dạng E - Chỉ có TSuat, không có TThue/TTKhac (VD: Minh Nguyệt - C26MMN)
+
+```xml
+<HHDVu>
+  <ThTien>4100000</ThTien>
+  <TSuat>10%</TSuat>
+  <!-- KHÔNG có TThue, KHÔNG có TTKhac -->
+</HHDVu>
+```
+
+- `ThTien` = thành tiền (trước thuế)
+- `TSuat` = thuế suất (10%, 8%, 5%...)
+- Không có per-item tax amount → **parser tự tính**: `taxAmount = round(ThTien * TSuat / 100)`
+- `amountAfterTax` = `ThTien + taxAmount`
+
 ## Logic parse thuế per-item (CRITICAL)
 
 ```
 1. Ưu tiên TThue direct child tag
 2. Nếu TThue = 0, tìm trong TTKhac với field names:
    → 'VATAmount', 'VATAmountOC', 'TongTien_Thue', 'Tiền thuế dòng (Tiền thuế GTGT)'
+3. Nếu vẫn = 0, fallback tính từ TSuat per-item (hoặc vat_rate summary):
+   → tax = round(ThTien * TSuat / 100)
 
-3. Tìm thành tiền sau thuế trong TTKhac:
+4. Tìm thành tiền sau thuế trong TTKhac:
    → 'Amount', 'AmountOC', 'TongTien_CoThue', 'Thành tiền thanh toán của hàng hóa'
 
-4. So sánh TTKhac amount với ThTien:
+5. So sánh TTKhac amount với ThTien:
    - Nếu TTKhac amount > ThTien → dùng TTKhac amount (đã bao gồm thuế)
    - Nếu TTKhac amount <= ThTien → tự tính: ThTien + taxAmount
 ```
