@@ -76,9 +76,9 @@ PROVIDER_PATTERNS = {
     },
     'VIETTEL': {
         'group': 'B',
-        'url_contains': ['vinvoice.viettel.vn'],
-        'href_pattern': r'https?://vinvoice\.viettel\.vn/utilities/invoice-search',
-        'portal_url': 'https://vinvoice.viettel.vn/utilities/invoice-search',
+        'url_contains': ['vinvoice.viettel.vn', 'sinvoice.viettel.vn'],
+        'href_pattern': r'https?://(?:vinvoice|sinvoice)\.viettel\.vn/(?:utilities/invoice-search|tracuuhoadon)',
+        'portal_url': None,  # Use matched URL from email
         'credential_patterns': {
             'secretCode': r'mã\s*số\s*bí\s*mật\s+([A-Z0-9]+)',
         },
@@ -174,7 +174,7 @@ class EmailBodyParser:
                         result['portalPdfUrl'] = pdf_url
 
             elif group == 'B':
-                result['portalUrl'] = config.get('portal_url', matched_href)
+                result['portalUrl'] = config.get('portal_url') or matched_href
                 credentials = self._extract_credentials(email_html, config)
                 if credentials:
                     result['credentials'] = credentials
