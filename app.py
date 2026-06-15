@@ -90,6 +90,7 @@ def _build_app() -> Flask:
     app.register_blueprint(create_firebase_orders_bp(order_service, customer_service, socketio))
     app.register_blueprint(create_firebase_employees_bp(employee_service, socketio))
     app.register_blueprint(create_invoice_processing_bp())
+    app.register_blueprint(create_invoice_processing_bp('/api/v1', 'invoice_processing_api'))
     app.register_blueprint(create_invoice_routes_v2())
     app.register_blueprint(create_invoice_legacy_routes())
     app.register_blueprint(create_product_mapping_routes())

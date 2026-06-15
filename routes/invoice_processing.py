@@ -27,10 +27,10 @@ def allowed_file(filename: str) -> bool:
            filename.rsplit(".", 1)[1].lower() in config.ALLOWED_EXTENSIONS
 
 
-def create_invoice_processing_bp() -> Blueprint:
+def create_invoice_processing_bp(url_prefix: str = '/v1', name: str = 'invoice_processing') -> Blueprint:
     """Create and configure the invoice processing blueprint"""
 
-    bp = Blueprint('invoice_processing', __name__, url_prefix='/v1')
+    bp = Blueprint(name, __name__, url_prefix=url_prefix)
 
     @bp.route("/health", methods=["GET"])
     def health_check():

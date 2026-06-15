@@ -181,6 +181,20 @@ def create_firebase_products_bp(product_service, socketio) -> Blueprint:
     def delete_product(product_id: str):
         return jsonify(product_service.delete_product(product_id))
 
+    @bp.route("/products/batch-exists", methods=["POST"])
+    def batch_check_products_exist():
+        """Check which product IDs still exist in Firestore (used by Management to detect cross-app deletions)"""
+        data = request.get_json(force=True, silent=True) or {}
+        ids = data.get('ids', [])
+        if not ids or len(ids) > 100:
+            return jsonify({"existing_ids": []}), 400
+        existing_ids = []
+        for product_id in ids:
+            doc = product_service.products_ref.document(str(product_id)).get()
+            if doc.exists:
+                existing_ids.append(str(product_id))
+        return jsonify({"existing_ids": existing_ids})
+
     @bp.route("/products/del-with-siblings/<product_id>", methods=["DELETE"])
     @handle_api_errors
     def delete_product_with_siblings(product_id: str):
