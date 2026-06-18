@@ -142,12 +142,16 @@ class TaxInvoiceXMLParser:
         item_tags = inv_tag.findall('.//HHDVu') # Hang hoa, dich vu
         for item_tag in item_tags:
             amount = TaxInvoiceXMLParser._get_float(item_tag, 'ThTien')
+            # Chiết khấu giảm trừ dòng (STCKhau). ThTien = SL×DGia CHƯA trừ chiết khấu,
+            # nên base trước thuế thực tế = ThTien - STCKhau.
+            discount = TaxInvoiceXMLParser._get_float(item_tag, 'STCKhau')
+            net_before_tax = amount - discount
             # Lấy thuế per-item: ưu tiên TThue direct tag, fallback TTKhac/VATAmount
             tax_amount = TaxInvoiceXMLParser._get_float(item_tag, 'TThue')
             if tax_amount == 0:
                 tax_amount = TaxInvoiceXMLParser._get_ttkhac_float(item_tag, 'VATAmount', 'VATAmountOC', 'TongTien_Thue', 'Tiền thuế dòng (Tiền thuế GTGT)')
-            # Fallback: tính tax từ per-item TSuat khi không có TThue
-            if tax_amount == 0 and amount > 0:
+            # Fallback: tính tax từ per-item TSuat khi không có TThue (trên base đã trừ chiết khấu)
+            if tax_amount == 0 and net_before_tax > 0:
                 item_tsuat_str = TaxInvoiceXMLParser._get_text(item_tag, 'TSuat')
                 item_tsuat = 0
                 if '%' in item_tsuat_str:
@@ -158,25 +162,26 @@ class TaxInvoiceXMLParser:
                 # Nếu per-item không có TSuat, dùng vat_rate từ summary
                 if item_tsuat == 0 and vat_rate > 0:
                     item_tsuat = vat_rate
-                logger.info(f"[TAX DEBUG] item_tsuat_str='{item_tsuat_str}', item_tsuat={item_tsuat}, amount={amount}")
+                logger.info(f"[TAX DEBUG] item_tsuat_str='{item_tsuat_str}', item_tsuat={item_tsuat}, net_before_tax={net_before_tax}")
                 if item_tsuat > 0:
-                    tax_amount = round(amount * item_tsuat / 100)
+                    tax_amount = round(net_before_tax * item_tsuat / 100)
                     logger.info(f"[TAX DEBUG] computed tax_amount={tax_amount}")
             # Lấy thành tiền sau thuế:
-            # - TTKhac/Amount có thể = sau thuế (dạng A2) hoặc = trước thuế (dạng B: MISA)
-            # - Chỉ dùng nếu > ThTien (chứng tỏ đã bao gồm thuế)
+            # - TTKhac/Amount = thành tiền thanh toán (đã trừ chiết khấu + gồm thuế) nếu > net_before_tax
+            # - Ngược lại (dạng B MISA: Amount = trước thuế) thì tính = net_before_tax + tax_amount
             ttkhac_amount = TaxInvoiceXMLParser._get_ttkhac_float(item_tag, 'Amount', 'AmountOC', 'TongTien_CoThue', 'Thành tiền thanh toán của hàng hóa')
-            if ttkhac_amount > amount:
+            if ttkhac_amount > net_before_tax:
                 amount_after_tax = ttkhac_amount
             else:
-                amount_after_tax = amount + tax_amount
-            logger.info(f"[TAX DEBUG] FINAL: amount={amount}, tax_amount={tax_amount}, amount_after_tax={amount_after_tax}")
+                amount_after_tax = net_before_tax + tax_amount
+            logger.info(f"[TAX DEBUG] FINAL: amount={amount}, discount={discount}, net_before_tax={net_before_tax}, tax_amount={tax_amount}, amount_after_tax={amount_after_tax}")
             item = {
                 'name': TaxInvoiceXMLParser._get_text(item_tag, 'THHDVu'),
                 'unit': TaxInvoiceXMLParser._get_text(item_tag, 'DVTinh'),
                 'quantity': TaxInvoiceXMLParser._get_float(item_tag, 'SLuong'),
                 'unitPrice': TaxInvoiceXMLParser._get_float(item_tag, 'DGia'),
-                'total': amount,
+                'total': net_before_tax,
+                'discount': discount,
                 'taxAmount': tax_amount,
                 'amountAfterTax': amount_after_tax,
             }
