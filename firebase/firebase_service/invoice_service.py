@@ -153,12 +153,6 @@ class FirestoreInvoiceService:
             "cost": direction * totals["cost"],
             "profit": direction * totals["profit"],
             "buyer_quantity": direction * totals["buyer_quantity"],
-            "kvRevenue": direction * totals.get("kvRevenue", 0),
-            "kvCost": direction * totals.get("kvCost", 0),
-            "kvProfit": direction * totals.get("kvProfit", 0),
-            "kvVat": direction * totals.get("kvVat", 0),
-            "kvVatInput": direction * totals.get("kvVatInput", 0),
-            "kvVatPayable": direction * totals.get("kvVatPayable", 0),
             "nvRevenue": direction * totals.get("nvRevenue", 0),
             "nvCost": direction * totals.get("nvCost", 0),
             "nvProfit": direction * totals.get("nvProfit", 0),
@@ -184,24 +178,20 @@ class FirestoreInvoiceService:
 
     def _compute_invoice_totals(self, invoice: dict) -> dict:
         """
-        Tính tổng revenue/cost/profit cho invoice, tách bạch KV (gốc) và NV (clone).
-        Duyệt cartItems để phân loại từng item.
+        Tính revenue/cost/profit CHỈ cho hàng Clone (NV).
+        Hàng Original không tính (KiotViet đã báo cáo Original).
         """
-        kv_revenue = 0.0
-        kv_cost = 0.0
-        kv_vat = 0.0
-        kv_vat_input = 0.0
         nv_revenue = 0.0
         nv_cost = 0.0
 
         cart_items = invoice.get("cartItems", [])
-        has_cart_items = isinstance(cart_items, list) and len(cart_items) > 0
-
-        if has_cart_items:
+        if isinstance(cart_items, list):
             for item in cart_items:
                 if not isinstance(item, dict):
                     continue
-                product = item.get("product", {}) if isinstance(item, dict) else {}
+                product = item.get("product", {})
+                if not self._is_clone_product(product):
+                    continue
                 quantity = self.safe_int(item.get("quantity", 0))
                 price = self.safe_float(
                     item.get("unitPrice")
@@ -210,36 +200,11 @@ class FirestoreInvoiceService:
                     or product.get("Price")
                 )
                 cost_price = self.safe_float(product.get("Cost"))
-                item_revenue = price * quantity
-                item_cost = cost_price * quantity
+                nv_revenue += price * quantity
+                nv_cost += cost_price * quantity
 
-                if self._is_clone_product(product):
-                    nv_revenue += item_revenue
-                    nv_cost += item_cost
-                else:
-                    kv_revenue += item_revenue
-                    kv_cost += item_cost
-                    tax_rate = self.safe_float(product.get("Tax", 0))
-                    if tax_rate > 0:
-                        kv_vat += item_revenue * tax_rate / 100
-                        kv_vat_input += item_cost * tax_rate / 100
-        else:
-            # Fallback: dùng invoice-level totals (không thể split)
-            total_revenue = self.safe_float(
-                invoice.get("totalPrice")
-                or invoice.get("TotalPrice")
-                or invoice.get("grandTotal")
-            )
-            total_cost = self.safe_float(
-                invoice.get("totalCost")
-                or invoice.get("TotalCost")
-                or invoice.get("costTotal")
-            )
-            kv_revenue = total_revenue
-            kv_cost = total_cost
-
-        revenue = kv_revenue + nv_revenue
-        cost = kv_cost + nv_cost
+        revenue = nv_revenue
+        cost = nv_cost
         profit = revenue - cost
 
         return {
@@ -247,12 +212,6 @@ class FirestoreInvoiceService:
             "cost": round(cost, 2),
             "profit": round(profit, 2),
             "buyer_quantity": 1,
-            "kvRevenue": round(kv_revenue, 2),
-            "kvCost": round(kv_cost, 2),
-            "kvProfit": round(kv_revenue - kv_cost, 2),
-            "kvVat": round(kv_vat, 2),
-            "kvVatInput": round(kv_vat_input, 2),
-            "kvVatPayable": round(kv_vat - kv_vat_input, 2),
             "nvRevenue": round(nv_revenue, 2),
             "nvCost": round(nv_cost, 2),
             "nvProfit": round(nv_revenue - nv_cost, 2),
@@ -299,12 +258,6 @@ class FirestoreInvoiceService:
             "cost": Increment(delta["cost"]),
             "profit": Increment(delta["profit"]),
             "buyer_quantity": Increment(delta["buyer_quantity"]),
-            "kvRevenue": Increment(delta.get("kvRevenue", 0)),
-            "kvCost": Increment(delta.get("kvCost", 0)),
-            "kvProfit": Increment(delta.get("kvProfit", 0)),
-            "kvVat": Increment(delta.get("kvVat", 0)),
-            "kvVatInput": Increment(delta.get("kvVatInput", 0)),
-            "kvVatPayable": Increment(delta.get("kvVatPayable", 0)),
             "nvRevenue": Increment(delta.get("nvRevenue", 0)),
             "nvCost": Increment(delta.get("nvCost", 0)),
             "nvProfit": Increment(delta.get("nvProfit", 0)),
@@ -350,63 +303,31 @@ class FirestoreInvoiceService:
 
     def calculate_daily_summary(self, date):
         invoices = self.get_invoices_by_date(date)
-        revenue = 0
-        cost = 0
-        kv_revenue = 0
-        kv_cost = 0
-        kv_vat = 0
-        kv_vat_input = 0
         nv_revenue = 0
         nv_cost = 0
         for invoice in invoices:
             cart_items = invoice.get('cartItems', [])
-            has_cart_items = isinstance(cart_items, list) and len(cart_items) > 0
-
-            if has_cart_items:
-                for item in cart_items:
-                    if not isinstance(item, dict):
-                        continue
-                    product = item.get('product', {}) if isinstance(item, dict) else {}
-                    quantity = self.safe_int(item.get('quantity', 0))
-                    price = self.safe_float(
-                        item.get('unitPrice')
-                        or item.get('price')
-                        or product.get('BasePrice')
-                        or product.get('Price')
-                    )
-                    cost_price = self.safe_float(product.get('Cost', 0))
-                    item_revenue = price * quantity
-                    item_cost = cost_price * quantity
-                    revenue += item_revenue
-                    cost += item_cost
-
-                    if self._is_clone_product(product):
-                        nv_revenue += item_revenue
-                        nv_cost += item_cost
-                    else:
-                        kv_revenue += item_revenue
-                        kv_cost += item_cost
-                        tax_rate = self.safe_float(product.get('Tax', 0))
-                        if tax_rate > 0:
-                            kv_vat += item_revenue * tax_rate / 100
-                            kv_vat_input += item_cost * tax_rate / 100
-            else:
-                # Fallback: invoice không có cartItems → dùng invoice-level totals
-                total_revenue = self.safe_float(
-                    invoice.get('totalPrice')
-                    or invoice.get('TotalPrice')
-                    or invoice.get('grandTotal')
+            if not isinstance(cart_items, list):
+                continue
+            for item in cart_items:
+                if not isinstance(item, dict):
+                    continue
+                product = item.get('product', {})
+                if not self._is_clone_product(product):
+                    continue
+                quantity = self.safe_int(item.get('quantity', 0))
+                price = self.safe_float(
+                    item.get('unitPrice')
+                    or item.get('price')
+                    or product.get('BasePrice')
+                    or product.get('Price')
                 )
-                total_cost = self.safe_float(
-                    invoice.get('totalCost')
-                    or invoice.get('TotalCost')
-                    or invoice.get('costTotal')
-                )
-                revenue += total_revenue
-                cost += total_cost
-                kv_revenue += total_revenue
-                kv_cost += total_cost
+                cost_price = self.safe_float(product.get('Cost', 0))
+                nv_revenue += price * quantity
+                nv_cost += cost_price * quantity
 
+        revenue = nv_revenue
+        cost = nv_cost
         profit = revenue - cost
         summary = {
             'buyer_quantity': len(invoices),
@@ -414,12 +335,6 @@ class FirestoreInvoiceService:
             'revenue': round(revenue, 2),
             'cost': round(cost, 2),
             'profit': round(profit, 2),
-            'kvRevenue': round(kv_revenue, 2),
-            'kvCost': round(kv_cost, 2),
-            'kvProfit': round(kv_revenue - kv_cost, 2),
-            'kvVat': round(kv_vat, 2),
-            'kvVatInput': round(kv_vat_input, 2),
-            'kvVatPayable': round(kv_vat - kv_vat_input, 2),
             'nvRevenue': round(nv_revenue, 2),
             'nvCost': round(nv_cost, 2),
             'nvProfit': round(nv_revenue - nv_cost, 2),
@@ -445,10 +360,6 @@ class FirestoreInvoiceService:
         revenue = 0
         cost = 0
         buyer_quantity = 0
-        kv_revenue = 0
-        kv_cost = 0
-        kv_vat = 0
-        kv_vat_input = 0
         nv_revenue = 0
         nv_cost = 0
         for day in range(1, days_in_month + 1):
@@ -458,10 +369,6 @@ class FirestoreInvoiceService:
             revenue += daily.get('revenue', 0)
             cost += daily.get('cost', 0)
             buyer_quantity += daily.get('buyer_quantity', 0)
-            kv_revenue += daily.get('kvRevenue', 0)
-            kv_cost += daily.get('kvCost', 0)
-            kv_vat += daily.get('kvVat', 0)
-            kv_vat_input += daily.get('kvVatInput', 0)
             nv_revenue += daily.get('nvRevenue', 0)
             nv_cost += daily.get('nvCost', 0)
         profit = revenue - cost
@@ -472,12 +379,6 @@ class FirestoreInvoiceService:
             'revenue': round(revenue, 2),
             'cost': round(cost, 2),
             'profit': round(profit, 2),
-            'kvRevenue': round(kv_revenue, 2),
-            'kvCost': round(kv_cost, 2),
-            'kvProfit': round(kv_revenue - kv_cost, 2),
-            'kvVat': round(kv_vat, 2),
-            'kvVatInput': round(kv_vat_input, 2),
-            'kvVatPayable': round(kv_vat - kv_vat_input, 2),
             'nvRevenue': round(nv_revenue, 2),
             'nvCost': round(nv_cost, 2),
             'nvProfit': round(nv_revenue - nv_cost, 2),
@@ -501,10 +402,6 @@ class FirestoreInvoiceService:
         revenue = 0
         cost = 0
         buyer_quantity = 0
-        kv_revenue = 0
-        kv_cost = 0
-        kv_vat = 0
-        kv_vat_input = 0
         nv_revenue = 0
         nv_cost = 0
         for month in range(1, 13):
@@ -513,10 +410,6 @@ class FirestoreInvoiceService:
             revenue += monthly.get('revenue', 0)
             cost += monthly.get('cost', 0)
             buyer_quantity += monthly.get('buyer_quantity', 0)
-            kv_revenue += monthly.get('kvRevenue', 0)
-            kv_cost += monthly.get('kvCost', 0)
-            kv_vat += monthly.get('kvVat', 0)
-            kv_vat_input += monthly.get('kvVatInput', 0)
             nv_revenue += monthly.get('nvRevenue', 0)
             nv_cost += monthly.get('nvCost', 0)
         profit = revenue - cost
@@ -526,12 +419,6 @@ class FirestoreInvoiceService:
             'revenue': round(revenue, 2),
             'cost': round(cost, 2),
             'profit': round(profit, 2),
-            'kvRevenue': round(kv_revenue, 2),
-            'kvCost': round(kv_cost, 2),
-            'kvProfit': round(kv_revenue - kv_cost, 2),
-            'kvVat': round(kv_vat, 2),
-            'kvVatInput': round(kv_vat_input, 2),
-            'kvVatPayable': round(kv_vat - kv_vat_input, 2),
             'nvRevenue': round(nv_revenue, 2),
             'nvCost': round(nv_cost, 2),
             'nvProfit': round(nv_revenue - nv_cost, 2),
@@ -559,10 +446,6 @@ class FirestoreInvoiceService:
         revenue = 0
         cost = 0
         buyer_quantity = 0
-        kv_revenue = 0
-        kv_cost = 0
-        kv_vat = 0
-        kv_vat_input = 0
         nv_revenue = 0
         nv_cost = 0
         current = start
@@ -572,10 +455,6 @@ class FirestoreInvoiceService:
             revenue += daily.get('revenue', 0)
             cost += daily.get('cost', 0)
             buyer_quantity += daily.get('buyer_quantity', 0)
-            kv_revenue += daily.get('kvRevenue', 0)
-            kv_cost += daily.get('kvCost', 0)
-            kv_vat += daily.get('kvVat', 0)
-            kv_vat_input += daily.get('kvVatInput', 0)
             nv_revenue += daily.get('nvRevenue', 0)
             nv_cost += daily.get('nvCost', 0)
             current += timedelta(days=1)
@@ -587,12 +466,6 @@ class FirestoreInvoiceService:
             'revenue': round(revenue, 2),
             'cost': round(cost, 2),
             'profit': round(profit, 2),
-            'kvRevenue': round(kv_revenue, 2),
-            'kvCost': round(kv_cost, 2),
-            'kvProfit': round(kv_revenue - kv_cost, 2),
-            'kvVat': round(kv_vat, 2),
-            'kvVatInput': round(kv_vat_input, 2),
-            'kvVatPayable': round(kv_vat - kv_vat_input, 2),
             'nvRevenue': round(nv_revenue, 2),
             'nvCost': round(nv_cost, 2),
             'nvProfit': round(nv_revenue - nv_cost, 2),
