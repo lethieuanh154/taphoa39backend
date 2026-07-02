@@ -122,21 +122,40 @@ Module xử lý hóa đơn điện tử (e-invoice) từ nhiều nguồn phần 
 - Không có per-item tax amount → **parser tự tính**: `taxAmount = round(ThTien * TSuat / 100)`
 - `amountAfterTax` = `ThTien + taxAmount`
 
+### Dạng F - Có chiết khấu STCKhau + TTKhac (VD: Nguyên Minh Hoàng - C26TCT)
+
+```xml
+<HHDVu>
+  <ThTien>261810</ThTien>              <!-- Thành tiền GỐC (trước CK) -->
+  <STCKhau>39423</STCKhau>            <!-- Chiết khấu giảm trừ -->
+  <TSuat>8%</TSuat>
+  <TTKhac>
+    <TTin><TTruong>Amount</TTruong><DLieu>240178</DLieu></TTin>      <!-- Thành tiền sau thuế -->
+    <TTin><TTruong>VATAmount</TTruong><DLieu>17791</DLieu></TTin>    <!-- Tiền thuế -->
+  </TTKhac>
+</HHDVu>
+```
+
+- `ThTien` = thành tiền GỐC (SL × ĐG, **chưa trừ chiết khấu**)
+- `STCKhau` = chiết khấu giảm trừ
+- **`amount` = `ThTien - STCKhau`** = thành tiền thực tế (sau CK, trước thuế)
+- `VATAmount` = VAT trên amount thực tế = `(ThTien - STCKhau) * TSuat / 100`
+- `TTKhac/Amount` = `(ThTien - STCKhau) + VATAmount` = thành tiền thanh toán
+
 ## Logic parse thuế per-item (CRITICAL)
 
 ```
-1. Ưu tiên TThue direct child tag
-2. Nếu TThue = 0, tìm trong TTKhac với field names:
-   → 'VATAmount', 'VATAmountOC', 'TongTien_Thue', 'Tiền thuế dòng (Tiền thuế GTGT)'
-3. Nếu vẫn = 0, fallback tính từ TSuat per-item (hoặc vat_rate summary):
-   → tax = round(ThTien * TSuat / 100)
-
+1. Lấy ThTien (thành tiền gốc)
+2. Trừ chiết khấu: nếu STCKhau > 0 → amount = ThTien - STCKhau
+3. Lấy thuế per-item:
+   a. Ưu tiên TThue direct child tag
+   b. Nếu TThue = 0, tìm trong TTKhac: 'VATAmount', 'VATAmountOC', 'TongTien_Thue', ...
+   c. Nếu vẫn = 0, fallback tính từ TSuat: tax = round(amount * TSuat / 100)
 4. Tìm thành tiền sau thuế trong TTKhac:
    → 'Amount', 'AmountOC', 'TongTien_CoThue', 'Thành tiền thanh toán của hàng hóa'
-
-5. So sánh TTKhac amount với ThTien:
-   - Nếu TTKhac amount > ThTien → dùng TTKhac amount (đã bao gồm thuế)
-   - Nếu TTKhac amount <= ThTien → tự tính: ThTien + taxAmount
+5. So sánh TTKhac amount với amount:
+   - Nếu TTKhac amount > amount → dùng TTKhac amount (đã bao gồm thuế)
+   - Nếu không → tự tính: amount + taxAmount
 ```
 
 **Lý do so sánh**: Một số vendor (MISA - dạng B) lưu `Amount` trong TTKhac = giá trước thuế (= ThTien), trong khi vendor khác (Vinamilk - dạng A2) lưu = giá sau thuế. Chỉ dùng TTKhac amount khi nó lớn hơn ThTien.
@@ -163,9 +182,10 @@ Khi gặp hóa đơn từ vendor mới mà "Thành tiền" = "Thành tiền sau 
 
 Parser trả về item với fields:
 ```
-amount (ThTien)  →  InvoiceItem.amount
-taxAmount        →  InvoiceItem.tax_amount
-amountAfterTax   →  InvoiceItem.amount_after_tax
+amount (ThTien - STCKhau)  →  InvoiceItem.amount     (thành tiền sau CK, trước thuế)
+discount (STCKhau)         →  InvoiceItem.discount    (chiết khấu, 0 nếu không có)
+taxAmount                  →  InvoiceItem.tax_amount
+amountAfterTax             →  InvoiceItem.amount_after_tax
 ```
 
 Frontend (`invoice-processing-page.component.ts`) hiển thị:
