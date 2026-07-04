@@ -1,0 +1,445 @@
+from __future__ import annotations
+
+import math
+import re
+
+from flask import Blueprint, jsonify, request
+
+from routes.shared import handle_api_errors, notify_order_created
+from routes.firebase_orders import _deduct_redeemed_points
+from firebase.firebase_service.order_notification_service import notify_order_realtime
+
+# Danh muc an (vd: thuoc la) - khong hien thi cho khach hang
+_HIDDEN_CATEGORY_IDS = {1440125, 1787413}
+
+# Cau hinh tinh ship/diem server-side (khop FE ShippingService/RewardService)
+_STORE_LAT = 16.019693
+_STORE_LNG = 108.197694
+_ROAD_FACTOR = 1.3
+_SHIP_PRODUCT_ID = 43370064
+_SHIP_PRODUCT_CODE = "SP170288"
+_MIN_DELIVERY_SUBTOTAL = 200000
+_SUSPICIOUS_UNDERPAY = 1000  # client tra thieu hon server qua muc nay -> gan co
+_HEAVY_PATTERN = re.compile(
+    r"\b(bia|nước suối|nước khoáng|sữa|nước ngọt|nước tăng lực|nước giải khát)\b",
+    re.IGNORECASE,
+)
+
+
+def _to_float(v) -> float:
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _public_product(p: dict) -> dict:
+    """Chi giu field khach hang duoc phep thay.
+    Gop ton kho clone vao OnHand; cat Cost/OnHandNV/sync/kiotViet noi bo."""
+    on_hand = _to_float(p.get("OnHand")) + _to_float(p.get("CloneOnHandNV"))
+    return {
+        "Id": p.get("Id"),
+        "Code": p.get("Code"),
+        "Name": p.get("Name"),
+        "FullName": p.get("FullName"),
+        "Image": p.get("Image"),
+        "BasePrice": p.get("BasePrice"),
+        "Unit": p.get("Unit"),
+        "Description": p.get("Description") or "",
+        "CategoryId": p.get("CategoryId"),
+        "ConversionValue": p.get("ConversionValue"),
+        "MasterUnitId": p.get("MasterUnitId"),
+        "NormalizedName": p.get("NormalizedName") or "",
+        "OnHand": on_hand,
+    }
+
+
+def _is_km_product(p: dict) -> bool:
+    name = (p.get("FullName") or p.get("Name") or "").lower()
+    return "(km)" in name and _to_float(p.get("Cost")) == 0
+
+
+def _is_clone(p: dict) -> bool:
+    if p.get("isClone") is True:
+        return True
+    return _to_float(p.get("OnHandNV")) > 0 and _to_float(p.get("OnHand")) == 0
+
+
+def _serialize_public_products(products: list) -> list:
+    """Loc bo clone / KM / danh muc an / deleted-inactive roi whitelist field."""
+    out = []
+    for p in products:
+        if not p or not p.get("Id"):
+            continue
+        if p.get("isDeleted") or p.get("isActive") is False:
+            continue
+        if _is_clone(p):
+            continue
+        if p.get("CategoryId") in _HIDDEN_CATEGORY_IDS:
+            continue
+        if _is_km_product(p):
+            continue
+        out.append(_public_product(p))
+    return out
+
+
+def _public_promotion(pr: dict, target_product: dict | None) -> dict:
+    """Whitelist promotion cho hien thi; cat toan bo kiotViet*/internal."""
+    return {
+        "id": pr.get("id"),
+        "type": pr.get("type"),
+        "name": pr.get("name"),
+        "hasGift": pr.get("hasGift"),
+        "hasPercentDiscount": pr.get("hasPercentDiscount"),
+        "hasFixedDiscount": pr.get("hasFixedDiscount"),
+        "discountPercent": pr.get("discountPercent"),
+        "discountAmount": pr.get("discountAmount"),
+        "minQuantity": pr.get("minQuantity"),
+        "giftQuantity": pr.get("giftQuantity"),
+        "giftProductId": pr.get("giftProductId"),
+        "giftProductName": pr.get("giftProductName"),
+        "targetProductId": pr.get("targetProductId"),
+        "targetProductName": pr.get("targetProductName"),
+        "targetProduct": target_product,
+    }
+
+
+def _haversine(lat1, lng1, lat2, lng2) -> float:
+    r = 6371.0
+    d_lat = math.radians(lat2 - lat1)
+    d_lng = math.radians(lng2 - lng1)
+    a = (math.sin(d_lat / 2) ** 2
+         + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(d_lng / 2) ** 2)
+    return r * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+
+def _recompute_distance_km(lat, lng, fallback_km) -> float:
+    """Tinh lai khoang cach tu lat/lng (khong tin distanceKm client). Khop FE calculateDistance()."""
+    if lat is None or lng is None:
+        return _to_float(fallback_km)
+    road = _haversine(_STORE_LAT, _STORE_LNG, _to_float(lat), _to_float(lng)) * _ROAD_FACTOR
+    return math.ceil(road * 10) / 10
+
+
+def _heavy_surcharge(real_items) -> int:
+    """Port calculateHeavySurcharge() cua FE."""
+    total_cases = 0.0
+    for r in real_items:
+        p = r["product"]
+        unit = (p.get("Unit") or "").lower()
+        name = p.get("FullName") or p.get("Name") or ""
+        if unit == "thùng" and _HEAVY_PATTERN.search(name):
+            total_cases += r["quantity"]
+    if total_cases > 20:
+        return 100000
+    if total_cases > 10:
+        return 50000
+    if total_cases > 5:
+        return 20000
+    return 0
+
+
+def _calc_ship_cost(subtotal, distance_km, real_items) -> float:
+    """Port calculateShipCost() cua FE ShippingService."""
+    if subtotal < _MIN_DELIVERY_SUBTOTAL:
+        return 0.0
+    if subtotal < 500000:
+        free_km, rate = 0, 12000
+    elif subtotal < 1000000:
+        free_km, rate = 2, 6000
+    elif subtotal < 2000000:
+        free_km, rate = 3, 5000
+    elif subtotal < 10000000:
+        free_km, rate = 5, 5000
+    else:
+        free_km, rate = 7, 4000
+    chargeable = max(0.0, distance_km - free_km)
+    raw = chargeable * rate
+    ship = math.floor(raw / 1000 + 0.5) * 1000  # khop Math.round cua JS
+    return ship + _heavy_surcharge(real_items)
+
+
+def _customer_available_points(customer_service, customer) -> float:
+    """Diem kha dung THUC TE tu Firestore (khong tin giftPoint client).
+    Khop cong thuc _calc_gift_point() trong verify-identity."""
+    if not customer_service or not isinstance(customer, dict):
+        return 0.0
+    phone = (customer.get("ContactNumber") or "").strip()
+    if not phone:
+        return 0.0
+    try:
+        for doc in customer_service.customers_ref.where("ContactNumber", "==", phone).limit(1).stream():
+            c = doc.to_dict() or {}
+            base = round(_to_float(c.get("TotalPoint")) * 0.02 / 100) * 100
+            bonus = _to_float(c.get("RegistrationBonus")) + _to_float(c.get("BonusPoint"))
+            redeemed = _to_float(c.get("RedeemedPoints"))
+            return max(0.0, base + bonus - redeemed)
+    except Exception as e:
+        print(f"[public add_order] points lookup error: {type(e).__name__}: {e}")
+    return 0.0
+
+
+def _recompute_order_economics(order, product_service, promotion_service, customer_service) -> dict:
+    """Tinh lai TOAN BO tien tu server (chong sua gia/ship/diem qua F12).
+    Ghi de cac field tien; gan co suspiciousOrder khi client tra thieu bat thuong."""
+    client_paid = _to_float(order.get("customerPaid"))
+    items = order.get("cartItems") or []
+
+    # 1. Tach dong that (khong gift/promo/ship) + ghi gia ban + gia von tu server
+    real_items = []
+    for it in items:
+        prod = it.get("product") or {}
+        pid = prod.get("Id") or it.get("productId")
+        if pid == _SHIP_PRODUCT_ID or prod.get("Code") == _SHIP_PRODUCT_CODE:
+            continue
+        if it.get("isGift") or it.get("isPromotionItem"):
+            continue
+        qty = _to_float(it.get("quantity"))
+        if not pid or qty <= 0:
+            continue
+        server = product_service.read_product(str(pid))
+        if server:
+            base = _to_float(server.get("BasePrice"))
+            cost = _to_float(server.get("Cost"))
+        else:
+            # SP khong con tren server (da xoa/chua sync): giu gia client de khong drop don
+            base = _to_float(prod.get("BasePrice"))
+            cost = _to_float(prod.get("Cost"))
+            server = prod
+        prod["BasePrice"] = base   # ve sinh: gia dong = gia server
+        prod["Cost"] = cost
+        it["product"] = prod
+        real_items.append({
+            "product": server, "productId": str(pid), "code": server.get("Code"),
+            "quantity": qty, "basePrice": base, "cost": cost,
+        })
+
+    # 2. Chay lai promotion engine (nguon chan ly cho giam gia + qua + Type3 SP B)
+    cart_for_promo = [
+        {"productId": r["productId"], "code": r["code"], "quantity": r["quantity"], "basePrice": r["basePrice"]}
+        for r in real_items
+    ]
+    promo = promotion_service.apply_promotions(cart_for_promo) if cart_for_promo else {}
+    total_discount = _to_float(promo.get("totalDiscount"))
+    gift_entries = promo.get("giftItems") or []
+
+    # 3. Subtotal khach phai tra: dong that + SP B giam gia - giam gia (qua tang = 0)
+    subtotal = sum(r["basePrice"] * r["quantity"] for r in real_items)
+    for g in gift_entries:
+        if g.get("isDiscounted"):
+            subtotal += _to_float(g.get("basePrice")) * _to_float(g.get("quantity"))
+    subtotal = max(0.0, subtotal - total_discount)
+
+    # 4. Gia von (dong that + SP B giam gia)
+    total_cost = sum(r["cost"] * r["quantity"] for r in real_items)
+    for g in gift_entries:
+        if g.get("isDiscounted"):
+            sp = product_service.read_product(str(g.get("productId")))
+            if sp:
+                total_cost += _to_float(sp.get("Cost")) * _to_float(g.get("quantity"))
+
+    # 5. Ship: tinh lai tu lat/lng (khong tin shipCost/distanceKm client)
+    ship_cost = 0.0
+    if order.get("wantDelivery"):
+        distance = _recompute_distance_km(order.get("lat"), order.get("lng"), order.get("distanceKm"))
+        order["distanceKm"] = distance
+        ship_cost = _calc_ship_cost(subtotal, distance, real_items)
+
+    # 6. Diem thuong: cap theo so du THAT (logic RewardService.calculateFinal)
+    available = _customer_available_points(customer_service, order.get("customer"))
+    req_ship = max(0.0, _to_float(order.get("pointsUsedForShip")))
+    req_order = max(0.0, _to_float(order.get("pointsUsedForOrder")))
+    pts_ship = min(available, ship_cost, req_ship) if req_ship > 0 else 0.0
+    remaining = max(0.0, available - pts_ship)
+    pts_order = min(remaining, subtotal, req_order) if req_order > 0 else 0.0
+
+    customer_paid = max(0.0, (subtotal - pts_order) + (ship_cost - pts_ship))
+
+    # 7. Ve sinh dong ship + dong qua tang cho khop tong
+    for it in items:
+        prod = it.get("product") or {}
+        pid = prod.get("Id") or it.get("productId")
+        if pid == _SHIP_PRODUCT_ID or prod.get("Code") == _SHIP_PRODUCT_CODE:
+            prod["BasePrice"] = ship_cost
+            it["product"] = prod
+            it["unitPrice"] = ship_cost
+            it["totalPrice"] = ship_cost
+        elif it.get("isGift"):
+            it["unitPrice"] = 0
+            it["totalPrice"] = 0
+
+    # 8. Ghi de (server la chan ly)
+    order["shipCost"] = ship_cost
+    order["pointsUsedForShip"] = pts_ship
+    order["pointsUsedForOrder"] = pts_order
+    order["discountAmount"] = total_discount + pts_order
+    order["totalCost"] = total_cost
+    order["customerPaid"] = customer_paid
+    order["totalPrice"] = customer_paid
+
+    # 9. Co nghi ngo khi client tra thieu hon server (ngoai sai so lam tron)
+    underpay = customer_paid - client_paid
+    if underpay > _SUSPICIOUS_UNDERPAY:
+        order["suspiciousOrder"] = True
+        order["priceAudit"] = {
+            "clientPaid": client_paid,
+            "serverPaid": customer_paid,
+            "underpay": underpay,
+        }
+        print(f"[public add_order] SUSPICIOUS underpay={underpay:.0f} "
+              f"client={client_paid:.0f} server={customer_paid:.0f} phone={(order.get('customer') or {}).get('ContactNumber')}")
+
+    return order
+
+
+def _paginate():
+    try:
+        limit = int(request.args.get("limit", 0))
+    except ValueError:
+        limit = 0
+    try:
+        offset = int(request.args.get("offset", 0))
+    except ValueError:
+        offset = 0
+    return limit, offset
+
+
+def create_firebase_public_bp(
+    product_service, promotion_service, order_service, customer_service, socketio
+) -> Blueprint:
+    """API public cho app DatHang - chi tra field an toan, khach khong thay du lieu noi bo."""
+    bp = Blueprint("firebase_public", __name__, url_prefix="/api/public")
+
+    def _enrich_clone_stock(products):
+        """Gop OnHandNV cua clone vao product goc.
+        Dung chung cache key 'clone_stock_map' voi endpoint noi bo de tiet kiem quota."""
+        cache_key = "clone_stock_map"
+        if product_service.cache.has(cache_key):
+            clone_stock = product_service.cache.get(cache_key)
+        else:
+            all_products = product_service.read_all_products(include_inactive=False, include_deleted=False)
+            clone_stock = {}
+            for p in all_products:
+                is_clone = p.get("isClone") is True or p.get("isClone") == "true"
+                on_hand_nv = _to_float(p.get("OnHandNV"))
+                on_hand = _to_float(p.get("OnHand"))
+                if not (is_clone or (on_hand_nv > 0 and on_hand == 0)):
+                    continue
+                if on_hand_nv <= 0:
+                    continue
+                source_id = str(p.get("CloneSourceId") or "")
+                if source_id:
+                    clone_stock[source_id] = clone_stock.get(source_id, 0) + on_hand_nv
+            product_service.cache.set(cache_key, clone_stock, ttl=3600)
+
+        for p in products:
+            pid = str(p.get("Id", ""))
+            p["CloneOnHandNV"] = clone_stock.get(pid, 0)
+        return products
+
+    @bp.route("/products/featured", methods=["GET"])
+    @handle_api_errors
+    def public_featured():
+        products = product_service.get_featured_products()
+        products = _enrich_clone_stock(products)
+        cleaned = _serialize_public_products(products)
+        total = len(cleaned)
+        limit, offset = _paginate()
+        page = cleaned[offset:offset + limit] if limit > 0 else cleaned
+        return jsonify({
+            "products": page,
+            "count": len(page),
+            "total": total,
+            "hasMore": (offset + len(page)) < total,
+        })
+
+    @bp.route("/products/by-category/<int:category_id>", methods=["GET"])
+    @handle_api_errors
+    def public_by_category(category_id: int):
+        products = product_service.read_products_by_category(category_id)
+        products = _enrich_clone_stock(products)
+        cleaned = _serialize_public_products(products)
+        total = len(cleaned)
+        limit, offset = _paginate()
+        page = cleaned[offset:offset + limit] if limit > 0 else cleaned
+        return jsonify({
+            "products": page,
+            "count": len(page),
+            "total": total,
+            "categoryId": category_id,
+            "hasMore": (offset + len(page)) < total,
+        })
+
+    @bp.route("/products/search", methods=["GET"])
+    @handle_api_errors
+    def public_search():
+        query = request.args.get("q", "").strip()
+        if not query:
+            return jsonify({"products": [], "count": 0, "query": ""})
+        try:
+            limit = int(request.args.get("limit", 80))
+        except ValueError:
+            limit = 80
+        limit = min(max(limit, 1), 200)
+        products = product_service.search_products(query, limit=limit)
+        products = _enrich_clone_stock(products)
+        cleaned = _serialize_public_products(products)
+        return jsonify({"products": cleaned, "count": len(cleaned), "query": query})
+
+    @bp.route("/promotions/active", methods=["GET"])
+    @handle_api_errors
+    def public_active_promotions():
+        promos = promotion_service.read_active_promotions()
+        result = []
+        for pr in promos:
+            target_product = None
+            pid = pr.get("targetProductId")
+            if pid:
+                product = product_service.read_product(str(pid))
+                if product:
+                    target_product = _public_product(product)
+            result.append(_public_promotion(pr, target_product))
+        return jsonify(result)
+
+    @bp.route("/add_order", methods=["POST"])
+    def public_add_order():
+        """Nhan don tu DatHang. Tinh lai TOAN BO tien server-side (gia/ship/diem/gia von) + flag."""
+        order = request.get_json(force=True) or {}
+        _recompute_order_economics(order, product_service, promotion_service, customer_service)
+
+        result = order_service.add_order(order)
+        _deduct_redeemed_points(order, customer_service)
+
+        order_id = None
+        if isinstance(result, dict):
+            order_id = result.get("id") or result.get("Id")
+        if not order_id and isinstance(order, dict):
+            order_id = order.get("id") or order.get("Id")
+
+        if order_id:
+            try:
+                persisted = order_service.read_order(str(order_id))
+                if persisted:
+                    notify_order_created(socketio, persisted)
+                    notify_order_realtime("created", persisted)
+                else:
+                    notify_order_created(socketio, order_id)
+                    notify_order_realtime("created", order)
+            except Exception:
+                notify_order_created(socketio, order_id or order)
+                notify_order_realtime("created", order)
+
+        # Tra ve so da tinh lai server-side (de FE/monitor verify + minh bach)
+        summary = {
+            "id": order.get("id"),
+            "customerPaid": order.get("customerPaid"),
+            "totalCost": order.get("totalCost"),
+            "shipCost": order.get("shipCost"),
+            "discountAmount": order.get("discountAmount"),
+            "suspiciousOrder": order.get("suspiciousOrder", False),
+        }
+        if isinstance(result, dict):
+            summary.update(result)
+        return jsonify(summary)
+
+    return bp

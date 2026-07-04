@@ -39,6 +39,7 @@ from routes.chat_routes import create_chat_routes_bp
 from firebase.firebase_service.chat_service import FirestoreChatService
 from firebase.firebase_service.promotion_service import FirestorePromotionService
 from routes.firebase_promotions import create_firebase_promotions_bp
+from routes.firebase_public import create_firebase_public_bp
 
 
 def _build_app() -> Flask:
@@ -102,6 +103,11 @@ def _build_app() -> Flask:
 
     # Promotions (khuyến mại)
     app.register_blueprint(create_firebase_promotions_bp(promotion_service, product_service, socketio))
+
+    # Public API cho app DatHang (che giấu dữ liệu nội bộ: Cost, OnHandNV, kiotViet...)
+    app.register_blueprint(create_firebase_public_bp(
+        product_service, promotion_service, order_service, customer_service, socketio
+    ))
 
     # Chat messaging
     chat_service = FirestoreChatService()
