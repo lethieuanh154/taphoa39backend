@@ -25,12 +25,20 @@ Lọc **server-side** (không để FE tự lọc bằng field nhạy cảm): b�
 GIỮ: `id, type, name, hasGift, hasPercentDiscount, hasFixedDiscount, discountPercent, discountAmount, minQuantity, giftQuantity, giftProductId, giftProductName, targetProductId, targetProductName, targetProduct` (đã whitelist).
 CẮT toàn bộ `kiotViet*`, `createdDate/modifiedDate/priority/isEnabled` + `giftItems` (FE lấy từ `/promotions/apply`), `fromDate, toDate, giftProductCode, giftProductBasePrice, targetProductCode` (không đọc ở DatHang). → giảm mạnh size (bỏ mảng `giftItems`).
 
-## `POST /api/public/add_order` — tính lại tiền server-side
-`_recompute_order_economics()` **ghi đè** mọi field tiền (server là nguồn chân lý), chống sửa qua F12:
-- **Giá bán**: dùng `BasePrice` từ Firestore; chạy lại `promotion_service.apply_promotions()` cho giảm giá + quà + SP B (Type 3).
-- **Ship**: port `calculateShipCost()` của FE; tính lại `distanceKm` từ `lat/lng` (store `16.019693, 108.197694`, ROAD_FACTOR 1.3, `Math.round`→`floor(x/1000+0.5)*1000`).
-- **Điểm thưởng**: cap theo số dư THẬT từ Firestore (khớp `_calc_gift_point()` trong `verify-identity`), không tin `giftPoint` client.
-- **Giá vốn**: `totalCost` tính từ `Cost` server (vì client đã bị ẩn Cost) → BanHang vẫn theo dõi lợi nhuận.
-- **Flag**: nếu client trả thiếu hơn server > 1000đ → gắn `suspiciousOrder=true` + `priceAudit={clientPaid, serverPaid, underpay}` + log để review thủ công. Đơn vẫn được tạo (override im lặng, không reject để khỏi mất đơn thật do giỏ cũ).
+## `POST /api/public/add_order` — DỰNG LẠI đơn server-side
+`_recompute_order_economics()` **KHÔNG tin gì từ client trừ `{productId, quantity}`** của dòng mua thật. Dựng lại toàn bộ `cartItems` + tiền từ Firestore:
+- **Bỏ mọi dòng `isGift`/`isPromotionItem` client gửi** → gift/Type3 tạo lại từ `apply_promotions()` (chống tiêm hàng tặng giả để lấy free).
+- **Giá bán**: `BasePrice` từ Firestore; giảm giá Type2/Type3 tính server-side (khớp làm tròn floor-1000 của FE).
+- **Ship**: port `calculateShipCost()`; tính lại `distanceKm` từ `lat/lng` (store `16.019693, 108.197694`, ROAD_FACTOR 1.3, `Math.round`→`floor(x/1000+0.5)*1000`).
+- **Điểm thưởng**: cap theo số dư THẬT (`_calc_gift_point()` trong `verify-identity`), không tin `giftPoint` client.
+- **Giá vốn**: `totalCost` từ `Cost` server → BanHang theo dõi lợi nhuận. Dòng cartItems dùng `_public_product` → **KHÔNG lưu `Cost` per-line** (tránh rò qua GET order).
+- **Chống overwrite**: route reject `409` nếu `id` đã tồn tại (client tự sinh `DH+timestamp`).
+- **Validate**: SĐT (≥9 số), quantity (>0, ≤100000), reject giỏ rỗng/không có SP thật.
+- **Flag**: client trả thiếu hơn server > 1000đ → `suspiciousOrder=true` + `priceAudit` + log. Override im lặng (không reject → khỏi mất đơn thật do giỏ cũ).
 
-Ràng buộc: cấu hình `_STORE_LAT/_STORE_LNG`, tier ship, dòng phí ship (`Id 43370064 / Code SP170288`) phải khớp FE. Đơn nội bộ (BanHang/Management) vẫn qua `/api/firebase/add_order` cũ.
+Ràng buộc: `_STORE_LAT/_STORE_LNG`, tier ship, dòng phí ship (`Id 43370064 / Code SP170288`) phải khớp FE. Đơn nội bộ (BanHang/Management) vẫn qua `/api/firebase/add_order` cũ.
+
+## CÒN MỞ (ngoài scope `firebase_public.py` — cần quyết định)
+- **`/api/firebase/*` không auth + CORS `*`**: nếu BE ra internet, ai cũng đọc/sửa/xóa đơn. Cần chặn public hoặc thêm auth token (đụng app nội bộ → cần biết cách deploy).
+- **`GET /api/firebase/orders/<id>` không auth**: ID đoán được (`DH+timestamp`) → rò PII khách + `totalCost` (giá vốn tổng). Cần auth hoặc bản public-slim.
+- **`/api/firebase/promotions/apply` tin `basePrice` client**: chỉ ảnh hưởng số HIỂN THỊ; số TÍNH TIỀN đã đúng vì add_order tự chạy lại engine với giá server.

@@ -179,73 +179,111 @@ def _customer_available_points(customer_service, customer) -> float:
     return 0.0
 
 
-def _recompute_order_economics(order, product_service, promotion_service, customer_service) -> dict:
-    """Tinh lai TOAN BO tien tu server (chong sua gia/ship/diem qua F12).
-    Ghi de cac field tien; gan co suspiciousOrder khi client tra thieu bat thuong."""
-    client_paid = _to_float(order.get("customerPaid"))
-    items = order.get("cartItems") or []
+def _order_line(prod, qty, unit_price, is_gift, is_promo, sale_off=0.0):
+    """Dung 1 dong cartItems tu product SERVER, da whitelist (_public_product -> khong luu Cost/noi bo)."""
+    return {
+        "product": _public_product(prod),
+        "quantity": qty,
+        "unitPriceSaleOff": sale_off,
+        "unitPrice": unit_price,
+        "totalPrice": 0 if is_gift else unit_price * qty,
+        "isGift": is_gift,
+        "isPromotionItem": is_promo,
+    }
 
-    # 1. Tach dong that (khong gift/promo/ship) + ghi gia ban + gia von tu server
-    real_items = []
-    for it in items:
+
+def _recompute_order_economics(order, product_service, promotion_service, customer_service) -> dict:
+    """Dung lai TOAN BO don tu server: BO QUA gia/gift/promo/ship do client gui.
+    Chi tin {productId, quantity} cua dong mua that; gift/Type3/ship deu tao lai tu server.
+    Tra ve {ok, error?, customerPaid, suspicious}."""
+    client_paid = _to_float(order.get("customerPaid"))
+    client_items = order.get("cartItems") or []
+
+    # 1. Danh sach MUA THAT: bo dong gift/promo/ship client, validate so luong
+    purchased = []
+    for it in client_items:
         prod = it.get("product") or {}
         pid = prod.get("Id") or it.get("productId")
         if pid == _SHIP_PRODUCT_ID or prod.get("Code") == _SHIP_PRODUCT_CODE:
             continue
         if it.get("isGift") or it.get("isPromotionItem"):
-            continue
+            continue  # KHONG tin -> gift/promo se dung lai tu server
         qty = _to_float(it.get("quantity"))
-        if not pid or qty <= 0:
+        if qty <= 0 or qty > 100000:
+            return {"ok": False, "error": "So luong khong hop le"}
+        if not pid:
             continue
         server = product_service.read_product(str(pid))
-        if server:
-            base = _to_float(server.get("BasePrice"))
-            cost = _to_float(server.get("Cost"))
-        else:
-            # SP khong con tren server (da xoa/chua sync): giu gia client de khong drop don
-            base = _to_float(prod.get("BasePrice"))
-            cost = _to_float(prod.get("Cost"))
-            server = prod
-        prod["BasePrice"] = base   # ve sinh: gia dong = gia server
-        prod["Cost"] = cost
-        it["product"] = prod
-        real_items.append({
-            "product": server, "productId": str(pid), "code": server.get("Code"),
-            "quantity": qty, "basePrice": base, "cost": cost,
-        })
+        if not server:
+            continue  # SP khong ton tai -> bo (khong cho mua hang ma)
+        purchased.append((server, str(pid), qty))
 
-    # 2. Chay lai promotion engine (nguon chan ly cho giam gia + qua + Type3 SP B)
-    cart_for_promo = [
-        {"productId": r["productId"], "code": r["code"], "quantity": r["quantity"], "basePrice": r["basePrice"]}
-        for r in real_items
-    ]
-    promo = promotion_service.apply_promotions(cart_for_promo) if cart_for_promo else {}
-    total_discount = _to_float(promo.get("totalDiscount"))
+    if not purchased:
+        return {"ok": False, "error": "Gio hang trong hoac san pham khong hop le"}
+
+    # 2. Promotion engine (gia SERVER)
+    promo_cart = [{"productId": pid, "code": s.get("Code"), "quantity": qty,
+                   "basePrice": _to_float(s.get("BasePrice"))} for (s, pid, qty) in purchased]
+    promo = promotion_service.apply_promotions(promo_cart)
+    applied = promo.get("appliedPromotions") or []
     gift_entries = promo.get("giftItems") or []
+    total_discount = _to_float(promo.get("totalDiscount"))
 
-    # 3. Subtotal khach phai tra: dong that + SP B giam gia - giam gia (qua tang = 0)
-    subtotal = sum(r["basePrice"] * r["quantity"] for r in real_items)
+    # Tach Type2 (giam truc tiep tren trigger) khoi Type3 (co giftProduct)
+    type3_ids = {g.get("promotionId") for g in gift_entries if g.get("isDiscounted")}
+    type2_by_pid = {}
+    for a in applied:
+        if a.get("type") in ("percentage", "fixed_amount") and a.get("promotionId") not in type3_ids:
+            tp = str(a.get("targetProductId") or "")
+            type2_by_pid[tp] = type2_by_pid.get(tp, 0.0) + _to_float(a.get("discountAmount"))
+
+    # 3. Dung lai cartItems tu server (gia dong da giam Type2/Type3, khop FE)
+    new_items = []
+    subtotal = 0.0
+    total_cost = 0.0
+    for (s, pid, qty) in purchased:
+        base = _to_float(s.get("BasePrice"))
+        sale_off = (type2_by_pid.get(pid, 0.0) / qty) if qty else 0.0
+        unit_price = max(0.0, base - sale_off)
+        subtotal += unit_price * qty
+        total_cost += _to_float(s.get("Cost")) * qty
+        new_items.append(_order_line(s, qty, unit_price, False, False, sale_off))
+
     for g in gift_entries:
+        gid = str(g.get("productId") or "")
+        gqty = _to_float(g.get("quantity"))
+        gs = product_service.read_product(gid) or {
+            "Id": g.get("productId"), "Code": g.get("code"), "Name": g.get("name"),
+            "FullName": g.get("name"), "BasePrice": g.get("basePrice"),
+        }
         if g.get("isDiscounted"):
-            subtotal += _to_float(g.get("basePrice")) * _to_float(g.get("quantity"))
-    subtotal = max(0.0, subtotal - total_discount)
+            gbase = _to_float(g.get("basePrice"))
+            if g.get("discountPercent"):
+                disc = (int(gbase * _to_float(g["discountPercent"]) / 100) // 1000) * 1000
+            else:
+                disc = _to_float(g.get("discountAmount"))
+            unit_price = max(0.0, gbase - disc)
+            subtotal += unit_price * gqty
+            total_cost += _to_float(gs.get("Cost")) * gqty
+            new_items.append(_order_line(gs, gqty, unit_price, False, True, disc))
+        else:
+            total_cost += _to_float(gs.get("Cost")) * gqty
+            new_items.append(_order_line(gs, gqty, 0.0, True, True))
 
-    # 4. Gia von (dong that + SP B giam gia)
-    total_cost = sum(r["cost"] * r["quantity"] for r in real_items)
-    for g in gift_entries:
-        if g.get("isDiscounted"):
-            sp = product_service.read_product(str(g.get("productId")))
-            if sp:
-                total_cost += _to_float(sp.get("Cost")) * _to_float(g.get("quantity"))
-
-    # 5. Ship: tinh lai tu lat/lng (khong tin shipCost/distanceKm client)
+    # 4. Ship: tinh lai tu lat/lng (khong tin shipCost/distanceKm client)
     ship_cost = 0.0
     if order.get("wantDelivery"):
         distance = _recompute_distance_km(order.get("lat"), order.get("lng"), order.get("distanceKm"))
         order["distanceKm"] = distance
-        ship_cost = _calc_ship_cost(subtotal, distance, real_items)
+        ship_items = [{"product": s, "quantity": qty} for (s, _pid, qty) in purchased]
+        ship_cost = _calc_ship_cost(subtotal, distance, ship_items)
+        if ship_cost > 0:
+            new_items.append(_order_line(
+                {"Id": _SHIP_PRODUCT_ID, "Code": _SHIP_PRODUCT_CODE, "Name": "Phi Giao hang",
+                 "FullName": "Phi Giao hang", "BasePrice": ship_cost, "Unit": "Dich vu"},
+                1, ship_cost, False, False))
 
-    # 6. Diem thuong: cap theo so du THAT (logic RewardService.calculateFinal)
+    # 5. Diem thuong: cap theo so du THAT (logic RewardService.calculateFinal)
     available = _customer_available_points(customer_service, order.get("customer"))
     req_ship = max(0.0, _to_float(order.get("pointsUsedForShip")))
     req_order = max(0.0, _to_float(order.get("pointsUsedForOrder")))
@@ -255,41 +293,28 @@ def _recompute_order_economics(order, product_service, promotion_service, custom
 
     customer_paid = max(0.0, (subtotal - pts_order) + (ship_cost - pts_ship))
 
-    # 7. Ve sinh dong ship + dong qua tang cho khop tong
-    for it in items:
-        prod = it.get("product") or {}
-        pid = prod.get("Id") or it.get("productId")
-        if pid == _SHIP_PRODUCT_ID or prod.get("Code") == _SHIP_PRODUCT_CODE:
-            prod["BasePrice"] = ship_cost
-            it["product"] = prod
-            it["unitPrice"] = ship_cost
-            it["totalPrice"] = ship_cost
-        elif it.get("isGift"):
-            it["unitPrice"] = 0
-            it["totalPrice"] = 0
-
-    # 8. Ghi de (server la chan ly)
+    # 6. Ghi de order bang du lieu server (chan ly)
+    order["cartItems"] = new_items
     order["shipCost"] = ship_cost
     order["pointsUsedForShip"] = pts_ship
     order["pointsUsedForOrder"] = pts_order
     order["discountAmount"] = total_discount + pts_order
     order["totalCost"] = total_cost
+    order["totalQuantity"] = sum(q for (_s, _p, q) in purchased)
     order["customerPaid"] = customer_paid
     order["totalPrice"] = customer_paid
 
-    # 9. Co nghi ngo khi client tra thieu hon server (ngoai sai so lam tron)
-    underpay = customer_paid - client_paid
-    if underpay > _SUSPICIOUS_UNDERPAY:
+    # 7. Flag khi client tra thieu hon server (ngoai sai so lam tron)
+    suspicious = (customer_paid - client_paid) > _SUSPICIOUS_UNDERPAY
+    if suspicious:
         order["suspiciousOrder"] = True
-        order["priceAudit"] = {
-            "clientPaid": client_paid,
-            "serverPaid": customer_paid,
-            "underpay": underpay,
-        }
-        print(f"[public add_order] SUSPICIOUS underpay={underpay:.0f} "
-              f"client={client_paid:.0f} server={customer_paid:.0f} phone={(order.get('customer') or {}).get('ContactNumber')}")
+        order["priceAudit"] = {"clientPaid": client_paid, "serverPaid": customer_paid,
+                               "underpay": customer_paid - client_paid}
+        print(f"[public add_order] SUSPICIOUS underpay={customer_paid - client_paid:.0f} "
+              f"client={client_paid:.0f} server={customer_paid:.0f} "
+              f"phone={(order.get('customer') or {}).get('ContactNumber')}")
 
-    return order
+    return {"ok": True, "customerPaid": customer_paid, "suspicious": suspicious}
 
 
 def _paginate():
@@ -405,7 +430,25 @@ def create_firebase_public_bp(
     def public_add_order():
         """Nhan don tu DatHang. Tinh lai TOAN BO tien server-side (gia/ship/diem/gia von) + flag."""
         order = request.get_json(force=True) or {}
-        _recompute_order_economics(order, product_service, promotion_service, customer_service)
+
+        # Validate SDT khach hang
+        phone = ((order.get("customer") or {}).get("ContactNumber") or "").strip()
+        if len(phone) < 9 or not phone.lstrip("+").isdigit():
+            return jsonify({"error": "So dien thoai khong hop le"}), 400
+
+        # Chan overwrite don bang id trung (client tu sinh id)
+        oid = order.get("id")
+        if oid:
+            try:
+                if order_service.read_order(str(oid)):
+                    return jsonify({"error": "Order ID da ton tai"}), 409
+            except Exception:
+                pass
+
+        # Tinh lai toan bo tu server; reject neu don khong hop le
+        econ = _recompute_order_economics(order, product_service, promotion_service, customer_service)
+        if not econ.get("ok"):
+            return jsonify({"error": econ.get("error", "Don hang khong hop le")}), 400
 
         result = order_service.add_order(order)
         _deduct_redeemed_points(order, customer_service)

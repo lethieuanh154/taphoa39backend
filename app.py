@@ -40,6 +40,7 @@ from firebase.firebase_service.chat_service import FirestoreChatService
 from firebase.firebase_service.promotion_service import FirestorePromotionService
 from routes.firebase_promotions import create_firebase_promotions_bp
 from routes.firebase_public import create_firebase_public_bp
+from routes.admin_auth import register_admin_auth
 
 
 def _build_app() -> Flask:
@@ -119,6 +120,9 @@ def _build_app() -> Flask:
     # Merged products audit (lightweight backup)
     audit_bp, audit_service = create_merged_products_audit_bp()
     app.register_blueprint(audit_bp)
+
+    # Admin auth gate (mac dinh log-only; bat ENFORCE_ADMIN_AUTH=true de chan)
+    register_admin_auth(app)
 
     # Attach socketio to app for external use if needed
     app.socketio = socketio
