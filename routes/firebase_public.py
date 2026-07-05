@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import re
+import time
 
 from flask import Blueprint, jsonify, request
 
@@ -65,22 +66,60 @@ def _is_clone(p: dict) -> bool:
     return _to_float(p.get("OnHandNV")) > 0 and _to_float(p.get("OnHand")) == 0
 
 
+def _is_orderable(p: dict) -> bool:
+    """SP hop le de ban: active, chua xoa, khong clone, khong danh muc an, khong KM."""
+    if not p or not p.get("Id"):
+        return False
+    if p.get("isDeleted") or p.get("isActive") is False:
+        return False
+    if _is_clone(p):
+        return False
+    if p.get("CategoryId") in _HIDDEN_CATEGORY_IDS:
+        return False
+    if _is_km_product(p):
+        return False
+    return True
+
+
+def _valid_latlng(lat, lng) -> bool:
+    """Toa do hop le trong pham vi Viet Nam (loai rac nhu 0,0)."""
+    try:
+        lat = float(lat)
+        lng = float(lng)
+    except (TypeError, ValueError):
+        return False
+    return 8.0 <= lat <= 24.0 and 102.0 <= lng <= 110.0
+
+
 def _serialize_public_products(products: list) -> list:
     """Loc bo clone / KM / danh muc an / deleted-inactive roi whitelist field."""
-    out = []
-    for p in products:
-        if not p or not p.get("Id"):
-            continue
-        if p.get("isDeleted") or p.get("isActive") is False:
-            continue
-        if _is_clone(p):
-            continue
-        if p.get("CategoryId") in _HIDDEN_CATEGORY_IDS:
-            continue
-        if _is_km_product(p):
-            continue
-        out.append(_public_product(p))
-    return out
+    return [_public_product(p) for p in products if _is_orderable(p)]
+
+
+def _public_order(o: dict) -> dict:
+    """Chi tra field khach can xem lich su/trang thai don.
+    CAT PII (SDT/dia chi/lat/lng), totalCost (gia von), discountAmount noi bo."""
+    return {
+        "id": o.get("id"),
+        "status": o.get("status"),
+        "createdDate": o.get("createdDate"),
+        "customerPaid": o.get("customerPaid"),
+        "wantDelivery": o.get("wantDelivery"),
+        "desiredDeliveryDate": o.get("desiredDeliveryDate"),
+        "desiredDeliveryTime": o.get("desiredDeliveryTime"),
+        "cartItems": [
+            {
+                "product": {
+                    "Name": (it.get("product") or {}).get("Name"),
+                    "Image": (it.get("product") or {}).get("Image"),
+                },
+                "quantity": it.get("quantity"),
+                "unitPrice": it.get("unitPrice"),
+                "unitPriceSaleOff": it.get("unitPriceSaleOff"),
+            }
+            for it in (o.get("cartItems") or [])
+        ],
+    }
 
 
 def _public_promotion(pr: dict, target_product: dict | None) -> dict:
@@ -214,8 +253,9 @@ def _recompute_order_economics(order, product_service, promotion_service, custom
         if not pid:
             continue
         server = product_service.read_product(str(pid))
-        if not server:
-            continue  # SP khong ton tai -> bo (khong cho mua hang ma)
+        if not _is_orderable(server):
+            name = (server or {}).get("Name") or (server or {}).get("FullName") or pid
+            return {"ok": False, "error": f"San pham '{name}' ngung ban hoac khong hop le"}
         purchased.append((server, str(pid), qty))
 
     if not purchased:
@@ -273,7 +313,12 @@ def _recompute_order_economics(order, product_service, promotion_service, custom
     # 4. Ship: tinh lai tu lat/lng (khong tin shipCost/distanceKm client)
     ship_cost = 0.0
     if order.get("wantDelivery"):
-        distance = _recompute_distance_km(order.get("lat"), order.get("lng"), order.get("distanceKm"))
+        lat, lng = order.get("lat"), order.get("lng")
+        if not _valid_latlng(lat, lng):
+            return {"ok": False, "error": "Giao hang can vi tri (lat/lng) hop le"}
+        if subtotal < _MIN_DELIVERY_SUBTOTAL:
+            return {"ok": False, "error": "Don giao hang toi thieu 200.000d"}
+        distance = _recompute_distance_km(lat, lng, None)  # KHONG fallback distanceKm client
         order["distanceKm"] = distance
         ship_items = [{"product": s, "quantity": qty} for (s, _pid, qty) in purchased]
         ship_cost = _calc_ship_cost(subtotal, distance, ship_items)
@@ -426,6 +471,17 @@ def create_firebase_public_bp(
             result.append(_public_promotion(pr, target_product))
         return jsonify(result)
 
+    @bp.route("/orders/<order_id>", methods=["GET"])
+    @handle_api_errors
+    def public_get_order(order_id: str):
+        """Tra chi tiet 1 don da lam gon (cho trang lich su/confirm DatHang) - khong PII/gia von."""
+        o = order_service.read_order(str(order_id))
+        if not o:
+            return jsonify({"error": "Order not found"}), 404
+        o = dict(o)
+        o.setdefault("id", order_id)
+        return jsonify(_public_order(o))
+
     @bp.route("/add_order", methods=["POST"])
     def public_add_order():
         """Nhan don tu DatHang. Tinh lai TOAN BO tien server-side (gia/ship/diem/gia von) + flag."""
@@ -436,21 +492,22 @@ def create_firebase_public_bp(
         if len(phone) < 9 or not phone.lstrip("+").isdigit():
             return jsonify({"error": "So dien thoai khong hop le"}), 400
 
-        # Chan overwrite don bang id trung (client tu sinh id)
-        oid = order.get("id")
-        if oid:
-            try:
-                if order_service.read_order(str(oid)):
-                    return jsonify({"error": "Order ID da ton tai"}), 409
-            except Exception:
-                pass
-
         # Tinh lai toan bo tu server; reject neu don khong hop le
         econ = _recompute_order_economics(order, product_service, promotion_service, customer_service)
         if not econ.get("ok"):
             return jsonify({"error": econ.get("error", "Don hang khong hop le")}), 400
 
-        result = order_service.add_order(order)
+        # Luu ATOMIC: create() fail neu id da ton tai -> chan overwrite (khong race nhu read+set)
+        oid = str(order.get("id") or ("DH" + str(int(time.time() * 1000))))
+        order["id"] = oid
+        try:
+            order_service.orders_ref.document(oid).create(order)
+            order_service.cache.invalidate("all_orders")
+        except Exception as e:
+            if type(e).__name__ in ("AlreadyExists", "Conflict") or "already exist" in str(e).lower():
+                return jsonify({"error": "Order ID da ton tai"}), 409
+            raise
+        result = {"message": "order added"}
         _deduct_redeemed_points(order, customer_service)
 
         order_id = None

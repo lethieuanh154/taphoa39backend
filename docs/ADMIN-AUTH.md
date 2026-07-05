@@ -5,7 +5,7 @@ Fix C3: bất kỳ ai cũng gọi được `songminhcr.com/api/firebase/orders` 
 ## Cơ chế
 - `routes/admin_auth.py` → `register_admin_auth(app)` (đăng ký trong `app.py`), dùng `@app.before_request`.
 - Gate MỌI `/api/*` **trừ** allowlist (public): `is_gated(method, path)`.
-  - **Không gate** (public/DatHang + tự có auth riêng): `/api/public/`, `/api/chat/`, `/api/websocket/`, `/api/auth/`, `/api/gmail/`, `/api/kiotviet/categories`, `/api/kiotviet/product-images`, `/api/item/`, `/api/osrm`, `POST /api/firebase/promotions/apply`, `GET /api/firebase/orders/<id>`.
+  - **Không gate** (public/DatHang + tự có auth riêng): `/api/public/`, `/api/chat/`, `/api/websocket/`, `/api/auth/`, `/api/gmail/`, `/api/kiotviet/categories`, `/api/kiotviet/product-images`, `/api/item/`, `/api/osrm`, `POST /api/firebase/promotions/apply`.
   - **Gate** (admin): mọi thứ còn lại (`/api/firebase/orders` list, `update_order`, `delete`, `customers`, `employees`, `get/products`, `/api/kiotviet/*` khác…).
 - Endpoint admin cần header **`X-Id-Token: <Firebase ID token>`** (hoặc `Authorization: Bearer <token>`). Verify bằng `verify_firebase_token`.
 
@@ -26,5 +26,6 @@ Fix C3: bất kỳ ai cũng gọi được `songminhcr.com/api/firebase/orders` 
 5. Kiểm tra: `curl https://songminhcr.com/api/firebase/orders` → **401**. Management/BanHang vẫn chạy bình thường.
 
 ## Còn lại (tùy chọn)
-- `GET /api/firebase/orders/<id>` vẫn mở (DatHang cần cho confirm) → còn rò PII/`totalCost` 1 đơn nếu đoán được ID. Muốn kín: chuyển confirm sang endpoint public có token khách, hoặc gate luôn (đụng DatHang).
+- `GET /api/firebase/orders/<id>` (full, có PII/totalCost): ĐÃ gate admin. DatHang chuyển sang `/api/public/orders/<id>` slim (cần rebuild+deploy DatHang FE).
 - Nên kèm lớp nginx allowlist trên `songminhcr.com` (defense-in-depth, xem lịch sử chat).
+- Cân nhắc thêm `is_email_allowed` vào gate (chỉ nhân viên whitelist) — lưu ý BanHang có thể phone-auth.

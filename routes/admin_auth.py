@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import re
 
 from flask import jsonify, request
 
@@ -20,17 +19,15 @@ _SKIP_PREFIXES = (
     "/api/osrm",
 )
 _SKIP_EXACT = ("/api/firebase/promotions/apply",)
-_ORDER_BY_ID = re.compile(r"^/api/firebase/orders/[^/]+$")
 
 
 def is_gated(method: str, path: str) -> bool:
-    """True neu endpoint la ADMIN (can auth). False neu public/skip."""
+    """True neu endpoint la ADMIN (can auth). False neu public/skip.
+    DatHang xem don qua /api/public/orders/<id> (slim), KHONG qua /api/firebase/orders/<id>."""
     if method == "OPTIONS" or not path.startswith("/api/"):
         return False
     if path.startswith(_SKIP_PREFIXES) or path in _SKIP_EXACT:
         return False
-    if method == "GET" and _ORDER_BY_ID.match(path):
-        return False  # DatHang xem 1 don (trang confirm)
     return True
 
 

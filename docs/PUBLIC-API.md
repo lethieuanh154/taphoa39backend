@@ -13,6 +13,7 @@ Che giấu dữ liệu nội bộ khỏi khách hàng (F12/Network) và chống 
 | GET | `/api/public/products/by-category/<id>?limit&offset` | `/api/firebase/get/products/by-category/<id>` |
 | GET | `/api/public/products/search?q&limit` | `/api/firebase/products/search` |
 | GET | `/api/public/promotions/active` | `/api/firebase/promotions/active` |
+| GET | `/api/public/orders/<id>` | `/api/firebase/orders/<id>` (giờ đã GATE admin) |
 | POST | `/api/public/add_order` | `/api/firebase/add_order` |
 
 ## Whitelist sản phẩm (`_public_product`) — đã làm gọn
@@ -32,13 +33,19 @@ CẮT toàn bộ `kiotViet*`, `createdDate/modifiedDate/priority/isEnabled` + `g
 - **Ship**: port `calculateShipCost()`; tính lại `distanceKm` từ `lat/lng` (store `16.019693, 108.197694`, ROAD_FACTOR 1.3, `Math.round`→`floor(x/1000+0.5)*1000`).
 - **Điểm thưởng**: cap theo số dư THẬT (`_calc_gift_point()` trong `verify-identity`), không tin `giftPoint` client.
 - **Giá vốn**: `totalCost` từ `Cost` server → BanHang theo dõi lợi nhuận. Dòng cartItems dùng `_public_product` → **KHÔNG lưu `Cost` per-line** (tránh rò qua GET order).
-- **Chống overwrite**: route reject `409` nếu `id` đã tồn tại (client tự sinh `DH+timestamp`).
+- **Chống overwrite (atomic)**: dùng `orders_ref.document(id).create()` → `409` nếu id tồn tại (không còn race read+set). Không có id → server tự sinh `DH+timestamp`.
+- **SP orderable**: reject nếu SP không active / đã xóa / clone / danh mục ẩn / KM (`_is_orderable`, tái dùng filter list). *Stock: chưa hard-check (do clone-stock cần enrich riêng, tránh reject oan).*
+- **Delivery**: reject nếu thiếu `lat/lng` hợp lệ (bounds VN, KHÔNG fallback `distanceKm` client) hoặc subtotal < 200.000đ.
 - **Validate**: SĐT (≥9 số), quantity (>0, ≤100000), reject giỏ rỗng/không có SP thật.
 - **Flag**: client trả thiếu hơn server > 1000đ → `suspiciousOrder=true` + `priceAudit` + log. Override im lặng (không reject → khỏi mất đơn thật do giỏ cũ).
 
+## `GET /api/public/orders/<id>` — chi tiết đơn SLIM (cho my-orders/confirm)
+`_public_order()`: chỉ trả `id, status, createdDate, customerPaid, wantDelivery, desiredDelivery*, cartItems[{product.Name/Image, quantity, unitPrice}]`. **CẮT** SĐT/địa chỉ/lat-lng/`totalCost`/`discountAmount`. `/api/firebase/orders/<id>` (full) giờ đã **GATE admin**. FE `order-api.getOrderById` đã repoint sang path này.
+
 Ràng buộc: `_STORE_LAT/_STORE_LNG`, tier ship, dòng phí ship (`Id 43370064 / Code SP170288`) phải khớp FE. Đơn nội bộ (BanHang/Management) vẫn qua `/api/firebase/add_order` cũ.
 
-## CÒN MỞ (ngoài scope `firebase_public.py` — cần quyết định)
-- **`/api/firebase/*` không auth + CORS `*`**: nếu BE ra internet, ai cũng đọc/sửa/xóa đơn. Cần chặn public hoặc thêm auth token (đụng app nội bộ → cần biết cách deploy).
-- **`GET /api/firebase/orders/<id>` không auth**: ID đoán được (`DH+timestamp`) → rò PII khách + `totalCost` (giá vốn tổng). Cần auth hoặc bản public-slim.
+## CÒN MỞ (ngoài scope `firebase_public.py`)
+- **`/api/firebase/*` không auth**: ĐÃ FIX bằng admin-auth gate (`X-Id-Token`, `ENFORCE_ADMIN_AUTH`). Xem `ADMIN-AUTH.md`.
+- **`GET /api/firebase/orders/<id>` rò PII/totalCost**: ĐÃ FIX — endpoint full giờ gate admin; DatHang dùng `/api/public/orders/<id>` slim. (Residual nhỏ: nội dung đơn — tên món/giá — vẫn xem được nếu đoán ID; muốn kín hẳn thì token theo đơn.)
 - **`/api/firebase/promotions/apply` tin `basePrice` client**: chỉ ảnh hưởng số HIỂN THỊ; số TÍNH TIỀN đã đúng vì add_order tự chạy lại engine với giá server.
+- **Stock hard-check trong add_order**: chưa làm (cần enrich clone-stock để tránh reject oan SP bán qua clone).
