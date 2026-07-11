@@ -539,10 +539,14 @@ class TaxInvoiceXMLParser:
                             item_tax_amount = round(item_amount * item_tsuat / 100)
                             has_per_item_tax = True
 
-                    # Trừ chiết khấu: ThTien là trước CK, amount thực tế = ThTien - STCKhau
+                    # Trừ chiết khấu nếu ThTien chưa bao gồm CK
+                    # Detect: ThTien ≈ SL × ĐG → CK chưa trừ (dạng F: Nguyên Minh Hoàng)
+                    #         ThTien ≈ SL × ĐG - STCKhau → CK đã trừ sẵn (dạng G: Tuấn Việt)
                     stckhau = TaxInvoiceXMLParser._parse_amount(find_direct_child_text(hhdv_element, 'STCKhau'))
-                    if stckhau > 0:
-                        item_amount = item_amount - stckhau
+                    if stckhau > 0 and item_quantity > 0 and item_unit_price > 0:
+                        gross = item_quantity * item_unit_price
+                        if abs(item_amount - gross) < 2:
+                            item_amount = item_amount - stckhau
 
                     # Lấy thành tiền sau thuế:
                     # - TTKhac/Amount > item_amount → dạng sau thuế (Vinamilk, hoặc có CK)

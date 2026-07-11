@@ -136,21 +136,46 @@ Module xử lý hóa đơn điện tử (e-invoice) từ nhiều nguồn phần 
 </HHDVu>
 ```
 
-- `ThTien` = thành tiền GỐC (SL × ĐG, **chưa trừ chiết khấu**)
+- `ThTien` = SL × ĐG = thành tiền GỐC (**chưa trừ chiết khấu**)
 - `STCKhau` = chiết khấu giảm trừ
 - **`amount` = `ThTien - STCKhau`** = thành tiền thực tế (sau CK, trước thuế)
 - `VATAmount` = VAT trên amount thực tế = `(ThTien - STCKhau) * TSuat / 100`
 - `TTKhac/Amount` = `(ThTien - STCKhau) + VATAmount` = thành tiền thanh toán
+- **Detect**: `ThTien ≈ SL × ĐG` → CK chưa trừ → parser trừ STCKhau
+
+### Dạng G - CK đã trừ sẵn trong ThTien + TThue trực tiếp (VD: Tuấn Việt - C26TAA)
+
+```xml
+<HHDVu>
+  <SLuong>3</SLuong>
+  <DGia>236574</DGia>
+  <STCKhau>163236</STCKhau>          <!-- Chiết khấu -->
+  <ThTien>546486</ThTien>             <!-- = SL×ĐG - STCKhau = 709722 - 163236 (ĐÃ TRỪ CK) -->
+  <TSuat>8%</TSuat>
+  <TThue>43719</TThue>                <!-- = ThTien × 8% -->
+  <TTKhac>
+    <TTin><TTruong>Thành tiền thanh toán của hàng hóa</TTruong><DLieu>590205</DLieu></TTin>
+    <TTin><TTruong>Tiền thuế dòng (Tiền thuế GTGT)</TTruong><DLieu>43719</DLieu></TTin>
+  </TTKhac>
+</HHDVu>
+```
+
+- `ThTien` = SL × ĐG - STCKhau (**đã trừ CK sẵn**)
+- `TThue` = direct child = `ThTien × TSuat / 100`
+- `amountAfterTax` = `ThTien + TThue`
+- **Detect**: `ThTien ≈ SL × ĐG - STCKhau` (≠ SL × ĐG) → CK đã trừ → **không trừ lại**
 
 ## Logic parse thuế per-item (CRITICAL)
 
 ```
 1. Lấy ThTien (thành tiền gốc)
-2. Trừ chiết khấu: nếu STCKhau > 0 → amount = ThTien - STCKhau
-3. Lấy thuế per-item:
+2. Lấy thuế per-item:
    a. Ưu tiên TThue direct child tag
    b. Nếu TThue = 0, tìm trong TTKhac: 'VATAmount', 'VATAmountOC', 'TongTien_Thue', ...
-   c. Nếu vẫn = 0, fallback tính từ TSuat: tax = round(amount * TSuat / 100)
+   c. Nếu vẫn = 0, fallback tính từ TSuat: tax = round(ThTien * TSuat / 100)
+3. Trừ chiết khấu (nếu CK chưa trừ sẵn):
+   - STCKhau > 0 VÀ ThTien ≈ SL × ĐG → CK chưa trừ → amount = ThTien - STCKhau
+   - STCKhau > 0 VÀ ThTien ≈ SL × ĐG - STCKhau → CK đã trừ sẵn → không trừ
 4. Tìm thành tiền sau thuế trong TTKhac:
    → 'Amount', 'AmountOC', 'TongTien_CoThue', 'Thành tiền thanh toán của hàng hóa'
 5. So sánh TTKhac amount với amount:
