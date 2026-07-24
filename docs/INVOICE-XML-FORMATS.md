@@ -165,6 +165,33 @@ Module xử lý hóa đơn điện tử (e-invoice) từ nhiều nguồn phần 
 - `amountAfterTax` = `ThTien + TThue`
 - **Detect**: `ThTien ≈ SL × ĐG - STCKhau` (≠ SL × ĐG) → CK đã trừ → **không trừ lại**
 
+### Dạng H - Mixed TSuat với KKKNT + TTKhac (VD: Huyền Food - C26THH)
+
+```xml
+<HHDVu>
+  <ThTien>82500</ThTien>
+  <TSuat>KKKNT</TSuat>          <!-- Không kê khai, không tính thuế -->
+  <TTKhac>
+    <TTin><TTruong>TongTien_CoThue</TTruong><DLieu>82500</DLieu></TTin>
+    <TTin><TTruong>TongTien_Thue</TTruong><DLieu>0</DLieu></TTin>
+  </TTKhac>
+</HHDVu>
+<HHDVu>
+  <ThTien>152780</ThTien>
+  <TSuat>8%</TSuat>
+  <TTKhac>
+    <TTin><TTruong>TongTien_CoThue</TTruong><DLieu>165002</DLieu></TTin>
+    <TTin><TTruong>TongTien_Thue</TTruong><DLieu>12222</DLieu></TTin>
+  </TTKhac>
+</HHDVu>
+```
+
+- Hóa đơn có **mixed tax rates**: một số items KKKNT (0%), một số 8%
+- `KKKNT` = Không kê khai không tính thuế → `taxAmount = 0`, `amountAfterTax = ThTien`
+- Items có 8%: thuế từ TTKhac/TongTien_Thue, sau thuế từ TTKhac/TongTien_CoThue
+- **Parser**: khi TSuat là non-numeric (KKKNT, KCT...) → coi là 0% tax, KHÔNG fallback invoice-level vatRate
+- Giống dạng C nhưng có thêm `TSuat=KKKNT` (dạng C chỉ có TSuat số)
+
 ## Logic parse thuế per-item (CRITICAL)
 
 ```

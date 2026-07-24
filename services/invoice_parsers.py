@@ -426,9 +426,11 @@ class TaxInvoiceXMLParser:
                         child_tag = child.tag.split('}')[-1] if '}' in child.tag else child.tag
                         print(f"[DEBUG] LTSuat child: {child_tag} = {child.text}")
                         if child_tag == 'TSuat' and child.text:
-                            vat_rate_str = child.text.strip()
-                            print(f"[DEBUG] Found TSuat in LTSuat: {vat_rate_str}")
-                            break
+                            candidate = child.text.strip()
+                            if any(c.isdigit() for c in candidate):
+                                vat_rate_str = candidate
+                                print(f"[DEBUG] Found TSuat in LTSuat: {vat_rate_str}")
+                                break
                     if vat_rate_str:
                         break
             # Nếu không tìm thấy trong LTSuat, thử tìm trong items (HHDVu)
@@ -440,9 +442,11 @@ class TaxInvoiceXMLParser:
                         for child in elem:
                             child_tag = child.tag.split('}')[-1] if '}' in child.tag else child.tag
                             if child_tag == 'TSuat' and child.text:
-                                vat_rate_str = child.text.strip()
-                                print(f"[DEBUG] Found TSuat in HHDVu: {vat_rate_str}")
-                                break
+                                candidate = child.text.strip()
+                                if any(c.isdigit() for c in candidate):
+                                    vat_rate_str = candidate
+                                    print(f"[DEBUG] Found TSuat in HHDVu: {vat_rate_str}")
+                                    break
                         if vat_rate_str:
                             break
             print(f"[DEBUG] Final vat_rate_str: '{vat_rate_str}'")
@@ -528,13 +532,14 @@ class TaxInvoiceXMLParser:
                     if item_tax_amount == 0 and item_amount > 0:
                         item_tsuat_str = find_direct_child_text(hhdv_element, 'TSuat', 'ThueSuat') or ''
                         item_tsuat = 0
-                        if '%' in item_tsuat_str:
+                        has_explicit_tsuat = bool(item_tsuat_str)
+                        if item_tsuat_str and any(c.isdigit() for c in item_tsuat_str):
                             try:
                                 item_tsuat = float(item_tsuat_str.replace('%', '').strip())
                             except ValueError:
                                 item_tsuat = 0
-                        if item_tsuat == 0 and vat_rate > 0:
-                            item_tsuat = vat_rate
+                        if item_tsuat == 0 and not has_explicit_tsuat and invoice.get('vatRate', 0) > 0:
+                            item_tsuat = invoice['vatRate']
                         if item_tsuat > 0:
                             item_tax_amount = round(item_amount * item_tsuat / 100)
                             has_per_item_tax = True
