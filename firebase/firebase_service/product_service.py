@@ -878,6 +878,9 @@ class FirestoreProductService:
 
         # Các trường an toàn để đồng bộ từ gốc sang clone.
         # KHÔNG BAO GIỜ thêm 'Cost', 'BasePrice', 'onHand', 'onHandNV' vào đây.
+        # ❌ KHÔNG thêm 'Description': mô tả của clone do user tự nhập riêng cho clone
+        #    (Edit Product Dialog), SP gốc trên KiotViet thường không có Description
+        #    → sync xuống sẽ xoá trắng mô tả user vừa lưu.
         SYNC_FIELDS = [
             "Code",  # ✅ IMPORTANT: Sync Code để đảm bảo clone luôn khớp với product gốc
             "Name",
@@ -885,7 +888,6 @@ class FirestoreProductService:
             "CategoryName",
             "Tax",
             "Unit",
-            "Description",
             "isActive",
             "Attributes",
             "Brand",
@@ -895,9 +897,17 @@ class FirestoreProductService:
         ]
 
         # Chuẩn bị dữ liệu nguồn từ các product gốc đã cập nhật
+        # ✅ CRITICAL: bỏ qua field mà SP gốc không có (None) hoặc rỗng ('').
+        #    Nếu không, .get() trả None và batch.update() sẽ ghi None đè lên
+        #    dữ liệu thật của clone (Tax, Unit, Image... bị rụng sau mỗi lần sync).
         source_data_map = {}
         for doc_id, product_dict in updated_originals:
-            data_to_sync = {field: product_dict.get(field) for field in SYNC_FIELDS}
+            data_to_sync = {}
+            for field in SYNC_FIELDS:
+                value = product_dict.get(field)
+                if value is None or value == "":
+                    continue
+                data_to_sync[field] = value
             source_data_map[str(doc_id)] = data_to_sync
 
         source_ids = set(source_data_map.keys())
