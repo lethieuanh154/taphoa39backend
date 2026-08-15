@@ -178,8 +178,13 @@ FIREBASE_SERVICE_ACCOUNT_NHANVIEN=...
 # Development
 flask run
 
-# Production
-gunicorn app:app --bind 0.0.0.0:8000
+# Production — --workers=1 là BẮT BUỘC, không được bỏ.
+# SocketIO khởi tạo KHÔNG có message_queue (app.py), nên state của socket nằm trong
+# RAM của từng worker. Chạy >1 worker → broadcast_products_onhand_updated() chỉ tới
+# được các client nối vào đúng worker đang xử lý request → máy này nhận update tồn
+# kho, máy kia không. Muốn scale nhiều worker thì phải thêm Redis message_queue trước.
+# Lưu ý: gunicorn đọc env WEB_CONCURRENCY nếu thiếu cờ --workers.
+gunicorn app:app --bind 0.0.0.0:8000 --timeout=600 --workers=1 --threads=16
 
 # Docker
 docker build -t taphoa39backend .

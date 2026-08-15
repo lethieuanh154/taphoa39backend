@@ -11,6 +11,7 @@ Flask REST API backend. Tech: Flask 3.1.0, Firebase Firestore, Flask-SocketIO, G
 - `firebase/firebase_hoadon/` - Invoices | `FromKiotViet/` - KiotViet API | `models/` - Pydantic
 
 ## Critical Rules
+- **gunicorn PHẢI `--workers=1`** (Dockerfile CMD + startup.sh). `SocketIO()` trong app.py khởi tạo KHÔNG có `message_queue` → state socket nằm trong RAM từng worker. >1 worker thì `broadcast_products_onhand_updated()` chỉ tới client nối vào đúng worker xử lý request → máy này nhận update tồn kho, máy kia không. Muốn scale phải thêm Redis `message_queue` trước. Lưu ý gunicorn đọc env `WEB_CONCURRENCY` nếu thiếu cờ `--workers`
 - Product cache: TTL=1h, `_smart_invalidate_product()` for single, `invalidate_all_product_caches()` for batch/sync
 - XML invoice: 8 formats (A1-TH Milk, A2-Vinamilk, B-MISA, C-Vinh An, D-Nguyen Thinh, E-chỉ TSuat, F-CK chưa trừ, G-CK đã trừ sẵn, H-Mixed KKKNT) → `docs/INVOICE-XML-FORMATS.md`
 - XML parser chính: `services/invoice_parsers.py` (route `/v1/parse-xml`), KHÔNG phải `firebase/firebase_invoices/tax_invoice_xml_parser.py`
