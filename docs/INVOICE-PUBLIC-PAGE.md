@@ -26,7 +26,7 @@ Token ngẫu nhiên là **lớp bảo vệ duy nhất**:
 - `_line_items()` chỉ whitelist field hiển thị (`Name, Unit, BasePrice, ProductAttributes[0].Value`). Không bao giờ trả `Cost`, `OnHandNV`, `TotalPoint`, `kiotViet*`.
 - Mọi giá trị chèn vào HTML đi qua `_esc()` (`html.escape`).
 
-## QR tĩnh `/hd/last/<machine_code>` — one-time claim + TTL
+## QR tĩnh `/hd/last/<machine_code>` — claim + grace + TTL
 QR tĩnh in ra dán tại quầy, không đổi theo hóa đơn. Rủi ro: khách A quét chậm, máy đã bán cho khách B → A xem nhầm hóa đơn của B.
 
 Xử lý bằng con trỏ `pos_machines/{machineCode}`:
@@ -36,14 +36,52 @@ Xử lý bằng con trỏ `pos_machines/{machineCode}`:
 ```
 
 - `FirestoreInvoiceService.set_machine_pointer()` ghi con trỏ trong background task của `POST /api/firebase/add_invoice` (không làm chậm checkout).
-- `FirestoreInvoiceService.claim_machine_pointer()` chạy trong Firestore transaction: chỉ trả token khi `claimed == False` **và** `now - updatedAt <= 300s`, rồi set `claimed = True`.
+- `FirestoreInvoiceService.claim_machine_pointer()` chạy trong Firestore transaction: trả token khi `claimed == False` **và** `now - updatedAt <= 300s`, rồi set `claimed = True` + `claimedAt = now`.
+- **Grace window 120s** (`MACHINE_POINTER_CLAIM_GRACE_SECONDS`): sau lần claim đầu, vẫn trả **cùng token** cho các lần quét trong 120s tiếp theo, bỏ qua TTL gốc vì lần claim trước đã hợp lệ.
+
+  Không có grace thì tính năng gần như không dùng được: Zalo/Messenger tự gọi GET để preview link ngay khi camera nhận ra URL, nên lần claim duy nhất bị tiêu **trước khi khách kịp bấm vào**. Nhân viên quét thử, hoặc khách bấm back rồi quét lại, cũng tiêu mất. Đã gặp thật trên production.
+
+  Doc ghi từ trước khi có grace (`claimed: True`, không có `claimedAt`) được coi là hết grace → trả `claimed`.
 - Quét xong redirect sang `/hd/<token>` → khách reload/bookmark vẫn xem được, vì URL đã là link token cố định.
 - Lý do phải có `machineCode`: máy 1 và máy 2 dùng 2 QR tĩnh khác nhau, không lẫn hóa đơn của nhau.
 
-Thông báo cho khách theo `reason`: `claimed` (đã có người tải), `expired` (quá 5 phút), `not_found` (chưa có hóa đơn).
+Thông báo cho khách theo `reason`: `claimed` (đã có người tải, quá grace), `expired` (quá 5 phút), `not_found` (chưa có hóa đơn).
+
+Khi khách quét hụt, lối thoát là nhân viên mở trang Hóa đơn trong BanHang → bấm nút QR của đúng hóa đơn đó. QR token trực tiếp không có TTL và không giới hạn số lần.
 
 ## Tải ảnh `.png`
 Backend **không** render ảnh. Trang tự vẽ `#bill` thành PNG ở client: clone DOM → nhúng vào `<svg><foreignObject>` → `<img>` → `<canvas>` (scale 2×) → `toDataURL('image/png')`. Không cần thư viện ngoài, không cần headless Chrome, không lưu file trên server. Nếu trình duyệt chặn, nút báo khách chụp màn hình.
+
+## Nginx BẮT BUỘC cấu hình — dễ quên nhất
+
+Flask nhận `/hd/*` đúng, nhưng nginx đứng trước mới quyết định request có tới được Flask hay không.
+
+- `api.songminhcr.com` proxy `location /` sang `127.0.0.1:8001` → `/hd/*` chạy sẵn, không cần làm gì.
+- `songminhcr.com` có `root /apps/taphoa39dathang` + `location / { try_files $uri $uri/ /index.html; }` và chỉ proxy `/api/`, `/socket.io/` → **`/hd/*` bị Angular DatHang nuốt, trả index.html kèm HTTP 200**. Triệu chứng: trang trắng / trang đặt hàng thay vì hóa đơn.
+
+Muốn dùng URL `songminhcr.com/hd/...` phải thêm vào server block của `songminhcr.com`:
+
+```nginx
+location /hd/ {
+    proxy_pass http://127.0.0.1:8001;
+    proxy_set_header Host              $host;
+    proxy_set_header X-Real-IP         $remote_addr;
+    proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}
+```
+
+`proxy_pass` không có `/` ở cuối để giữ nguyên path. Kiểm tra bằng `curl -I`: đúng thì có `Content-Type: text/html; charset=utf-8` và **không** có `ETag`/`Last-Modified` (hai header đó là dấu hiệu nginx đang serve file tĩnh).
+
+## `POST /api/firebase/invoices/<id>/public-token`
+
+Cấp `publicToken` cho hóa đơn tạo **trước** tính năng này, gọi khi user bấm nút QR trong trang Hóa đơn (không backfill cả collection).
+
+Body `{"publicToken": "<32 hex>"}`. Idempotent: hóa đơn đã có token thì trả token cũ kèm `created: false`, không ghi đè.
+
+**Cố ý không dùng `PUT /invoices/<id>`**: route đó đọc lại hóa đơn, reverse toàn bộ summary rồi apply lại và tính `apply_invoice_delta` cho customer — quá nhiều rủi ro lệch báo cáo chỉ để thêm một field. Endpoint này chỉ ghi đúng một field.
+
+Nằm dưới `/api/` nên **bị** admin gate — đúng ý đồ, chỉ nhân viên đã đăng nhập mới cấp được token.
 
 ## Biến môi trường
 | Biến | Mặc định | Dùng cho |

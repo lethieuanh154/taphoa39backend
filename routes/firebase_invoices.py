@@ -105,6 +105,31 @@ def create_firebase_invoices_bp(invoice_service, product_service, customer_servi
             print(traceback.format_exc())
             return jsonify({"status": "error", "message": str(exc)}), 500
 
+    @bp.route("/invoices/<invoice_id>/public-token", methods=["POST"])
+    @handle_api_errors
+    def set_invoice_public_token(invoice_id: str):
+        """Gan publicToken cho hoa don tao truoc tinh nang hoa don dien tu.
+
+        CO Y khong dung PUT /invoices/<id>: route do doc lai hoa don, reverse toan bo
+        summary roi apply lai va tinh customer delta - qua nhieu rui ro cho bao cao
+        chi de them mot field. O day chi ghi dung mot field.
+        """
+        payload = request.get_json(silent=True) or {}
+        token = str(payload.get("publicToken") or "").strip().lower()
+        if len(token) < 16 or not all(c in "0123456789abcdef" for c in token):
+            return jsonify({"status": "error", "message": "publicToken khong hop le"}), 400
+
+        invoice = invoice_service.read_invoice(invoice_id)
+        if not invoice:
+            return jsonify({"status": "error", "message": "Invoice not found"}), 404
+
+        existing = invoice.get("publicToken")
+        if existing:
+            return jsonify({"status": "ok", "publicToken": existing, "created": False})
+
+        invoice_service.update_invoice(invoice_id, {"publicToken": token})
+        return jsonify({"status": "ok", "publicToken": token, "created": True})
+
     @bp.route("/invoices/<invoice_id>", methods=["PUT"])
     def update_invoice(invoice_id: str):
         try:

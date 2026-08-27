@@ -22,6 +22,10 @@ COLLECTION_NAME = "invoices"
 # Con tro "hoa don moi nhat cua may POS" - phuc vu QR tinh dan tai quay
 MACHINE_POINTER_COLLECTION = "pos_machines"
 MACHINE_POINTER_TTL_SECONDS = 300
+# Sau lan quet dau, van cho quet lai cung token trong khoang nay.
+# Ly do: Zalo/Messenger tu goi GET de preview link, nhan vien quet thu, khach bam
+# lai... deu tieu mat lan claim dau neu khong co grace.
+MACHINE_POINTER_CLAIM_GRACE_SECONDS = 120
 
 # Đặt tên app duy nhất cho mỗi service account
 db = init_firestore("FIREBASE_SERVICE_ACCOUNT_HOADON")
@@ -134,10 +138,12 @@ class FirestoreInvoiceService:
         })
 
     def claim_machine_pointer(self, machine_code: str, ttl_seconds: int = MACHINE_POINTER_TTL_SECONDS):
-        """Lay token hoa don moi nhat cua may POS, mot lan duy nhat.
+        """Lay token hoa don moi nhat cua may POS.
 
-        Transaction dam bao chi mot nguoi quet lay duoc. Ket hop TTL de khach den
-        sau khong nhan nham hoa don cua khach truoc.
+        Transaction dam bao khach den sau khong nhan nham hoa don cua khach truoc.
+        Lan quet dau mo grace window MACHINE_POINTER_CLAIM_GRACE_SECONDS de cung
+        nguoi do quet lai duoc (preview link cua Zalo/Messenger, nhan vien quet thu,
+        khach bam lai deu goi GET that).
         Tra ve (token, reason). token=None kem reason: not_found | expired | claimed.
         """
         if not machine_code:
@@ -145,6 +151,11 @@ class FirestoreInvoiceService:
 
         doc_ref = db.collection(MACHINE_POINTER_COLLECTION).document(str(machine_code))
         transaction = db.transaction()
+
+        def _as_utc(value):
+            if value is None:
+                return None
+            return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
 
         @firestore.transactional
         def _claim(tx):
@@ -156,18 +167,26 @@ class FirestoreInvoiceService:
             token = data.get("lastPublicToken")
             if not token:
                 return None, "not_found"
+
+            now = datetime.now(timezone.utc)
+
+            # Da claim: chi cho quet lai trong grace window, va bo qua TTL goc vi
+            # lan claim truoc da hop le.
             if data.get("claimed") is True:
+                claimed_at = _as_utc(data.get("claimedAt"))
+                if claimed_at is None:
+                    return None, "claimed"
+                if now - claimed_at <= timedelta(seconds=MACHINE_POINTER_CLAIM_GRACE_SECONDS):
+                    return str(token), "ok"
                 return None, "claimed"
 
-            updated_at = data.get("updatedAt")
+            updated_at = _as_utc(data.get("updatedAt"))
             if updated_at is None:
                 return None, "expired"
-            if updated_at.tzinfo is None:
-                updated_at = updated_at.replace(tzinfo=timezone.utc)
-            if datetime.now(timezone.utc) - updated_at > timedelta(seconds=ttl_seconds):
+            if now - updated_at > timedelta(seconds=ttl_seconds):
                 return None, "expired"
 
-            tx.update(doc_ref, {"claimed": True})
+            tx.update(doc_ref, {"claimed": True, "claimedAt": now})
             return str(token), "ok"
 
         return _claim(transaction)
