@@ -66,13 +66,20 @@ def create_firebase_invoices_bp(invoice_service, product_service, customer_servi
             def _background_tasks():
                 try:
                     t_bg_start = _time.time()
-                    with ThreadPoolExecutor(max_workers=3) as executor:
+                    with ThreadPoolExecutor(max_workers=4) as executor:
                         f_cache = executor.submit(invalidate_invoice_cache, customer_service, normalized_invoice)
                         f_summary = executor.submit(invoice_service.adjust_invoice_summaries, normalized_invoice, 1)
                         f_customer = executor.submit(customer_service.apply_invoice_delta, None, normalized_invoice)
+                        # Con tro cho QR tinh dan tai quay: may nao vua ban hoa don nao
+                        f_pointer = executor.submit(
+                            invoice_service.set_machine_pointer,
+                            normalized_invoice.get("machineCode"),
+                            normalized_invoice.get("publicToken"),
+                        )
 
                         f_cache.result()
                         f_summary.result()
+                        f_pointer.result()
                         customer_results = f_customer.result()
 
                     customer_broadcasts = [r for r in customer_results if r.get("applied") and r.get("customer")]

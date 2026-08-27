@@ -40,6 +40,7 @@ from firebase.firebase_service.chat_service import FirestoreChatService
 from firebase.firebase_service.promotion_service import FirestorePromotionService
 from routes.firebase_promotions import create_firebase_promotions_bp
 from routes.firebase_public import create_firebase_public_bp
+from routes.invoice_public import create_invoice_public_bp
 from routes.admin_auth import register_admin_auth
 
 
@@ -109,6 +110,9 @@ def _build_app() -> Flask:
     app.register_blueprint(create_firebase_public_bp(
         product_service, promotion_service, order_service, customer_service, socketio
     ))
+
+    # Trang hoa don dien tu cho khach (/hd/<token>) - public, bao ve bang token ngau nhien
+    app.register_blueprint(create_invoice_public_bp(invoice_service))
 
     # Chat messaging
     chat_service = FirestoreChatService()

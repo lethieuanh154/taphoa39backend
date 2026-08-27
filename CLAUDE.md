@@ -15,6 +15,7 @@ Flask REST API backend. Tech: Flask 3.1.0, Firebase Firestore, Flask-SocketIO, G
 - Product cache: TTL=1h, `_smart_invalidate_product()` for single, `invalidate_all_product_caches()` for batch/sync
 - XML invoice: 8 formats (A1-TH Milk, A2-Vinamilk, B-MISA, C-Vinh An, D-Nguyen Thinh, E-chỉ TSuat, F-CK chưa trừ, G-CK đã trừ sẵn, H-Mixed KKKNT) → `docs/INVOICE-XML-FORMATS.md`
 - XML parser chính: `services/invoice_parsers.py` (route `/v1/parse-xml`), KHÔNG phải `firebase/firebase_invoices/tax_invoice_xml_parser.py`
+- **Trang hóa đơn điện tử `/hd/*`** (`routes/invoice_public.py`): render HTML server-side cho khách quét QR. KHÔNG dưới `/api/` nên không bị admin gate — chủ đích, khách không có tài khoản cửa hàng. Bảo vệ bằng `publicToken` ngẫu nhiên (invoice id đoán được, tuyệt đối không dùng làm link). QR tĩnh `/hd/last/<machineCode>` claim một lần + TTL 5 phút qua con trỏ `pos_machines/{machineCode}`. → `docs/INVOICE-PUBLIC-PAGE.md`
 
 ## Docs
-`docs/`: PROJECT-STRUCTURE, EMPLOYEE-API, FIRESTORE-SCHEMA, INVOICE-XML-FORMATS
+`docs/`: PROJECT-STRUCTURE, EMPLOYEE-API, FIRESTORE-SCHEMA, INVOICE-XML-FORMATS, PUBLIC-API, INVOICE-PUBLIC-PAGE
