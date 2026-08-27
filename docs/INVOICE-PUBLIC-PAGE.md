@@ -83,6 +83,25 @@ Body `{"publicToken": "<32 hex>"}`. Idempotent: hóa đơn đã có token thì t
 
 Nằm dưới `/api/` nên **bị** admin gate — đúng ý đồ, chỉ nhân viên đã đăng nhập mới cấp được token.
 
+## Tổng tiền — `totalPrice` đã trừ chiết khấu
+`createInvoiceForCheckout()` ở FE lưu `totalPrice = tiền hàng - discountAmount`, nhưng **vẫn giữ nguyên** `discountAmount` trong doc. Nên trang public phải lấy:
+
+```
+Tổng thanh toán = totalPrice          (KHÔNG trừ discountAmount lần nữa)
+Tổng tiền hàng  = totalPrice + discountAmount
+```
+
+Tính `totalPrice - discountAmount` là trừ chiết khấu hai lần, khách thấy số tiền thấp hơn thực tế.
+
+## Favicon
+`_FAVICON` là logo Song Minh 64×64 (1.8 KB) nhúng thẳng vào HTML dưới dạng data URI, khai báo trong `<head>` của **cả** trang hóa đơn lẫn trang báo lỗi.
+
+Không khai báo thì trình duyệt tự xin `/favicon.ico` của domain, và nginx trả favicon mặc định của app DatHang (logo Angular) — khách thấy logo Angular trên tab hóa đơn.
+
+Dùng data URI thay vì link tới file để trang hiển thị đúng trên cả `songminhcr.com` và `api.songminhcr.com` (backend không serve thư mục static của DatHang).
+
+Nguồn: `TapHoa39DatHang/public/iconSongMinh.png`, resize 64×64 + quantize 128 màu.
+
 ## Biến môi trường
 | Biến | Mặc định | Dùng cho |
 |---|---|---|

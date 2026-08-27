@@ -12,6 +12,38 @@ SHOP_SITE = os.getenv("SHOP_SITE", "https://songminhcr.com/")
 _HEX = set("0123456789abcdef")
 
 
+# Favicon nhung thang vao HTML: khong khai bao thi trinh duyet tu xin /favicon.ico
+# cua domain, va nginx tra favicon mac dinh cua app DatHang (logo Angular).
+# Data URI de dung duoc tren ca songminhcr.com lan api.songminhcr.com.
+_FAVICON = "data:image/png;base64," + (
+    "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAMAAACdt4HsAAABgFBMVEX9/fyNt0hWpcriqi4hbDIXZin+/v7+/v3t6tHn6und"
+    "pi7U5u8mcTeGsTzR1tdmq8sZI0TktlHs16rY5M9MnsWlxG/H2al4s9Dv8dwPGDqWxdqzyo2905MuN1SmqbaUmKjpy4dxdoqt"
+    "xa+y1OTcrUVNhlaFu9XmxHdpmHI2d0UjLEzHydHR3eSsx9WIq0mEiZqZu2JOVW6IqI4RXCJbkmfT4raBqzjjvGR+qoyVtJe4"
+    "u8VViWLC1p2kvnRDSmWdwGa80sPgr0OrtrZ2oXZ8ozU7Q2ACCi5cY3ns05lobYJGfUy60LOWt6Hfs09iaH5GeSN8gpJ2nVr4"
+    "47qYx+CozuDdu23isD8VH0Ly8tikuYSLkJ6Kj6B2nC57h3hKmL9fjT5AdRueobM5QlwbcSwPWh4AAAAAAAAAAAAAAAAAAAAA"
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABvJ4++AAAA"
+    "gHRSTlP+/v/+//8mFP3+/v///v////76/v/+/f/+//////////7////+//////////////////////7//v//////////////"
+    "////////////////////////////FP///////////////wAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK2ghuQAAASwSURB"
+    "VHjapVdnY6M4FBQGbmkGDNhAsLFxL3FLcXpvm7L9tlyv//83nESVADvO3vuQUDyj0bz3JAR++J8BVoVegaFz4LuCq5YpiprN"
+    "zsownMpLWSpUsUglgW7Ku+vDqxSOTkgq68F38+ABx1oUTj68CAP+KT9rRjmDLy6QA+VqFdm6WDwjIiO/SJWPOQvwIgw/OVT5"
+    "JfgiVbWA2DKVgmEYhYL5CZI4s+X4WXr8Y/iwZRawUFrAquaXXTM1/yKCtxCmQIQp5o9+BSokHhkupsBBtPLwHyqAVB/qFFvd"
+    "gpFm2MjiD/5IFUBSuJAircPIMOh/OqQArF7ETVEcK89o+PCOO17k4/3gxW5Kw4/E++a7DpECK8ekcUoDkYsHpo/N4Cw/TaJJ"
+    "mKngAlj2KiE4i8bP6NgwltjQYdl9KybQw66cTCYzfRVDPAmZYSBBEateP04WM+oa9V6lks/QjWuAldiriCAxgJuUKyfXlj65"
+    "ri7REEnoQ4KdaApYu1cXM8d5PClP9CWzCF3gB5CgA/AClmUe/Zv8OnF05+SE8MHMJEJmJImVAFrFqWDFmtqqOvKXx+qus5su"
+    "KqwoN8MkSpL0j15FJgTrPz8aze9G9Xrdrf/105bL19Gz9+OoHtJzeEIEbJODBE48jKsOayiGzd/qP9/KAHi39WxNmlESIMEO"
+    "cHAHZTv+Paiph+Dy63CUscEMCLZYiWEYCS6IFGa36iZi4PXwpsYnRR16aHZRIvktFuIZtgkofLX0bK9+6Jt0+vb0F28+rWEv"
+    "/dZUFMVf3fSQoAN0Bze7fjNU1ZoLJyPfq0P+bh6/0YBo+PhgedT7TMBwnum/zcO3Ng+HntouqE3jCm1rMJWKEq2v+tEgINjJ"
+    "aWHeHv89BTwPePUyJhDacLH2qyHw4OjBJ5DYRwLret79fe3UtWV0N1I34xkIbSuspqCdOoEChh0QBFN7Pp97/OmNf3cY8KDo"
+    "CRdcmMmgkPrbTBDsPk4wUv28eUH6+VMvnADYo0ufrU9+TwXFuRURkD7y6vtNGXaVKKOIi4DTSvQX4bVoJDuMzMYEEo/nUa2p"
+    "tg37Sv06tOMkNgSapoWeiDUTOIoYUFfjGtyRHIR7GDFzb2gUJd9FRYzWVCZmwHPpqV6kJRHg4+k3votm9HSAMfQTgqFqBxpr"
+    "9u2YEEC3UTUnG9xBbCOhYRopcId3UQoDPC2ArhFbQEiADEeJCekLTUgIiK0lccGvaX7Z12s7xEMTTfIzoZ9MAuXi8Rm8nwWF"
+    "eDkgNEhb+ko83QNKan/WGYKB6TT11EQ4IcELmmgoKX6ZxRmgiH5Txnfwjxgeerjxe+ZTS2ZIBpbB56HheLoBjJzPJHmwzTDk"
+    "PPqXetTCOB4uKEquzZ1/CRESVCGhyuRKOBw6AJS8THMaeJIIJ+B+8XAeNiCNp2Cc/635+jMA+8w2G8U2c4CefiHhsAbAkm9V"
+    "6FQDgPP9owEavdN/kgGXHp2mL1adGDRB6GmcxfvBfWyUMnC6tPrEYe0JgkCXUNDo6qX4TMJTIfTWOXQ1hGUccEta78zZa+dR"
+    "IIfXPrZqe21Sh1BqWC89+2qN3t4esvOCLjW+8wDNcxoMbiX61Vrx7duyN/8BR4R2g0lFumgAAAAASUVORK5CYII="
+)
+
+
 def _to_float(v) -> float:
     try:
         return float(v or 0)
@@ -178,6 +210,7 @@ def _render_message(title: str, message: str, status: int) -> Response:
         '<meta charset="utf-8">\n'
         '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
         '<meta name="robots" content="noindex, nofollow">\n'
+        f'<link rel="icon" type="image/png" href="{_FAVICON}">\n'
         f"<title>{_esc(title)}</title>\n"
         f"<style>{_MESSAGE_CSS}</style></head>\n"
         f'<body><div class="card"><h1>{_esc(title)}</h1><p>{_esc(message)}</p></div></body></html>'
@@ -189,9 +222,11 @@ def _render_message(title: str, message: str, status: int) -> Response:
 
 def _render_invoice(invoice: dict) -> Response:
     items = _line_items(invoice)
-    total_price = _to_float(invoice.get("totalPrice"))
+    # createInvoiceForCheckout() o FE luu totalPrice DA TRU chiet khau, nhung van
+    # giu nguyen discountAmount. Tru them lan nua la sai so tien khach phai tra.
     discount = _to_float(invoice.get("discountAmount"))
-    final_total = total_price - discount
+    final_total = _to_float(invoice.get("totalPrice"))
+    gross_total = final_total + discount
 
     customer = invoice.get("customer") or {}
     customer_name = customer.get("Name") or "Khách lẻ"
@@ -231,6 +266,7 @@ def _render_invoice(invoice: dict) -> Response:
         '<meta charset="utf-8">\n'
         '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
         '<meta name="robots" content="noindex, nofollow">\n'
+        f'<link rel="icon" type="image/png" href="{_FAVICON}">\n'
         f"<title>Hóa đơn {invoice_id}</title>\n"
         f'<style id="bill-style">{_BILL_CSS}</style></head>\n'
         '<body>\n<div class="wrap">\n'
@@ -247,7 +283,7 @@ def _render_invoice(invoice: dict) -> Response:
         f"      <tbody>{''.join(rows)}</tbody>\n"
         "    </table>\n"
         '    <div class="sums">\n'
-        f'      <div class="sum-row"><span>Tổng tiền hàng</span><span>{_money(total_price)}</span></div>\n'
+        f'      <div class="sum-row"><span>Tổng tiền hàng</span><span>{_money(gross_total)}</span></div>\n'
         f"      {discount_row}\n"
         f'      <div class="sum-total"><span>Tổng thanh toán</span><span>{_money(final_total)}</span></div>\n'
         "    </div>\n"
