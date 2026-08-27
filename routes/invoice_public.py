@@ -6,7 +6,7 @@ from datetime import datetime
 
 from flask import Blueprint, Response, redirect
 
-SHOP_NAME = os.getenv("SHOP_NAME", "Tap Hoa Song Minh")
+SHOP_NAME = os.getenv("SHOP_NAME", "Song Minh")
 SHOP_SITE = os.getenv("SHOP_SITE", "https://songminhcr.com/")
 
 _HEX = set("0123456789abcdef")
