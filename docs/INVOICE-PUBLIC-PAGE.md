@@ -26,30 +26,25 @@ Token ngẫu nhiên là **lớp bảo vệ duy nhất**:
 - `_line_items()` chỉ whitelist field hiển thị (`Name, Unit, BasePrice, ProductAttributes[0].Value`). Không bao giờ trả `Cost`, `OnHandNV`, `TotalPoint`, `kiotViet*`.
 - Mọi giá trị chèn vào HTML đi qua `_esc()` (`html.escape`).
 
-## QR tĩnh `/hd/last/<machine_code>` — claim + grace + TTL
-QR tĩnh in ra dán tại quầy, không đổi theo hóa đơn. Rủi ro: khách A quét chậm, máy đã bán cho khách B → A xem nhầm hóa đơn của B.
+## Đã gỡ: QR tĩnh `/hd/last/<machine_code>`
+Từng có route claim con trỏ `pos_machines/{machineCode}` để QR tĩnh dán tại quầy luôn trả hóa đơn mới nhất của máy. **Đã gỡ hoàn toàn** (route, `set_machine_pointer`, `claim_machine_pointer`, grace window).
 
-Xử lý bằng con trỏ `pos_machines/{machineCode}`:
+Lý do: khi thanh toán nhiều khách liên tiếp, không cơ chế nào — one-time claim, TTL, hay grace window — phân biệt được khách nào đang quét. Rủi ro khách nhận nhầm hóa đơn của người khác là không chấp nhận được. Việc đưa QR cho khách chuyển sang app Android tại quầy.
 
-```
-{ machineCode, lastPublicToken, updatedAt (server time), claimed: bool }
-```
+Collection `pos_machines` không còn được ghi; doc cũ có thể xóa tay.
 
-- `FirestoreInvoiceService.set_machine_pointer()` ghi con trỏ trong background task của `POST /api/firebase/add_invoice` (không làm chậm checkout).
-- `FirestoreInvoiceService.claim_machine_pointer()` chạy trong Firestore transaction: trả token khi `claimed == False` **và** `now - updatedAt <= 300s`, rồi set `claimed = True` + `claimedAt = now`.
-- **Grace window 120s** (`MACHINE_POINTER_CLAIM_GRACE_SECONDS`): sau lần claim đầu, vẫn trả **cùng token** cho các lần quét trong 120s tiếp theo, bỏ qua TTL gốc vì lần claim trước đã hợp lệ.
+## Bố cục trang hóa đơn
+Bám sát bill in nhiệt của `TapHoa39BanHang/src/app/components/invoice-detail/invoice-detail.component.html`: khổ hẹp 360px, Arial 11px, nền trắng.
 
-  Không có grace thì tính năng gần như không dùng được: Zalo/Messenger tự gọi GET để preview link ngay khi camera nhận ra URL, nên lần claim duy nhất bị tiêu **trước khi khách kịp bấm vào**. Nhân viên quét thử, hoặc khách bấm back rồi quét lại, cũng tiêu mất. Đã gặp thật trên production.
+- `HÓA ĐƠN BÁN HÀNG` — `Số HĐ` — `Ngày dd tháng MM năm yyyy` (`_vietnamese_date()`), tất cả căn giữa
+- `Khách hàng` / `SĐT`
+- Bảng 4 cột `Đơn giá | SL | ĐVT | Thành tiền`, mỗi mặt hàng chiếm **hai dòng**: tên hàng `colspan=4` ở trên, các con số ở dưới với gạch đứt ngăn cách
+- `_price_cell()` gạch ngang giá gốc khi hàng tặng hoặc có giảm giá; hàng tặng thành tiền = 0
+- Footer: Tổng tiền hàng / Chiết khấu / Tổng thanh toán, ghi chú không đổi trả, link đặt hàng online
 
-  Doc ghi từ trước khi có grace (`claimed: True`, không có `claimedAt`) được coi là hết grace → trả `claimed`.
-- Quét xong redirect sang `/hd/<token>` → khách reload/bookmark vẫn xem được, vì URL đã là link token cố định.
-- Lý do phải có `machineCode`: máy 1 và máy 2 dùng 2 QR tĩnh khác nhau, không lẫn hóa đơn của nhau.
+Khác bill giấy một điểm có chủ đích: bill giấy in `formatVietnameseDate()` = **ngày hiện tại**, còn trang này lấy `paidAt`/`createdDate` của chính hóa đơn — khách xem lại sau vẫn thấy đúng ngày mua.
 
-Thông báo cho khách theo `reason`: `claimed` (đã có người tải, quá grace), `expired` (quá 5 phút), `not_found` (chưa có hóa đơn).
-
-Khi khách quét hụt, lối thoát là nhân viên mở trang Hóa đơn trong BanHang → bấm nút QR của đúng hóa đơn đó. QR token trực tiếp không có TTL và không giới hạn số lần.
-
-## Tải ảnh `.png`
+## Tải ảnh `.png`## Tải ảnh `.png`
 Backend **không** render ảnh. Trang tự vẽ `#bill` thành PNG ở client: clone DOM → nhúng vào `<svg><foreignObject>` → `<img>` → `<canvas>` (scale 2×) → `toDataURL('image/png')`. Không cần thư viện ngoài, không cần headless Chrome, không lưu file trên server. Nếu trình duyệt chặn, nút báo khách chụp màn hình.
 
 ## Nginx BẮT BUỘC cấu hình — dễ quên nhất

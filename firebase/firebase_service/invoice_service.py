@@ -1,9 +1,8 @@
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor
 from google.api_core.exceptions import DeadlineExceeded
-from google.cloud import firestore
 from google.cloud.firestore_v1 import Increment
 
 from dotenv import load_dotenv
@@ -19,17 +18,6 @@ load_dotenv()
 
 # Khởi tạo Firebase
 COLLECTION_NAME = "invoices"
-# Con tro "hoa don moi nhat cua may POS" - phuc vu QR tinh dan tai quay
-MACHINE_POINTER_COLLECTION = "pos_machines"
-MACHINE_POINTER_TTL_SECONDS = 300
-# Sau lan quet dau, van cho quet lai cung token trong khoang nay.
-# Ly do: Zalo/Messenger tu goi GET de preview link, nhan vien quet thu, khach bam
-# lai... deu tieu mat lan claim dau neu khong co grace.
-MACHINE_POINTER_CLAIM_GRACE_SECONDS = 120
-
-# Đặt tên app duy nhất cho mỗi service account
-db = init_firestore("FIREBASE_SERVICE_ACCOUNT_HOADON")
-# Chuyển chuỗi JSON thành dict và tạo credential
 
 
 def _retry_on_deadline(operation, max_retries=3, initial_delay=1, operation_name="Firestore operation"):
@@ -121,75 +109,6 @@ class FirestoreInvoiceService:
             self.cache.set(cache_key, invoice, ttl=3600)
             return invoice
         return None
-
-    def set_machine_pointer(self, machine_code: str, public_token: str) -> None:
-        """Ghi con tro hoa don moi nhat cua mot may POS.
-
-        Dung server time lam moc TTL de khong phu thuoc dong ho may khach.
-        """
-        if not machine_code or not public_token:
-            return
-
-        db.collection(MACHINE_POINTER_COLLECTION).document(str(machine_code)).set({
-            "machineCode": str(machine_code),
-            "lastPublicToken": str(public_token),
-            "updatedAt": datetime.now(timezone.utc),
-            "claimed": False,
-        })
-
-    def claim_machine_pointer(self, machine_code: str, ttl_seconds: int = MACHINE_POINTER_TTL_SECONDS):
-        """Lay token hoa don moi nhat cua may POS.
-
-        Transaction dam bao khach den sau khong nhan nham hoa don cua khach truoc.
-        Lan quet dau mo grace window MACHINE_POINTER_CLAIM_GRACE_SECONDS de cung
-        nguoi do quet lai duoc (preview link cua Zalo/Messenger, nhan vien quet thu,
-        khach bam lai deu goi GET that).
-        Tra ve (token, reason). token=None kem reason: not_found | expired | claimed.
-        """
-        if not machine_code:
-            return None, "not_found"
-
-        doc_ref = db.collection(MACHINE_POINTER_COLLECTION).document(str(machine_code))
-        transaction = db.transaction()
-
-        def _as_utc(value):
-            if value is None:
-                return None
-            return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
-
-        @firestore.transactional
-        def _claim(tx):
-            snap = doc_ref.get(transaction=tx)
-            if not snap.exists:
-                return None, "not_found"
-
-            data = snap.to_dict() or {}
-            token = data.get("lastPublicToken")
-            if not token:
-                return None, "not_found"
-
-            now = datetime.now(timezone.utc)
-
-            # Da claim: chi cho quet lai trong grace window, va bo qua TTL goc vi
-            # lan claim truoc da hop le.
-            if data.get("claimed") is True:
-                claimed_at = _as_utc(data.get("claimedAt"))
-                if claimed_at is None:
-                    return None, "claimed"
-                if now - claimed_at <= timedelta(seconds=MACHINE_POINTER_CLAIM_GRACE_SECONDS):
-                    return str(token), "ok"
-                return None, "claimed"
-
-            updated_at = _as_utc(data.get("updatedAt"))
-            if updated_at is None:
-                return None, "expired"
-            if now - updated_at > timedelta(seconds=ttl_seconds):
-                return None, "expired"
-
-            tx.update(doc_ref, {"claimed": True, "claimedAt": now})
-            return str(token), "ok"
-
-        return _claim(transaction)
 
     def get_invoices_by_customer(self, customer_id: str):
         """

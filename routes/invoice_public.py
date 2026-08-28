@@ -4,7 +4,7 @@ import html
 import os
 from datetime import datetime
 
-from flask import Blueprint, Response, redirect
+from flask import Blueprint, Response
 
 SHOP_NAME = os.getenv("SHOP_NAME", "Song Minh")
 SHOP_SITE = os.getenv("SHOP_SITE", "https://songminhcr.com/")
@@ -113,32 +113,37 @@ _MESSAGE_CSS = """
 
 _BILL_CSS = """
   * { box-sizing:border-box; }
-  body { margin:0; padding:16px; background:#f2f3f5; color:#1f2328;
-         font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif; }
-  .wrap { max-width:420px; margin:0 auto; }
-  #bill { background:#fff; border-radius:14px; padding:22px 18px; box-shadow:0 2px 12px rgba(0,0,0,.08); }
-  .shop { text-align:center; font-size:17px; font-weight:700; letter-spacing:.3px; }
-  .head { text-align:center; font-size:12px; color:#6b7280; margin-top:4px; }
-  .meta { margin:18px 0 12px; font-size:13px; line-height:1.7; }
-  .meta b { font-weight:600; }
-  table { width:100%; border-collapse:collapse; font-size:13px; }
-  th { text-align:left; font-size:11px; text-transform:uppercase; letter-spacing:.4px;
-       color:#6b7280; border-bottom:1px solid #e5e7eb; padding:8px 0; font-weight:600; }
-  th.c-amount, td.c-amount { text-align:right; white-space:nowrap; }
-  td { padding:9px 0; border-bottom:1px dashed #e5e7eb; vertical-align:top; }
-  td.c-name { padding-right:10px; }
-  .c-sub { font-size:11.5px; color:#6b7280; margin-top:3px; }
-  .tag { background:#eef7ee; color:#2f7a34; border-radius:4px; padding:1px 5px; font-size:10.5px; }
-  .sums { margin-top:14px; font-size:13px; }
-  .sum-row { display:flex; justify-content:space-between; padding:5px 0; color:#4b5563; }
-  .sum-total { display:flex; justify-content:space-between; padding:11px 0 0; margin-top:6px;
-               border-top:1px solid #e5e7eb; font-size:16px; font-weight:700; }
-  .foot { text-align:center; font-size:11.5px; color:#6b7280; margin-top:18px; line-height:1.7; }
+  body { margin:0; padding:16px 12px; background:#f2f3f5; color:#000;
+         font-family:Arial,Helvetica,sans-serif; }
+  .wrap { max-width:360px; margin:0 auto; }
+  #bill { background:#fff; padding:14px 12px 18px; font-size:11px; line-height:1.45;
+          box-shadow:0 2px 12px rgba(0,0,0,.10); }
+  #bill table { width:100%; border-collapse:collapse; }
+  #bill td, #bill th { word-wrap:break-word; }
+  .title { text-align:center; font-weight:bold; font-size:12px; padding:6px 0 0; }
+  .head-line { text-align:center; font-size:11px; }
+  .party { margin:10px 0 15px; font-size:11px; }
+  .items { table-layout:fixed; }
+  .items td { padding:3px; }
+  .items thead td { border-top:1px solid #000; border-bottom:1px solid #000; font-weight:bold; }
+  .items .c-qty, .items .c-unit { text-align:center; }
+  .items .c-amount { text-align:right; }
+  .items .r-name td { padding-top:3px; }
+  .items .r-figures td { border-bottom:1px dashed #000; }
+  .sums { table-layout:fixed; margin-top:0; }
+  .sums td { padding:3px; }
+  .sums .lbl { font-weight:bold; text-align:right; white-space:nowrap; font-size:12px; }
+  .sums .val { font-weight:bold; text-align:right; font-size:14px; }
+  .note { text-align:center; font-size:10px; font-style:italic; }
+  .promo { text-align:center; font-size:10px; }
+  .promo b { font-weight:bold; }
+  s { color:#000; }
   .actions { margin-top:14px; }
   button { width:100%; padding:13px; font-size:15px; font-weight:600; color:#fff; background:#1f6feb;
            border:0; border-radius:10px; cursor:pointer; font-family:inherit; }
   button:disabled { opacity:.6; cursor:default; }
-  .hint { text-align:center; font-size:11.5px; color:#6b7280; margin-top:9px; }
+  .hint { text-align:center; font-size:11.5px; color:#6b7280; margin-top:9px;
+          font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif; }
 """
 
 # Ve lai bill thanh anh bang SVG foreignObject -> canvas. Khong can thu vien ngoai,
@@ -220,6 +225,26 @@ def _render_message(title: str, message: str, status: int) -> Response:
     return response
 
 
+def _vietnamese_date(raw) -> str:
+    """Ngay dd thang MM nam yyyy - dung dinh dang cua bill in nhiet."""
+    if not raw:
+        return ""
+    try:
+        d = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except ValueError:
+        return str(raw)
+    return f"Ngày {d.day:02d} tháng {d.month:02d} năm {d.year}"
+
+
+def _price_cell(item: dict) -> str:
+    """Cot don gia: gach ngang gia goc khi hang tang hoac co giam gia."""
+    if item["is_gift"]:
+        return f'<s>{_money(item["base_price"])}</s>'
+    if item["discounted"]:
+        return f'<s>{_money(item["base_price"])}</s>&nbsp; {_money(item["unit_price"])}'
+    return _money(item["unit_price"])
+
+
 def _render_invoice(invoice: dict) -> Response:
     items = _line_items(invoice)
     # createInvoiceForCheckout() o FE luu totalPrice DA TRU chiet khau, nhung van
@@ -229,76 +254,83 @@ def _render_invoice(invoice: dict) -> Response:
     gross_total = final_total + discount
 
     customer = invoice.get("customer") or {}
-    customer_name = customer.get("Name") or "Khách lẻ"
-    created = _format_date(invoice.get("paidAt") or invoice.get("createdDate"))
+    customer_name = _esc(customer.get("Name") or "Khách lẻ")
+    customer_phone = _esc(customer.get("ContactNumber") or "")
     invoice_id = _esc(invoice.get("id"))
+    date_text = _esc(_vietnamese_date(invoice.get("paidAt") or invoice.get("createdDate")))
 
     rows = []
     for item in items:
-        if item["is_gift"]:
-            price_html = f'<s>{_money(item["base_price"])}</s> <span class="tag">Quà tặng</span>'
-        elif item["discounted"]:
-            price_html = f'<s>{_money(item["base_price"])}</s> {_money(item["unit_price"])}'
-        else:
-            price_html = _money(item["unit_price"])
-
         name = _esc(item["name"])
         if item["variant"]:
             name += " - " + _esc(item["variant"])
-        qty_text = f'{item["quantity"]:g}'
+        amount = "0" if item["is_gift"] else _money(item["amount"])
 
         rows.append(
-            "<tr>"
-            f'<td class="c-name">{name}'
-            f'<div class="c-sub">{price_html} &times; {qty_text} {_esc(item["unit"])}</div></td>'
-            f'<td class="c-amount">{_money(item["amount"])}</td>'
-            "</tr>"
+            f'<tr class="r-name"><td colspan="4">{name}</td></tr>'
+            '<tr class="r-figures">'
+            f'<td>{_price_cell(item)}</td>'
+            f'<td class="c-qty">{item["quantity"]:g}</td>'
+            f'<td class="c-unit">{_esc(item["unit"])}</td>'
+            f'<td class="c-amount">{amount}</td>'
+            '</tr>'
         )
 
-    discount_row = ""
-    if discount > 0:
-        discount_row = (
-            f'<div class="sum-row"><span>Chiết khấu</span><span>-{_money(discount)}</span></div>'
-        )
+    body = f"""<!doctype html>
+<html lang="vi"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<link rel="icon" type="image/png" href="{_FAVICON}">
+<title>Hóa đơn {invoice_id}</title>
+<style id="bill-style">{_BILL_CSS}</style></head>
+<body>
+<div class="wrap">
+  <div id="bill">
+    <div class="title">HÓA ĐƠN BÁN HÀNG</div>
+    <div class="head-line">Số HĐ: {invoice_id}</div>
+    <div class="head-line">{date_text}</div>
 
-    body = (
-        '<!doctype html>\n<html lang="vi"><head>\n'
-        '<meta charset="utf-8">\n'
-        '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
-        '<meta name="robots" content="noindex, nofollow">\n'
-        f'<link rel="icon" type="image/png" href="{_FAVICON}">\n'
-        f"<title>Hóa đơn {invoice_id}</title>\n"
-        f'<style id="bill-style">{_BILL_CSS}</style></head>\n'
-        '<body>\n<div class="wrap">\n'
-        '  <div id="bill">\n'
-        f'    <div class="shop">{_esc(SHOP_NAME)}</div>\n'
-        '    <div class="head">HÓA ĐƠN BÁN HÀNG</div>\n'
-        '    <div class="meta">\n'
-        f"      <div>Số HĐ: <b>{invoice_id}</b></div>\n"
-        f"      <div>Thời gian: <b>{_esc(created)}</b></div>\n"
-        f"      <div>Khách hàng: <b>{_esc(customer_name)}</b></div>\n"
-        "    </div>\n"
-        "    <table>\n"
-        '      <thead><tr><th>Mặt hàng</th><th class="c-amount">Thành tiền</th></tr></thead>\n'
-        f"      <tbody>{''.join(rows)}</tbody>\n"
-        "    </table>\n"
-        '    <div class="sums">\n'
-        f'      <div class="sum-row"><span>Tổng tiền hàng</span><span>{_money(gross_total)}</span></div>\n'
-        f"      {discount_row}\n"
-        f'      <div class="sum-total"><span>Tổng thanh toán</span><span>{_money(final_total)}</span></div>\n'
-        "    </div>\n"
-        '    <div class="foot">\n'
-        "      Quý khách vui lòng không đổi trả khi đã thanh toán. Xin cảm ơn!<br>\n"
-        f"      Đặt hàng online tại {_esc(SHOP_SITE)}\n"
-        "    </div>\n"
-        "  </div>\n"
-        f'  <div class="actions"><button id="save" type="button" data-filename="hoa-don-{invoice_id}.png">'
-        "Lưu hóa đơn về máy (.png)</button></div>\n"
-        '  <div class="hint">Không lưu được? Bạn có thể chụp màn hình để giữ hóa đơn.</div>\n'
-        "</div>\n"
-        f"<script>{_SAVE_SCRIPT}</script>\n"
-        "</body></html>"
-    )
+    <table class="party"><tbody>
+      <tr><td>Khách hàng: {customer_name}</td></tr>
+      <tr><td>SĐT: {customer_phone}</td></tr>
+    </tbody></table>
+
+    <table class="items" cellpadding="3">
+      <colgroup>
+        <col style="width:40%"><col style="width:10%">
+        <col style="width:25%"><col style="width:25%">
+      </colgroup>
+      <thead><tr>
+        <td>Đơn giá</td>
+        <td class="c-qty">SL</td>
+        <td class="c-unit">ĐVT</td>
+        <td class="c-amount">Thành tiền</td>
+      </tr></thead>
+      <tbody>{''.join(rows)}</tbody>
+    </table>
+
+    <table class="sums" cellpadding="3"><tbody>
+      <tr><td colspan="3" class="lbl">Tổng tiền hàng:</td><td class="val">{_money(gross_total)}</td></tr>
+      <tr><td colspan="3" class="lbl">Chiết khấu:</td><td class="val">{_money(discount)}</td></tr>
+      <tr><td colspan="3" class="lbl">Tổng thanh toán:</td><td class="val">{_money(final_total)}</td></tr>
+      <tr><td colspan="4" class="note">
+        <u>*Lưu ý:</u><br><br>
+        Quý khách vui lòng không đổi trả khi đã thanh toán.<br>Xin cảm ơn!
+      </td></tr>
+      <tr><td colspan="4" class="promo">
+        Hãy đăng ký thành viên và đặt hàng online tại:<br><b>{_esc(SHOP_SITE)}</b>
+      </td></tr>
+    </tbody></table>
+  </div>
+
+  <div class="actions">
+    <button id="save" type="button" data-filename="hoa-don-{invoice_id}.png">Lưu hóa đơn về máy (.png)</button>
+  </div>
+  <div class="hint">Không lưu được? Bạn có thể chụp màn hình để giữ hóa đơn.</div>
+</div>
+<script>{_SAVE_SCRIPT}</script>
+</body></html>"""
 
     response = Response(body, mimetype="text/html")
     response.headers["X-Robots-Tag"] = "noindex, nofollow"
@@ -314,30 +346,6 @@ def create_invoice_public_bp(invoice_service) -> Blueprint:
     trang chi render field an toan (khong Cost, khong TotalPoint) va luon noindex.
     """
     bp = Blueprint("invoice_public", __name__)
-
-    @bp.route("/hd/last/<machine_code>", methods=["GET"])
-    def claim_latest_invoice(machine_code: str):
-        """QR tinh dan tai quay: tra hoa don moi nhat cua may, mot lan duy nhat."""
-        try:
-            token, reason = invoice_service.claim_machine_pointer(machine_code)
-        except Exception as exc:
-            print(f"[invoice_public] claim pointer failed for {machine_code}: {exc}")
-            return _render_message(
-                "Không tải được hóa đơn",
-                "Hệ thống đang bận. Vui lòng nhờ nhân viên hỗ trợ.",
-                503,
-            )
-
-        if token:
-            return redirect(f"/hd/{token}", code=302)
-
-        if reason == "claimed":
-            message = "Hóa đơn này đã được tải trên một thiết bị khác. Vui lòng nhờ nhân viên hỗ trợ."
-        elif reason == "expired":
-            message = "Mã đã hết hạn. Vui lòng quét lại ngay sau khi thanh toán."
-        else:
-            message = "Chưa có hóa đơn nào vừa được thanh toán trên máy này."
-        return _render_message("Không tìm thấy hóa đơn", message, 404)
 
     @bp.route("/hd/<token>", methods=["GET"])
     def view_invoice(token: str):
