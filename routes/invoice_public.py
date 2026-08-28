@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import html
 import os
+import re
 from datetime import datetime
 
 from flask import Blueprint, Response
@@ -245,6 +246,20 @@ def _price_cell(item: dict) -> str:
     return _money(item["unit_price"])
 
 
+_MACHINE_SUFFIX = re.compile(r"^(HD\d+)-[A-Za-z0-9]{1,6}$")
+
+
+def _display_invoice_id(raw) -> str:
+    """Bo hau to ma may cua hoa don cu: HD1756...-M1 -> HD1756...
+
+    Id van giu nguyen trong Firestore, chi doi cach hien thi. Hoa don moi
+    khong con hau to nay nua.
+    """
+    text = str(raw or "")
+    match = _MACHINE_SUFFIX.match(text)
+    return match.group(1) if match else text
+
+
 def _render_invoice(invoice: dict) -> Response:
     items = _line_items(invoice)
     # createInvoiceForCheckout() o FE luu totalPrice DA TRU chiet khau, nhung van
@@ -256,7 +271,7 @@ def _render_invoice(invoice: dict) -> Response:
     customer = invoice.get("customer") or {}
     customer_name = _esc(customer.get("Name") or "Khách lẻ")
     customer_phone = _esc(customer.get("ContactNumber") or "")
-    invoice_id = _esc(invoice.get("id"))
+    invoice_id = _esc(_display_invoice_id(invoice.get("id")))
     date_text = _esc(_vietnamese_date(invoice.get("paidAt") or invoice.get("createdDate")))
 
     rows = []

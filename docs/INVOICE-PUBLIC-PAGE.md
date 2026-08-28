@@ -20,7 +20,7 @@ Trang **render server-side bằng Flask**, không dùng Angular: BanHang chạy 
 Token ngẫu nhiên là **lớp bảo vệ duy nhất**:
 
 - `publicToken` = 32 ký tự hex sinh bằng `crypto.getRandomValues()` ở FE (`InvoiceService.ensurePublicToken()`), lưu trong doc `invoices`.
-- Invoice id (`HD<timestamp>-<machineCode>`) **đoán được** → tuyệt đối không dùng id làm link.
+- Invoice id (`HD<timestamp>`) **đoán được** → tuyệt đối không dùng id làm link.
 - Route validate token phải là hex và dài ≥ 16 trước khi query Firestore.
 - Response luôn có `X-Robots-Tag: noindex, nofollow` + `Cache-Control: private, no-store`.
 - `_line_items()` chỉ whitelist field hiển thị (`Name, Unit, BasePrice, ProductAttributes[0].Value`). Không bao giờ trả `Cost`, `OnHandNV`, `TotalPoint`, `kiotViet*`.
@@ -103,7 +103,9 @@ Nguồn: `TapHoa39DatHang/public/iconSongMinh.png`, resize 64×64 + quantize 128
 | `SHOP_NAME` | `Tap Hoa Song Minh` | Tiêu đề trên hóa đơn |
 | `SHOP_SITE` | `https://songminhcr.com/` | Dòng chân trang |
 
+## Số hóa đơn hiển thị
+`_display_invoice_id()` cắt hậu tố mã máy của hóa đơn cũ: `HD1756...-M1` → `HD1756...`. Id trong Firestore giữ nguyên, chỉ đổi cách hiển thị (kể cả tên file `.png` khách tải về). Hóa đơn mới không còn hậu tố này. BanHang có bản tương ứng `displayInvoiceId()`, app Android có `Invoice.displayId` — sửa một bên thì sửa cả ba.
+
 ## Firestore
-- Collection `invoices`: thêm `publicToken`, `machineCode`, `paidAt` (do FE ghi).
-- Collection `pos_machines`: doc id = mã máy, chỉ backend ghi.
+- Collection `invoices`: thêm `publicToken`, `paidAt` (do FE ghi). Field `machineCode` của hóa đơn cũ vẫn còn nhưng không còn được ghi hay đọc.
 - Query `publicToken == <token>` dùng single-field index tự động, không cần composite index.
