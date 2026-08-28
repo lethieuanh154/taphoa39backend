@@ -17,5 +17,8 @@ Flask REST API backend. Tech: Flask 3.1.0, Firebase Firestore, Flask-SocketIO, G
 - XML parser chính: `services/invoice_parsers.py` (route `/v1/parse-xml`), KHÔNG phải `firebase/firebase_invoices/tax_invoice_xml_parser.py`
 - **Trang hóa đơn điện tử `/hd/*`** (`routes/invoice_public.py`): render HTML server-side cho khách quét QR. KHÔNG dưới `/api/` nên không bị admin gate — chủ đích, khách không có tài khoản cửa hàng. Bảo vệ bằng `publicToken` ngẫu nhiên (invoice id đoán được, tuyệt đối không dùng làm link). → `docs/INVOICE-PUBLIC-PAGE.md`
 
+- **Truoc khi deploy PHAI chay `python -m scripts.smoke_boot`** (exit 0 moi duoc deploy). No dung app that voi Firestore gia, bat duoc ten undefined va loi import — nhung thu `py_compile`/`ast.parse` khong thay, va chi lo ra khi container khoi dong, luc do ca he thong da 502. Da tung xay ra: xoa nham `db = init_firestore(...)` khi don code khien backend sap hoan toan.
+
 ## Docs
 `docs/`: PROJECT-STRUCTURE, EMPLOYEE-API, FIRESTORE-SCHEMA, INVOICE-XML-FORMATS, PUBLIC-API, INVOICE-PUBLIC-PAGE
+`scripts/smoke_boot.py`: kiem tra khoi dong truoc khi deploy

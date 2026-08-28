@@ -19,6 +19,9 @@ load_dotenv()
 # Khởi tạo Firebase
 COLLECTION_NAME = "invoices"
 
+# Đặt tên app duy nhất cho mỗi service account
+db = init_firestore("FIREBASE_SERVICE_ACCOUNT_HOADON")
+
 
 def _retry_on_deadline(operation, max_retries=3, initial_delay=1, operation_name="Firestore operation"):
     """
