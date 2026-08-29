@@ -23,6 +23,7 @@ from routes.shared import (
     to_float,
     to_number,
 )
+from routes.provisional_invoices import drop_provisional_for
 
 
 def create_firebase_invoices_bp(invoice_service, product_service, customer_service, socketio) -> Blueprint:
@@ -57,6 +58,10 @@ def create_firebase_invoices_bp(invoice_service, product_service, customer_servi
 
             # Return response immediately after invoice is saved
             notify_invoice_created(socketio, normalized_invoice)
+
+            # Hoa don da thanh toan that -> ban tam tinh cung id khong con y nghia.
+            # Khong go thi app se hien hai dong cho cung mot lan mua.
+            drop_provisional_for(socketio, normalized_invoice["id"])
             response = dict(result)
 
             t_response = _time.time()

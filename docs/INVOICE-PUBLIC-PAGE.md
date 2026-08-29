@@ -109,3 +109,49 @@ Nguồn: `TapHoa39DatHang/public/iconSongMinh.png`, resize 64×64 + quantize 128
 ## Firestore
 - Collection `invoices`: thêm `publicToken`, `paidAt` (do FE ghi). Field `machineCode` của hóa đơn cũ vẫn còn nhưng không còn được ghi hay đọc.
 - Query `publicToken == <token>` dùng single-field index tự động, không cần composite index.
+
+## Hóa đơn tạm tính
+
+Nhân viên bấm **Tạm tính** bên TapHoa39BanHang để đẩy hóa đơn *chưa thanh toán* sang app TapHoa39QRHoaDon, cho khách xem tổng tiền và quét QR trong lúc còn đang gói hàng.
+
+### Vì sao không ghi Firestore
+
+Mọi bản ghi trong collection `invoices` đều được coi là doanh thu thật — `adjust_invoice_summaries`, `apply_invoice_delta`, số liệu KeToan. Hóa đơn tạm có thể bị bỏ giữa chừng (khách đổi ý, nhân viên sửa giỏ hàng), nên để nó lọt vào đó là cộng khống doanh thu. Cách duy nhất chắc chắn không rò rỉ là không ghi vào đấy.
+
+`services/provisional_invoices.py` giữ trong RAM, khóa theo `id`, có thêm chỉ mục `publicToken` cho trang `/hd/`.
+
+Đánh đổi đã chấp nhận:
+
+| | |
+|---|---|
+| Container restart | Mất sạch. Chấp nhận được: hóa đơn tạm chỉ sống vài phút, bấm lại là có ngay |
+| Nhiều worker | **Hỏng.** Chỉ đúng vì gunicorn chạy `--workers=1`. Tăng worker phải chuyển sang Redis cùng lúc với SocketIO `message_queue` |
+| Sang ngày mới | Tự hết hạn theo giờ VN |
+| Trần 500 bản ghi | Chạm trần nghĩa là có gì đó sai, không phải bán đắt hàng |
+
+### Endpoint
+
+Nằm dưới `/api/` nên bị `admin_auth` gate — chỉ máy POS đăng nhập mới đẩy được.
+
+| | |
+|---|---|
+| `POST /api/firebase/provisional_invoices` | Thêm/cập nhật, phát `provisional_invoice` |
+| `GET /api/firebase/provisional_invoices` | Danh sách còn hạn (app gọi khi tải lại) |
+| `GET /api/firebase/provisional_invoices/<id>` | Một hóa đơn tạm |
+| `DELETE /api/firebase/provisional_invoices/<id>` | Gỡ, phát `provisional_invoice_removed` |
+
+Sự kiện đi chung namespace `/api/websocket/invoices` để app chỉ giữ một kết nối.
+
+`add_invoice` gọi `drop_provisional_for()` sau khi lưu hóa đơn thật — không gỡ thì app hiện hai dòng cho cùng một lần mua.
+
+### Trang /hd/<token>
+
+Tra Firestore trước, kho tạm sau: hóa đơn đã thanh toán phải thắng, dù bản tạm có thể còn sót lại vài giây trước khi bị gỡ.
+
+Bản tạm render khác bản chính thức: dải cam **TẠM TÍNH — CHƯA THANH TOÁN**, tiêu đề *PHIẾU TẠM TÍNH*, nhãn *Tổng tạm tính*, tên file tải về `tam-tinh-<id>.png`.
+
+Token gắn lên tab bên BanHang nên **không đổi** khi chuyển từ tạm tính sang chính thức — khách quét một lần, mở lại chính đường dẫn đó sau khi thanh toán là thấy hóa đơn chính thức.
+
+### Định dạng thời gian
+
+`provisionalAt` trả giờ VN **không kèm offset** (`2026-08-28T09:15:00.000`), khớp `formatVietnamISOString()` của BanHang. Kèm `+07:00` thì `DateTime.parse` của Flutter ra giờ UTC và app hiện hóa đơn tạm lệch 7 tiếng so với hóa đơn đã thanh toán ngay bên cạnh — đã bị test bắt được một lần.

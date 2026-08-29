@@ -41,6 +41,7 @@ from firebase.firebase_service.promotion_service import FirestorePromotionServic
 from routes.firebase_promotions import create_firebase_promotions_bp
 from routes.firebase_public import create_firebase_public_bp
 from routes.invoice_public import create_invoice_public_bp
+from routes.provisional_invoices import create_provisional_invoices_bp
 from routes.admin_auth import register_admin_auth
 
 
@@ -112,6 +113,7 @@ def _build_app() -> Flask:
     ))
 
     # Trang hoa don dien tu cho khach (/hd/<token>) - public, bao ve bang token ngau nhien
+    app.register_blueprint(create_provisional_invoices_bp(socketio))
     app.register_blueprint(create_invoice_public_bp(invoice_service))
 
     # Chat messaging

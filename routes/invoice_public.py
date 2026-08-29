@@ -7,6 +7,8 @@ from datetime import datetime
 
 from flask import Blueprint, Response
 
+from services.provisional_invoices import provisional_store
+
 SHOP_NAME = os.getenv("SHOP_NAME", "Song Minh")
 SHOP_SITE = os.getenv("SHOP_SITE", "https://songminhcr.com/")
 
@@ -110,6 +112,12 @@ _MESSAGE_CSS = """
           box-shadow:0 2px 12px rgba(0,0,0,.08); }
   h1 { font-size:19px; margin:0 0 10px; }
   p { font-size:14px; line-height:1.6; color:#5c6470; margin:0; }
+"""
+
+_PROVISIONAL_CSS = """
+.prov{background:#fff4e5;border:1px solid #f0a020;color:#8a4b00;border-radius:6px;
+      padding:8px 10px;margin:0 0 10px;font-size:13px;line-height:1.45;text-align:center}
+.prov b{display:block;font-size:14px;letter-spacing:.5px;margin-bottom:2px}
 """
 
 _BILL_CSS = """
@@ -260,7 +268,7 @@ def _display_invoice_id(raw) -> str:
     return match.group(1) if match else text
 
 
-def _render_invoice(invoice: dict) -> Response:
+def _render_invoice(invoice: dict, provisional: bool = False) -> Response:
     items = _line_items(invoice)
     # createInvoiceForCheckout() o FE luu totalPrice DA TRU chiet khau, nhung van
     # giu nguyen discountAmount. Tru them lan nua la sai so tien khach phai tra.
@@ -272,7 +280,26 @@ def _render_invoice(invoice: dict) -> Response:
     customer_name = _esc(customer.get("Name") or "Khách lẻ")
     customer_phone = _esc(customer.get("ContactNumber") or "")
     invoice_id = _esc(_display_invoice_id(invoice.get("id")))
-    date_text = _esc(_vietnamese_date(invoice.get("paidAt") or invoice.get("createdDate")))
+    date_text = _esc(_vietnamese_date(
+        invoice.get("paidAt") or invoice.get("provisionalAt") or invoice.get("createdDate")
+    ))
+
+    # Hoa don tam tinh: khach quet duoc ngay trong luc nhan vien con dang goi hang,
+    # nhung phai noi ro la chua chot, neu khong khach luu nham ban chua thanh toan.
+    title_text = "PHIẾU TẠM TÍNH" if provisional else "HÓA ĐƠN BÁN HÀNG"
+    total_label = "Tổng tạm tính:" if provisional else "Tổng thanh toán:"
+    banner = (
+        '<div class="prov"><b>TẠM TÍNH — CHƯA THANH TOÁN</b>'
+        'Số tiền có thể thay đổi cho tới khi thanh toán xong. '
+        'Mở lại chính đường dẫn này sau khi thanh toán để lấy hóa đơn chính thức.</div>'
+        if provisional else ""
+    )
+    note_text = (
+        "Vui lòng kiểm tra lại số tiền trước khi thanh toán."
+        if provisional
+        else "Quý khách vui lòng không đổi trả khi đã thanh toán.<br>Xin cảm ơn!"
+    )
+    file_prefix = "tam-tinh" if provisional else "hoa-don"
 
     rows = []
     for item in items:
@@ -297,12 +324,13 @@ def _render_invoice(invoice: dict) -> Response:
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow">
 <link rel="icon" type="image/png" href="{_FAVICON}">
-<title>Hóa đơn {invoice_id}</title>
-<style id="bill-style">{_BILL_CSS}</style></head>
+<title>{"Tạm tính" if provisional else "Hóa đơn"} {invoice_id}</title>
+<style id="bill-style">{_BILL_CSS}{_PROVISIONAL_CSS if provisional else ""}</style></head>
 <body>
 <div class="wrap">
   <div id="bill">
-    <div class="title">HÓA ĐƠN BÁN HÀNG</div>
+    {banner}
+    <div class="title">{title_text}</div>
     <div class="head-line">Số HĐ: {invoice_id}</div>
     <div class="head-line">{date_text}</div>
 
@@ -328,10 +356,10 @@ def _render_invoice(invoice: dict) -> Response:
     <table class="sums" cellpadding="3"><tbody>
       <tr><td colspan="3" class="lbl">Tổng tiền hàng:</td><td class="val">{_money(gross_total)}</td></tr>
       <tr><td colspan="3" class="lbl">Chiết khấu:</td><td class="val">{_money(discount)}</td></tr>
-      <tr><td colspan="3" class="lbl">Tổng thanh toán:</td><td class="val">{_money(final_total)}</td></tr>
+      <tr><td colspan="3" class="lbl">{total_label}</td><td class="val">{_money(final_total)}</td></tr>
       <tr><td colspan="4" class="note">
         <u>*Lưu ý:</u><br><br>
-        Quý khách vui lòng không đổi trả khi đã thanh toán.<br>Xin cảm ơn!
+        {note_text}
       </td></tr>
       <tr><td colspan="4" class="promo">
         Hãy đăng ký thành viên và đặt hàng online tại:<br><b>{_esc(SHOP_SITE)}</b>
@@ -340,7 +368,7 @@ def _render_invoice(invoice: dict) -> Response:
   </div>
 
   <div class="actions">
-    <button id="save" type="button" data-filename="hoa-don-{invoice_id}.png">Lưu hóa đơn về máy (.png)</button>
+    <button id="save" type="button" data-filename="{file_prefix}-{invoice_id}.png">Lưu hóa đơn về máy (.png)</button>
   </div>
   <div class="hint">Không lưu được? Bạn có thể chụp màn hình để giữ hóa đơn.</div>
 </div>
@@ -382,13 +410,19 @@ def create_invoice_public_bp(invoice_service) -> Blueprint:
                 503,
             )
 
-        if not invoice:
-            return _render_message(
-                "Không tìm thấy hóa đơn",
-                "Hóa đơn không tồn tại hoặc liên kết đã bị thay đổi.",
-                404,
-            )
+        # Firestore truoc, kho tam tinh sau: khi hoa don da thanh toan thi ban
+        # that phai thang, du ban tam co the con sot lai vai giay truoc khi bi go.
+        if invoice:
+            return _render_invoice(invoice)
 
-        return _render_invoice(invoice)
+        provisional = provisional_store.get_by_public_token(normalized)
+        if provisional:
+            return _render_invoice(provisional, provisional=True)
+
+        return _render_message(
+            "Không tìm thấy hóa đơn",
+            "Hóa đơn không tồn tại hoặc liên kết đã bị thay đổi.",
+            404,
+        )
 
     return bp
