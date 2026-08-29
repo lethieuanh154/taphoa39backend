@@ -1,24 +1,24 @@
-"""Kho hoa don TAM TINH - giu trong RAM, khong ghi Firestore.
+"""Kho hoa don TAM TINH - collection Firestore rieng, KHONG phai `invoices`.
 
 Nhan vien bam "Tam tinh" ben TapHoa39BanHang de day hoa don chua thanh toan
 sang app TapHoa39QRHoaDon, cho khach xem tong tien va quet QR trong luc con
 dang goi hang.
 
-VI SAO KHONG GHI FIRESTORE:
-Moi ban ghi trong collection `invoices` deu duoc cac bao cao coi la doanh thu
-that (adjust_invoice_summaries, apply_invoice_delta, so lieu KeToan). Hoa don
-tam tinh co the bi bo giua chung - khach doi y, nhan vien sua gio hang - nen
-de no lot vao do la cong khong doanh thu. Giu trong RAM thi khong the ro ri
-sang bao cao du co quen loc o dau.
+VI SAO COLLECTION RIENG chu khong phai `invoices`:
+Moi ban ghi trong `invoices` deu duoc coi la doanh thu that (adjust_invoice_summaries,
+apply_invoice_delta, so lieu KeToan). Hoa don tam co the bi bo giua chung - khach
+doi y, nhan vien sua gio hang - nen de no lot vao do la cong khong doanh thu.
+Tach collection thi khong the ro ri sang bao cao du co quen loc o dau.
 
-DANH DOI da chap nhan:
-- Container restart la mat sach. Chap nhan duoc: hoa don tam chi song vai phut,
-  va bam "Tam tinh" lai la co ngay.
-- Chi dung duoc vi gunicorn chay `--workers=1` (xem Dockerfile). Neu sau nay
-  tang worker, kho nay phai chuyen sang Redis cung luc voi SocketIO message_queue,
-  neu khong moi worker se giu mot ban khac nhau.
+VI SAO KHONG GIU TRONG RAM (ban dau lam vay, da phai doi):
+May POS chay Flask local, con dien thoai khach chay 4G nen mo /hd/<token> qua
+VPS. Hoa don tam nam trong RAM may POS thi VPS khong tra duoc - khach quet QR ra
+404. Firestore dung chung nen backend nao cung doc duoc.
 
-Het ngay (theo gio Viet Nam) la tu het han, dung yeu cau "ngay hom sau mat".
+DON CUOI NGAY:
+Moi ban ghi mang `provisionalDay` (ngay gio Viet Nam). Doc va ghi deu loc theo
+ngay hom nay, va don ban ghi cu mot lan moi ngay (_maybe_purge). Hoa don khach
+bo giua chung khong bao gio song sang ngay hom sau.
 """
 
 from __future__ import annotations
@@ -27,12 +27,20 @@ import threading
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
+from google.cloud.firestore_v1.base_query import FieldFilter
+
+from firebase.init_firebase import init_firestore
+
+COLLECTION_NAME = "provisional_invoices"
+
+# Cung service account voi collection `invoices` - van la hoa don, chi khac vong doi.
+db = init_firestore("FIREBASE_SERVICE_ACCOUNT_HOADON")
+
 # Gio Viet Nam. Khong dung pytz de khoi them dependency chi cho mot phep cong.
 _VN_OFFSET = timezone(timedelta(hours=7))
 
-# Tran an toan: hoa don tam khong bao gio nhieu den muc nay trong mot ngay,
-# cham tran nghia la co gi do sai chu khong phai ban dat hang.
-_MAX_ENTRIES = 500
+# Firestore gioi han 500 thao tac moi batch.
+_BATCH_LIMIT = 500
 
 
 def _vn_day() -> str:
@@ -51,118 +59,147 @@ def _now_iso() -> str:
 
 
 class ProvisionalInvoiceStore:
-    """Kho khoa theo invoice id, co them chi muc publicToken cho trang /hd/."""
+    """CRUD tren collection `provisional_invoices`, doc id = invoice id.
 
-    def __init__(self, max_entries: int = _MAX_ENTRIES):
-        self._lock = threading.RLock()
-        self._max_entries = max_entries
-        # id -> {"invoice": dict, "day": "YYYY-MM-DD", "updatedAt": iso}
-        self._entries: dict[str, dict[str, Any]] = {}
-        # publicToken -> id
-        self._tokens: dict[str, str] = {}
+    Khong cache: bam "Tam tinh" lai sau khi them hang la noi dung doi ngay, cache
+    cu se cho khach xem so tien sai.
+    """
+
+    def __init__(self, collection_name: str = COLLECTION_NAME):
+        self._ref = db.collection(collection_name)
+        self._purge_lock = threading.Lock()
+        self._purged_day: Optional[str] = None
 
     # ---------------------------------------------------------------- ghi
 
     def put(self, invoice: dict) -> Optional[dict]:
-        """Them hoac cap nhat mot hoa don tam. Tra ve ban da luu, None neu thieu id."""
+        """Them hoac ghi de mot hoa don tam. Tra ve ban da luu, None neu thieu id."""
         invoice_id = str(invoice.get("id") or "").strip()
         if not invoice_id:
             return None
 
+        self._maybe_purge()
+
         stored = dict(invoice)
+        stored["id"] = invoice_id
         stored["isProvisional"] = True
         stored["provisionalAt"] = _now_iso()
+        stored["provisionalDay"] = _vn_day()
 
-        with self._lock:
-            self._purge_locked()
-
-            # Bam "Tam tinh" nhieu lan sau khi them hang: token cu phai duoc go
-            # khoi chi muc, neu khong no tro toi ban ghi da bi thay the.
-            previous = self._entries.get(invoice_id)
-            if previous:
-                old_token = str(previous["invoice"].get("publicToken") or "").lower()
-                if old_token:
-                    self._tokens.pop(old_token, None)
-
-            if len(self._entries) >= self._max_entries and invoice_id not in self._entries:
-                self._drop_oldest_locked()
-
-            self._entries[invoice_id] = {
-                "invoice": stored,
-                "day": _vn_day(),
-                "updatedAt": stored["provisionalAt"],
-            }
-
-            token = str(stored.get("publicToken") or "").lower()
-            if token:
-                self._tokens[token] = invoice_id
-
+        # set() ghi de toan bo: gio hang co the da bot mon so voi lan bam truoc,
+        # merge se giu lai rac cua lan cu.
+        self._ref.document(invoice_id).set(stored)
         return stored
 
     def remove(self, invoice_id: str) -> bool:
-        """Go hoa don tam. Goi khi thanh toan xong hoac nhan vien huy."""
+        """Go hoa don tam. Goi khi thanh toan xong hoac nhan vien dong tab."""
         key = str(invoice_id or "").strip()
         if not key:
             return False
 
-        with self._lock:
-            entry = self._entries.pop(key, None)
-            if not entry:
-                return False
-            token = str(entry["invoice"].get("publicToken") or "").lower()
-            if token:
-                self._tokens.pop(token, None)
-            return True
+        doc_ref = self._ref.document(key)
+        if not doc_ref.get().exists:
+            return False
+
+        doc_ref.delete()
+        return True
 
     # ---------------------------------------------------------------- doc
 
     def get(self, invoice_id: str) -> Optional[dict]:
-        with self._lock:
-            self._purge_locked()
-            entry = self._entries.get(str(invoice_id or "").strip())
-            return dict(entry["invoice"]) if entry else None
+        key = str(invoice_id or "").strip()
+        if not key:
+            return None
+
+        snapshot = self._ref.document(key).get()
+        if not snapshot.exists:
+            return None
+
+        return self._materialize(snapshot)
 
     def get_by_public_token(self, token: str) -> Optional[dict]:
+        """Tra hoa don tam theo token cong khai, cho trang /hd/<token>."""
         normalized = str(token or "").lower()
         if not normalized:
             return None
 
-        with self._lock:
-            self._purge_locked()
-            invoice_id = self._tokens.get(normalized)
-            if not invoice_id:
-                return None
-            entry = self._entries.get(invoice_id)
-            return dict(entry["invoice"]) if entry else None
+        docs = self._ref.where(
+            filter=FieldFilter("publicToken", "==", normalized)
+        ).limit(1).stream()
+
+        for doc in docs:
+            return self._materialize(doc)
+        return None
 
     def list_all(self) -> list[dict]:
-        """Toan bo hoa don tam con han. App goi khi tai lai danh sach."""
-        with self._lock:
-            self._purge_locked()
-            return [dict(e["invoice"]) for e in self._entries.values()]
+        """Hoa don tam CUA HOM NAY. App goi khi tai lai danh sach.
+
+        Loc theo ngay chu khong lay het: neu don dep loi vi ly do nao do, danh
+        sach van khong dinh hoa don hom qua.
+        """
+        self._maybe_purge()
+
+        docs = self._ref.where(
+            filter=FieldFilter("provisionalDay", "==", _vn_day())
+        ).stream()
+
+        return [self._materialize(doc) for doc in docs]
+
+    # ------------------------------------------------------------- don dep
+
+    def purge_old(self) -> int:
+        """Xoa moi hoa don tam cua nhung ngay truoc. Tra ve so ban ghi da xoa."""
+        today = _vn_day()
+        deleted = 0
+
+        while True:
+            # provisionalDay dang YYYY-MM-DD nen so sanh chuoi cung la so sanh ngay.
+            stale = list(
+                self._ref.where(filter=FieldFilter("provisionalDay", "<", today))
+                .limit(_BATCH_LIMIT)
+                .stream()
+            )
+            if not stale:
+                break
+
+            batch = db.batch()
+            for doc in stale:
+                batch.delete(doc.reference)
+            batch.commit()
+            deleted += len(stale)
+
+            if len(stale) < _BATCH_LIMIT:
+                break
+
+        if deleted:
+            print(f"[provisional] da don {deleted} hoa don tam cua ngay truoc")
+        return deleted
 
     # ------------------------------------------------------------- noi bo
 
-    def _purge_locked(self) -> None:
-        today = _vn_day()
-        stale = [k for k, v in self._entries.items() if v["day"] != today]
-        for key in stale:
-            entry = self._entries.pop(key, None)
-            if not entry:
-                continue
-            token = str(entry["invoice"].get("publicToken") or "").lower()
-            if token:
-                self._tokens.pop(token, None)
+    def _maybe_purge(self) -> None:
+        """Don mot lan moi ngay, kich hoat boi luot doc/ghi dau tien.
 
-    def _drop_oldest_locked(self) -> None:
-        oldest = min(self._entries.items(), key=lambda kv: kv[1]["updatedAt"], default=None)
-        if not oldest:
+        Khong dung scheduler: may co the tat qua dem, va don theo su kien thi
+        khong phu thuoc vao tien trinh con song luc nua dem.
+        """
+        today = _vn_day()
+        if self._purged_day == today:
             return
-        key, entry = oldest
-        self._entries.pop(key, None)
-        token = str(entry["invoice"].get("publicToken") or "").lower()
-        if token:
-            self._tokens.pop(token, None)
+
+        with self._purge_lock:
+            if self._purged_day == today:
+                return
+            try:
+                self.purge_old()
+                self._purged_day = today
+            except Exception as exc:
+                # Don dep that bai khong duoc chan viec ban hang. Lan doc sau thu lai.
+                print(f"[provisional] don ngay cu that bai: {exc}")
+
+    @staticmethod
+    def _materialize(doc) -> dict:
+        return (doc.to_dict() or {}) | {"id": doc.id}
 
 
 # Mot the hien dung chung cho ca ba noi: route tam tinh, add_invoice (go sau khi

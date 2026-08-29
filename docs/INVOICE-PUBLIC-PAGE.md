@@ -114,20 +114,30 @@ Nguồn: `TapHoa39DatHang/public/iconSongMinh.png`, resize 64×64 + quantize 128
 
 Nhân viên bấm **Tạm tính** bên TapHoa39BanHang để đẩy hóa đơn *chưa thanh toán* sang app TapHoa39QRHoaDon, cho khách xem tổng tiền và quét QR trong lúc còn đang gói hàng.
 
-### Vì sao không ghi Firestore
+### Vì sao collection riêng
 
-Mọi bản ghi trong collection `invoices` đều được coi là doanh thu thật — `adjust_invoice_summaries`, `apply_invoice_delta`, số liệu KeToan. Hóa đơn tạm có thể bị bỏ giữa chừng (khách đổi ý, nhân viên sửa giỏ hàng), nên để nó lọt vào đó là cộng khống doanh thu. Cách duy nhất chắc chắn không rò rỉ là không ghi vào đấy.
+Mọi bản ghi trong collection `invoices` đều được coi là doanh thu thật — `adjust_invoice_summaries`, `apply_invoice_delta`, số liệu KeToan. Hóa đơn tạm có thể bị bỏ giữa chừng (khách đổi ý, nhân viên sửa giỏ hàng), nên để nó lọt vào đó là cộng khống doanh thu. Tách collection thì không thể rò rỉ sang báo cáo dù có quên lọc ở đâu.
 
-`services/provisional_invoices.py` giữ trong RAM, khóa theo `id`, có thêm chỉ mục `publicToken` cho trang `/hd/`.
+`services/provisional_invoices.py` ghi vào **`provisional_invoices`**, doc id = invoice id, cùng service account với `invoices`.
 
-Đánh đổi đã chấp nhận:
+Không cache: bấm "Tạm tính" lại sau khi thêm hàng là nội dung đổi ngay, cache cũ sẽ cho khách xem số tiền sai. `set()` ghi đè toàn bộ document chứ không merge — giỏ hàng có thể đã bớt món so với lần bấm trước.
 
-| | |
-|---|---|
-| Container restart | Mất sạch. Chấp nhận được: hóa đơn tạm chỉ sống vài phút, bấm lại là có ngay |
-| Nhiều worker | **Hỏng.** Chỉ đúng vì gunicorn chạy `--workers=1`. Tăng worker phải chuyển sang Redis cùng lúc với SocketIO `message_queue` |
-| Sang ngày mới | Tự hết hạn theo giờ VN |
-| Trần 500 bản ghi | Chạm trần nghĩa là có gì đó sai, không phải bán đắt hàng |
+### Đã thử giữ trong RAM và phải đổi
+
+Bản đầu giữ trong RAM tiến trình backend: không đụng Firestore, tự mất khi hết ngày, rất gọn. Nhưng nó hỏng trong đúng cách cửa hàng đang chạy:
+
+Máy POS chạy Flask local (`localhost:5000`) nên hóa đơn tạm nằm trong RAM **máy POS**. Điện thoại khách chạy 4G nên mở `songminhcr.com/hd/<token>` qua **VPS** — nơi không có bản tạm đó. Khách quét QR ra 404.
+
+Firestore dùng chung nên backend nào cũng đọc được: POS ghi, VPS phục vụ trang khách.
+
+### Dọn cuối ngày
+
+Mỗi bản ghi mang `provisionalDay` (`YYYY-MM-DD` giờ VN).
+
+- `list_all()` lọc `provisionalDay == hôm nay` — dù dọn dẹp có lỗi thì danh sách vẫn không dính hóa đơn hôm qua
+- `_maybe_purge()` chạy ở lượt đọc/ghi đầu tiên của ngày, xóa mọi bản ghi có `provisionalDay < hôm nay` theo batch 500
+
+Không dùng scheduler: máy có thể tắt qua đêm, dọn theo sự kiện thì không phụ thuộc vào tiến trình còn sống lúc nửa đêm. Dọn thất bại chỉ ghi log, không chặn việc bán hàng — lượt đọc sau thử lại.
 
 ### Endpoint
 
@@ -142,7 +152,7 @@ Nằm dưới `/api/` nên bị `admin_auth` gate — chỉ máy POS đăng nh�
 
 Sự kiện đi chung namespace `/api/websocket/invoices` để app chỉ giữ một kết nối.
 
-`add_invoice` gọi `drop_provisional_for()` sau khi lưu hóa đơn thật — không gỡ thì app hiện hai dòng cho cùng một lần mua.
+`add_invoice` gọi `drop_provisional_for()` sau khi lưu hóa đơn thật — không gỡ thì app hiện hai dòng cho cùng một lần mua. Tốn thêm một lượt đọc Firestore mỗi lần thanh toán (để biết có bản tạm mà phát sự kiện gỡ hay không); đa số hóa đơn không đi qua bước tạm tính nên đây là đọc trượt, chấp nhận được ở quy mô cửa hàng.
 
 ### Trang /hd/<token>
 
