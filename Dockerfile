@@ -14,4 +14,4 @@ EXPOSE 5000
 # --workers=1 là BẮT BUỘC: SocketIO khởi tạo không có message_queue (app.py), state socket
 # nằm trong RAM từng worker. >1 worker → broadcast tồn kho chỉ tới client cùng worker,
 # máy này nhận update máy kia không. Muốn scale thì thêm Redis message_queue trước.
-CMD ["gunicorn", "app:app", "--bind=0.0.0.0:5000", "--timeout=600", "--workers=1", "--threads=16"]
+CMD ["gunicorn", "app:app", "--bind=0.0.0.0:5000", "--timeout=600", "--workers=1", "--threads=32"]

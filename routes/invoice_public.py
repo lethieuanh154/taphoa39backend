@@ -415,7 +415,18 @@ def create_invoice_public_bp(invoice_service) -> Blueprint:
         if invoice:
             return _render_invoice(invoice)
 
-        provisional = provisional_store.get_by_public_token(normalized)
+        # Cung phai bat loi nhu tra Firestore o tren: het deadline ma de ne'm ra
+        # thi khach nhan trang 500 tho thay vi loi tu te.
+        try:
+            provisional = provisional_store.get_by_public_token(normalized)
+        except Exception as exc:
+            print(f"[invoice_public] provisional lookup failed: {exc}")
+            return _render_message(
+                "Không tải được hóa đơn",
+                "Hệ thống đang bận. Vui lòng thử lại sau ít phút.",
+                503,
+            )
+
         if provisional:
             return _render_invoice(provisional, provisional=True)
 

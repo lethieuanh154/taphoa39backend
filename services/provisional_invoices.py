@@ -42,6 +42,11 @@ _VN_OFFSET = timezone(timedelta(hours=7))
 # Firestore gioi han 500 thao tac moi batch.
 _BATCH_LIMIT = 500
 
+# Deadline (giay) cho moi lenh goi Firestore. KHONG duoc bo: lenh goi khong
+# deadline treo vinh vien khi kenh gRPC chet lang, va giu luon thread gunicorn -
+# du vai lan la het pool va toan bo API tat tho.
+_TIMEOUT = 10
+
 
 def _vn_day() -> str:
     return datetime.now(_VN_OFFSET).strftime("%Y-%m-%d")
@@ -88,7 +93,7 @@ class ProvisionalInvoiceStore:
 
         # set() ghi de toan bo: gio hang co the da bot mon so voi lan bam truoc,
         # merge se giu lai rac cua lan cu.
-        self._ref.document(invoice_id).set(stored)
+        self._ref.document(invoice_id).set(stored, timeout=_TIMEOUT)
         return stored
 
     def remove(self, invoice_id: str) -> bool:
@@ -98,10 +103,10 @@ class ProvisionalInvoiceStore:
             return False
 
         doc_ref = self._ref.document(key)
-        if not doc_ref.get().exists:
+        if not doc_ref.get(timeout=_TIMEOUT).exists:
             return False
 
-        doc_ref.delete()
+        doc_ref.delete(timeout=_TIMEOUT)
         return True
 
     # ---------------------------------------------------------------- doc
@@ -111,7 +116,7 @@ class ProvisionalInvoiceStore:
         if not key:
             return None
 
-        snapshot = self._ref.document(key).get()
+        snapshot = self._ref.document(key).get(timeout=_TIMEOUT)
         if not snapshot.exists:
             return None
 
@@ -125,7 +130,7 @@ class ProvisionalInvoiceStore:
 
         docs = self._ref.where(
             filter=FieldFilter("publicToken", "==", normalized)
-        ).limit(1).stream()
+        ).limit(1).stream(timeout=_TIMEOUT)
 
         for doc in docs:
             return self._materialize(doc)
@@ -141,7 +146,7 @@ class ProvisionalInvoiceStore:
 
         docs = self._ref.where(
             filter=FieldFilter("provisionalDay", "==", _vn_day())
-        ).stream()
+        ).stream(timeout=_TIMEOUT)
 
         return [self._materialize(doc) for doc in docs]
 
@@ -157,7 +162,7 @@ class ProvisionalInvoiceStore:
             stale = list(
                 self._ref.where(filter=FieldFilter("provisionalDay", "<", today))
                 .limit(_BATCH_LIMIT)
-                .stream()
+                .stream(timeout=_TIMEOUT)
             )
             if not stale:
                 break
@@ -165,7 +170,7 @@ class ProvisionalInvoiceStore:
             batch = db.batch()
             for doc in stale:
                 batch.delete(doc.reference)
-            batch.commit()
+            batch.commit(timeout=_TIMEOUT)
             deleted += len(stale)
 
             if len(stale) < _BATCH_LIMIT:
@@ -187,15 +192,19 @@ class ProvisionalInvoiceStore:
         if self._purged_day == today:
             return
 
+        # Danh dau TRUOC khi don. Don that bai thi bo qua het hom nay chu khong
+        # thu lai: gunicorn chi co --workers=1, mot thao tac Firestore cham ma
+        # duoc goi lai o moi request se giu het thread va treo toan bo API.
+        # Ban ghi cu khong bi xoa chi la rac - list_all() van loc theo ngay.
         with self._purge_lock:
             if self._purged_day == today:
                 return
-            try:
-                self.purge_old()
-                self._purged_day = today
-            except Exception as exc:
-                # Don dep that bai khong duoc chan viec ban hang. Lan doc sau thu lai.
-                print(f"[provisional] don ngay cu that bai: {exc}")
+            self._purged_day = today
+
+        try:
+            self.purge_old()
+        except Exception as exc:
+            print(f"[provisional] don ngay cu that bai, bo qua den ngay mai: {exc}")
 
     @staticmethod
     def _materialize(doc) -> dict:

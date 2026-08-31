@@ -19,6 +19,11 @@ load_dotenv()
 # Khởi tạo Firebase
 COLLECTION_NAME = "invoices"
 
+# Deadline (giay) cho cac lenh goi Firestore phuc vu request web. Phai nho hon
+# proxy_read_timeout cua nginx de nginx khong cat truoc, va phai co - lenh goi
+# khong deadline treo mai thi thread khong bao gio duoc tra ve pool.
+FIRESTORE_TIMEOUT = 10
+
 # Đặt tên app duy nhất cho mỗi service account
 db = init_firestore("FIREBASE_SERVICE_ACCOUNT_HOADON")
 
@@ -103,9 +108,13 @@ class FirestoreInvoiceService:
         if self.cache.has(cache_key):
             return self.cache.get(cache_key)
 
+        # timeout BAT BUOC: khong co deadline thi khi kenh gRPC chet lang (hay xay
+        # ra sau nhieu gio nhan roi), lenh goi nay treo vinh vien va giu luon
+        # thread cua gunicorn. Moi lan khach quet QR mat them mot thread, du 16
+        # lan la toan bo API tat tho - da xay ra that ngay 31/08/2026.
         docs = self.invoices_ref.where(
             filter=FieldFilter("publicToken", "==", token)
-        ).limit(1).stream()
+        ).limit(1).stream(timeout=FIRESTORE_TIMEOUT)
 
         for doc in docs:
             invoice = (doc.to_dict() or {}) | {"id": doc.id}

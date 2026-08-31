@@ -165,3 +165,17 @@ Token gắn lên tab bên BanHang nên **không đổi** khi chuyển từ tạm
 ### Định dạng thời gian
 
 `provisionalAt` trả giờ VN **không kèm offset** (`2026-08-28T09:15:00.000`), khớp `formatVietnamISOString()` của BanHang. Kèm `+07:00` thì `DateTime.parse` của Flutter ra giờ UTC và app hiện hóa đơn tạm lệch 7 tiếng so với hóa đơn đã thanh toán ngay bên cạnh — đã bị test bắt được một lần.
+
+## Deadline cho Firestore — bắt buộc
+
+`get_invoice_by_public_token()` và mọi lệnh gọi trong `services/provisional_invoices.py` đều truyền `timeout=10`. Đây không phải tối ưu, là chống sập.
+
+Ngày 31/08/2026 backend treo hoàn toàn. Triệu chứng: nginx trả 504 cho mọi đường proxy trong khi `songminhcr.com/` tĩnh vẫn 200; `curl http://127.0.0.1:8001/v1/health` ngay trên VPS cũng treo, dù endpoint đó chỉ `return jsonify({...})` không đụng dữ liệu. `docker ps` cho thấy `Up 2 days` không restart, CPU 5%, RAM 202MiB/1.9GiB — nên không phải crash, không phải OOM.
+
+Trong `nginx/error.log` chỉ có duy nhất các request `/hd/<token>` bị `upstream timed out`. Ghép với việc BanHang vừa chuyển sang backend LAN khiến VPS gần như nhàn rỗi: kênh gRPC của Firestore chết lặng vì không có traffic giữ nhịp, và lệnh gọi không deadline treo mãi thay vì báo lỗi. Mỗi lần khách quét QR mất thêm một thread gunicorn; hết 16 thread là mọi request xếp hàng vô hạn.
+
+Deadline biến sự cố đó thành một trang "Hệ thống đang bận" và trả thread về pool. Lần gọi sau dựng lại kênh mới.
+
+Cả hai nhánh tra cứu trong `/hd/<token>` đều bọc `try` — Firestore và kho tạm tính. Ném ra ngoài là khách nhận trang 500 thô.
+
+**Các service khác (`product_service`, `customer_service`, `order_service`…) vẫn chưa có deadline** — cùng rủi ro, chưa quét.
