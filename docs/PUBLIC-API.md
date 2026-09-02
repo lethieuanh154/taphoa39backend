@@ -9,6 +9,7 @@ Che giấu dữ liệu nội bộ khỏi khách hàng (F12/Network) và chống 
 
 | Method | Path | Thay cho (nội bộ) |
 |---|---|---|
+| GET | `/api/public/categories` | `/api/kiotviet/categories` (phụ thuộc token KiotViet) |
 | GET | `/api/public/products/featured?limit&offset` | `/api/firebase/products/featured` |
 | GET | `/api/public/products/by-category/<id>?limit&offset` | `/api/firebase/get/products/by-category/<id>` |
 | GET | `/api/public/products/search?q&limit` | `/api/firebase/products/search` |
@@ -16,15 +17,34 @@ Che giấu dữ liệu nội bộ khỏi khách hàng (F12/Network) và chống 
 | GET | `/api/public/orders/<id>` | `/api/firebase/orders/<id>` (giờ đã GATE admin) |
 | POST | `/api/public/add_order` | `/api/firebase/add_order` |
 
+## `GET /api/public/categories` — danh mục có snapshot dự phòng
+`/api/kiotviet/categories` gọi thẳng KiotViet: sai/hết credentials → **502** → DatHang nhận `[]` và **mất sạch thanh danh mục** (lỗi đã xảy ra thật).
+
+Endpoint mới ghép 2 nguồn:
+- **Tên danh mục** ← `product_service.read_categories()`: KiotViet (`get_category()`, cache 6h) → thành công thì **ghi snapshot xuống Firestore `app_config/categories`**; thất bại thì đọc lại snapshot cũ. Nghĩa là chỉ cần KiotViet sống 1 lần là các lần chết sau đó DatHang vẫn có danh mục.
+- **Danh mục được hiện** ← `CategoryId` của sản phẩm `_is_orderable` trong `read_all_products()`, trừ `_HIDDEN_CATEGORY_IDS`. Danh mục không còn hàng thì không hiện (bấm vào không ra trang rỗng).
+- Thiếu tên trong snapshot → lấy `CategoryName` trên chính product. Vẫn không có tên → bỏ qua (không hiện chip trống).
+
+`Path` sinh bằng `_category_path()` (`unidecode`): `"GIA VỊ - ĐỒ KHÔ"` → `GIA_VI_DO_KHO`.
+
 ## Whitelist sản phẩm (`_public_product`) — đã làm gọn
-GIỮ (13 field FE thực dùng): `Id, Code, Name, FullName, Image, BasePrice, Unit, Description, CategoryId, ConversionValue` (product-detail), `MasterUnitId` (GroupService grouping), `NormalizedName` (offline search có dấu), `OnHand` (đã gộp clone).
+GIỮ (14 field FE thực dùng): `Id, Code, Name, FullName, Image, BasePrice, Unit, Description, CategoryId, CategoryName, ConversionValue` (product-detail), `MasterUnitId` (GroupService grouping), `NormalizedName` (offline search có dấu), `OnHand` (đã gộp clone).
+`CategoryName` thêm vào để DatHang **dựng lại danh mục offline** từ IndexedDB khi cả 2 endpoint danh mục chết.
 CẮT: `Cost, OldCost, PackCost, _original*, OnHandNV, CloneOnHandNV (raw), SyncChecksum, SyncTimestamp, Revision, MasterCode, kiotViet*` + `NormalizedCode, MasterProductId, isActive, isDeleted` (BE đã lọc sẵn → FE default khi thiếu).
 
 Lọc **server-side** (không để FE tự lọc bằng field nhạy cảm): bỏ clone / KM `(km)` Cost=0 / danh mục ẩn (`1440125, 1787413`) / deleted-inactive. **Gộp `CloneOnHandNV` vào `OnHand`** (ẩn cơ chế clone, vẫn báo đúng tồn kho).
 
-## Whitelist khuyến mãi (`_public_promotion`) — đã làm gọn
-GIỮ: `id, type, name, hasGift, hasPercentDiscount, hasFixedDiscount, discountPercent, discountAmount, minQuantity, giftQuantity, giftProductId, giftProductName, targetProductId, targetProductName, targetProduct` (đã whitelist).
-CẮT toàn bộ `kiotViet*`, `createdDate/modifiedDate/priority/isEnabled` + `giftItems` (FE lấy từ `/promotions/apply`), `fromDate, toDate, giftProductCode, giftProductBasePrice, targetProductCode` (không đọc ở DatHang). → giảm mạnh size (bỏ mảng `giftItems`).
+## Whitelist khuyến mãi (`_public_promotion`)
+GIỮ: `id, type, name, hasGift, hasPercentDiscount, hasFixedDiscount, discountPercent, discountAmount, minQuantity, giftQuantity, giftProductId, giftProductName, giftProductCode, giftProductBasePrice, giftItems, giftProducts, fromDate, toDate, priority, targetProductId, targetProductName, targetProduct` (đã whitelist).
+CẮT toàn bộ `kiotViet*`, `createdDate/modifiedDate/isEnabled`, `targetProductCode`.
+
+**Mở lại (cho trang `/khuyen-mai` của DatHang)** — trước đây từng cắt để giảm size:
+- `giftItems`: chuẩn hoá bởi `_public_gift_entries()` → `[{productId, code, name, basePrice, quantity}]`. Fallback field scalar cũ (`giftProductId/giftQuantity`) khi doc chưa có mảng → FE chỉ đọc 1 dạng.
+- `giftProducts`: mảng `_public_product` của từng quà + `GiftQuantity` → trang KM render ảnh/giá quà tặng và SP mua kèm (Type 3) mà không phải gọi thêm API.
+- `fromDate/toDate`: hiển thị hạn KM + đếm ngược trên trang chủ.
+- `priority`: sắp xếp thứ tự hiển thị.
+
+Product của target/gift resolve qua **cache dict trong 1 request** (`_resolve`) → không đọc Firestore trùng khi nhiều KM dùng chung 1 SP.
 
 ## `POST /api/public/add_order` — DỰNG LẠI đơn server-side
 `_recompute_order_economics()` **KHÔNG tin gì từ client trừ `{productId, quantity}`** của dòng mua thật. Dựng lại toàn bộ `cartItems` + tiền từ Firestore:

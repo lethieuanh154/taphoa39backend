@@ -1,2 +1,2 @@
-$env:e='local';$env:User='admin';$env:Password='LAmbinh123@';$env:LatestBranchId='878979';$env:retailer='songminhcr';python -m firebase.firebase_khachhang.import_to_firestore;
-$env:e='local';$env:User='admin';$env:Password='LAMBinh123@';$env:LatestBranchId='878979';$env:retailer='songminhcr';python app.py
+$env:e='local';$env:User='admin';$env:Password='LAmbInh123@';$env:LatestBranchId='878979';$env:retailer='songminhcr';python -m firebase.firebase_khachhang.import_to_firestore;
+$env:e='local';$env:User='admin';$env:Password='LAMBInh123@';$env:LatestBranchId='878979';$env:retailer='songminhcr';python app.py

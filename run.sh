@@ -1,4 +1,4 @@
-$env:e='local';$env:User='admin';$env:Password='LAMBInh123@';$env:LatestBranchId='878979';$env:retailer='taphoa39dn';python app.py
+$env:e='local';$env:User='admin';$env:Password='LAMBInh123@';$env:LatestBranchId='878979';$env:retailer='songminhcr';python app.py
 
 
 python -m firebase.firebase_hoadon.delete_hoadon --year 2025 --month 9

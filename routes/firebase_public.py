@@ -5,6 +5,7 @@ import re
 import time
 
 from flask import Blueprint, jsonify, request
+from unidecode import unidecode
 
 from routes.shared import handle_api_errors, notify_order_created
 from routes.firebase_orders import _deduct_redeemed_points
@@ -48,6 +49,7 @@ def _public_product(p: dict) -> dict:
         "Unit": p.get("Unit"),
         "Description": p.get("Description") or "",
         "CategoryId": p.get("CategoryId"),
+        "CategoryName": p.get("CategoryName") or "",
         "ConversionValue": p.get("ConversionValue"),
         "MasterUnitId": p.get("MasterUnitId"),
         "NormalizedName": p.get("NormalizedName") or "",
@@ -64,6 +66,13 @@ def _is_clone(p: dict) -> bool:
     if p.get("isClone") is True:
         return True
     return _to_float(p.get("OnHandNV")) > 0 and _to_float(p.get("OnHand")) == 0
+
+
+def _category_path(name: str) -> str:
+    """Slug danh muc dang KiotViet ("GIA VI - DO KHO" -> "GIA_VI_DO_KHO")."""
+    slug = unidecode(name).upper()
+    slug = re.sub(r"[^A-Z0-9]+", "_", slug).strip("_")
+    return slug
 
 
 def _is_orderable(p: dict) -> bool:
@@ -122,7 +131,34 @@ def _public_order(o: dict) -> dict:
     }
 
 
-def _public_promotion(pr: dict, target_product: dict | None) -> dict:
+def _public_gift_entries(pr: dict) -> list:
+    """Chuan hoa gift entries (multi-gift giftItems, fallback scalar field cu)."""
+    items = pr.get("giftItems")
+    if isinstance(items, list) and items:
+        return [
+            {
+                "productId": str(g.get("productId")) if g.get("productId") is not None else None,
+                "code": g.get("code"),
+                "name": g.get("name"),
+                "basePrice": g.get("basePrice"),
+                "quantity": g.get("quantity") or 1,
+            }
+            for g in items
+            if isinstance(g, dict) and g.get("productId")
+        ]
+    if pr.get("giftProductId"):
+        return [{
+            "productId": str(pr.get("giftProductId")),
+            "code": pr.get("giftProductCode"),
+            "name": pr.get("giftProductName"),
+            "basePrice": pr.get("giftProductBasePrice"),
+            "quantity": pr.get("giftQuantity") or 1,
+        }]
+    return []
+
+
+def _public_promotion(pr: dict, target_product: dict | None,
+                      gift_products: list | None = None) -> dict:
     """Whitelist promotion cho hien thi; cat toan bo kiotViet*/internal."""
     return {
         "id": pr.get("id"),
@@ -137,6 +173,13 @@ def _public_promotion(pr: dict, target_product: dict | None) -> dict:
         "giftQuantity": pr.get("giftQuantity"),
         "giftProductId": pr.get("giftProductId"),
         "giftProductName": pr.get("giftProductName"),
+        "giftProductCode": pr.get("giftProductCode"),
+        "giftProductBasePrice": pr.get("giftProductBasePrice"),
+        "giftItems": _public_gift_entries(pr),
+        "giftProducts": gift_products or [],
+        "fromDate": pr.get("fromDate"),
+        "toDate": pr.get("toDate"),
+        "priority": pr.get("priority"),
         "targetProductId": pr.get("targetProductId"),
         "targetProductName": pr.get("targetProductName"),
         "targetProduct": target_product,
@@ -423,6 +466,56 @@ def create_firebase_public_bp(
             "hasMore": (offset + len(page)) < total,
         })
 
+    @bp.route("/categories", methods=["GET"])
+    @handle_api_errors
+    def public_categories():
+        """Danh muc cho DatHang - KHONG goi thang KiotViet o request cua khach.
+
+        `/api/kiotviet/categories` phu thuoc token KiotViet: token het han -> 502 -> FE
+        nhan [] va mat sach thanh danh muc (loi da xay ra that). O day:
+          - Ten danh muc: `product_service.read_categories()` (KiotViet -> snapshot Firestore).
+          - Danh muc duoc hien: chi nhung CategoryId THUC SU con san pham ban duoc
+            (bam vao khong bi trang rong), tru danh muc an.
+          - Thieu ten trong snapshot thi lay `CategoryName` tren chinh product.
+        """
+        names: dict = {}
+        for cat in product_service.read_categories():
+            try:
+                names[int(cat.get("Id"))] = {
+                    "Name": (cat.get("Name") or "").strip(),
+                    "Path": cat.get("Path") or "",
+                }
+            except (TypeError, ValueError):
+                continue
+
+        active_ids: dict = {}
+        for prod in product_service.read_all_products():
+            if not _is_orderable(prod):
+                continue
+            cid = prod.get("CategoryId")
+            try:
+                cid = int(cid)
+            except (TypeError, ValueError):
+                continue
+            if cid in _HIDDEN_CATEGORY_IDS:
+                continue
+            active_ids.setdefault(cid, (prod.get("CategoryName") or "").strip())
+
+        result = []
+        for cid, product_name in active_ids.items():
+            known = names.get(cid) or {}
+            name = known.get("Name") or product_name
+            if not name:
+                continue  # khong biet ten -> khong hien chip trong
+            result.append({
+                "Id": cid,
+                "Name": name,
+                "Path": known.get("Path") or _category_path(name),
+            })
+
+        result.sort(key=lambda c: c["Name"])
+        return jsonify(result)
+
     @bp.route("/products/by-category/<int:category_id>", methods=["GET"])
     @handle_api_errors
     def public_by_category(category_id: int):
@@ -461,14 +554,28 @@ def create_firebase_public_bp(
     def public_active_promotions():
         promos = promotion_service.read_active_promotions()
         result = []
+        product_cache: dict = {}
+
+        def _resolve(product_id) -> dict | None:
+            key = str(product_id)
+            if key not in product_cache:
+                product = product_service.read_product(key)
+                product_cache[key] = _public_product(product) if product else None
+            return product_cache[key]
+
         for pr in promos:
             target_product = None
             pid = pr.get("targetProductId")
             if pid:
-                product = product_service.read_product(str(pid))
-                if product:
-                    target_product = _public_product(product)
-            result.append(_public_promotion(pr, target_product))
+                target_product = _resolve(pid)
+
+            gift_products = []
+            for entry in _public_gift_entries(pr):
+                gp = _resolve(entry["productId"])
+                if gp:
+                    gift_products.append({**gp, "GiftQuantity": entry.get("quantity") or 1})
+
+            result.append(_public_promotion(pr, target_product, gift_products))
         return jsonify(result)
 
     @bp.route("/orders/<order_id>", methods=["GET"])

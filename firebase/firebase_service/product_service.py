@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 import json
 import requests
 from FromKiotViet.get_authorization import get_token
+from FromKiotViet.get_category import get_category
 from Utility.get_env import LatestBranchId, retailer
 import hashlib
 from firebase.firebase_hanghoa.product_class import Product
@@ -95,6 +96,54 @@ class FirestoreProductService:
             return False
         is_deleted = cls._coerce_bool(record.get("isDeleted"), False)
         return not is_deleted
+
+    CATEGORIES_CACHE_KEY = "categories_list"
+    CATEGORIES_TTL = 21600  # 6h - danh muc it thay doi
+    CATEGORIES_DOC = "categories"
+    CONFIG_COLLECTION = "app_config"
+
+    def read_categories(self) -> List[Dict]:
+        """Danh sach danh muc [{Id, Name, Path}].
+
+        Uu tien KiotViet (nguon chuan) va LUU SNAPSHOT xuong Firestore. Khi token KiotViet
+        het han (`get_token()` tra None -> get_category() = None) thi doc lai snapshot cu,
+        thay vi tra rong lam FE mat sach thanh danh muc.
+        """
+        if self.cache.has(self.CATEGORIES_CACHE_KEY):
+            return self.cache.get(self.CATEGORIES_CACHE_KEY)
+
+        categories = None
+        try:
+            categories = get_category()
+        except Exception as e:
+            print(f"[read_categories] KiotViet error: {e}")
+
+        if categories:
+            self._save_categories_snapshot(categories)
+        else:
+            categories = self._read_categories_snapshot()
+            print(f"[read_categories] KiotViet unavailable -> snapshot ({len(categories)} muc)")
+
+        self.cache.set(self.CATEGORIES_CACHE_KEY, categories, ttl=self.CATEGORIES_TTL)
+        return categories
+
+    def _save_categories_snapshot(self, categories: List[Dict]) -> None:
+        try:
+            db.collection(self.CONFIG_COLLECTION).document(self.CATEGORIES_DOC).set({
+                "items": categories,
+                "updatedAt": datetime.now().isoformat(),
+            })
+        except Exception as e:
+            print(f"[read_categories] Save snapshot failed: {e}")
+
+    def _read_categories_snapshot(self) -> List[Dict]:
+        try:
+            doc = db.collection(self.CONFIG_COLLECTION).document(self.CATEGORIES_DOC).get()
+            if doc.exists:
+                return (doc.to_dict() or {}).get("items") or []
+        except Exception as e:
+            print(f"[read_categories] Read snapshot failed: {e}")
+        return []
 
     def read_all_products(self, include_inactive: bool = False, include_deleted: bool = False):
         """Read products from Firestore."""
