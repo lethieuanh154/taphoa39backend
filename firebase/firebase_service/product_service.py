@@ -31,6 +31,11 @@ COLLECTION_NAME = "products"
 
 # Cache TTL: 1 giờ cho tất cả product cache
 CACHE_TTL = 3600
+# Duyet collection products theo trang. Mot query stream cho ca collection bi Firestore
+# cat giua chung: 503 "Query timed out. Please try either limiting the entities scanned".
+PRODUCT_PAGE_SIZE = 1000
+PRODUCT_PAGE_TIMEOUT = 30
+PRODUCT_PAGE_RETRIES = 2
 CACHE_TTL_CLONE_STOCK = 3600
 
 # Sử dụng init_firestore thay vì khởi tạo trực tiếp
@@ -168,13 +173,51 @@ class FirestoreProductService:
             print(f"[read_categories] Read snapshot failed: {e}")
         return []
 
+    def _stream_all_product_docs(self, page_size: int = PRODUCT_PAGE_SIZE):
+        """Duyet TOAN BO collection products theo trang, yield DocumentSnapshot.
+
+        Vi sao khong dung thang `products_ref.stream()`: mot query cho ca collection chay
+        qua lau, Firestore cat bang `503 Query timed out. Please try either limiting the
+        entities scanned` (da xay ra tren prod 02/09/2026 - hong warmup luc boot roi keo
+        sap /api/public/*). Chia trang bang `order_by("__name__") + start_after` nen moi
+        query deu ngan; moi trang co `timeout=` nen thread gunicorn khong bi giu vo han.
+
+        Trang loi vinh vien -> RAISE (khong nuot). Caller phai KHONG cache ket qua dang do,
+        neu khong se cache thieu san pham ma khong ai biet.
+        """
+        last_doc = None
+        while True:
+            query = self.products_ref.order_by("__name__").limit(page_size)
+            if last_doc is not None:
+                query = query.start_after(last_doc)
+
+            page = None
+            for attempt in range(PRODUCT_PAGE_RETRIES + 1):
+                try:
+                    page = list(query.stream(timeout=PRODUCT_PAGE_TIMEOUT))
+                    break
+                except Exception as e:
+                    if attempt >= PRODUCT_PAGE_RETRIES:
+                        after = getattr(last_doc, "id", "dau collection")
+                        print(f"❌ [ProductStream] Trang sau {after} that bai sau {attempt + 1} lan: {e}")
+                        raise
+                    print(f"⚠️ [ProductStream] Retry trang lan {attempt + 1}: {e}")
+
+            if not page:
+                return
+            for doc in page:
+                yield doc
+            if len(page) < page_size:
+                return
+            last_doc = page[-1]
+
     def read_all_products(self, include_inactive: bool = False, include_deleted: bool = False):
         """Read products from Firestore."""
         cache_key = f"all_products:inactive={include_inactive}:deleted={include_deleted}"
         if self.cache.has(cache_key):
             return self.cache.get(cache_key)
 
-        docs = self.products_ref.stream()
+        docs = self._stream_all_product_docs()
         result = []
         for doc in docs:
             data = doc.to_dict() or {}
@@ -989,7 +1032,7 @@ class FirestoreProductService:
         clones_to_update = []
         try:
             # Quét tất cả sản phẩm để tìm clones cần cập nhật
-            all_docs = self.products_ref.stream()
+            all_docs = self._stream_all_product_docs()
 
             for doc in all_docs:
                 clone_data = doc.to_dict()
@@ -1055,7 +1098,7 @@ class FirestoreProductService:
 
     def fetch_firestore_items(self):
         print("Đang tải dữ liệu từ Firestore...")
-        docs = self.products_ref.stream()
+        docs = self._stream_all_product_docs()
         firestore_items = {}
         for doc in docs:
             data = doc.to_dict()
@@ -1368,7 +1411,7 @@ class FirestoreProductService:
         """Đọc TẤT CẢ products trực tiếp từ Firestore, KHÔNG dùng cache."""
         print(f"🔄 read_all_products_fresh (include_inactive={include_inactive}, include_deleted={include_deleted})")
 
-        docs = self.products_ref.stream()
+        docs = self._stream_all_product_docs()
         result = []
 
         for doc in docs:
