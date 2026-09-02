@@ -469,52 +469,45 @@ def create_firebase_public_bp(
     @bp.route("/categories", methods=["GET"])
     @handle_api_errors
     def public_categories():
-        """Danh muc cho DatHang - KHONG goi thang KiotViet o request cua khach.
+        """Danh muc cho DatHang.
 
-        `/api/kiotviet/categories` phu thuoc token KiotViet: token het han -> 502 -> FE
-        nhan [] va mat sach thanh danh muc (loi da xay ra that). O day:
-          - Ten danh muc: `product_service.read_categories()` (KiotViet -> snapshot Firestore).
-          - Danh muc duoc hien: chi nhung CategoryId THUC SU con san pham ban duoc
-            (bam vao khong bi trang rong), tru danh muc an.
-          - Thieu ten trong snapshot thi lay `CategoryName` tren chinh product.
+        KHONG goi KiotViet va KHONG stream collection products o day: ca hai deu tung lam
+        request treo -> nginx 504 (KiotViet la HTTP ra ngoai; `read_all_products()` da 503
+        "Query timed out" tren prod). Ten danh muc lay tu snapshot Firestore; phan loc
+        "con hang" chi ap dung khi cache products SAN CO, khong bao gio keo them full scan.
         """
-        names: dict = {}
+        categories = []
         for cat in product_service.read_categories():
             try:
-                names[int(cat.get("Id"))] = {
-                    "Name": (cat.get("Name") or "").strip(),
-                    "Path": cat.get("Path") or "",
-                }
+                cid = int(cat.get("Id"))
             except (TypeError, ValueError):
                 continue
-
-        active_ids: dict = {}
-        for prod in product_service.read_all_products():
-            if not _is_orderable(prod):
+            name = (cat.get("Name") or "").strip()
+            if not name or cid in _HIDDEN_CATEGORY_IDS:
                 continue
-            cid = prod.get("CategoryId")
-            try:
-                cid = int(cid)
-            except (TypeError, ValueError):
-                continue
-            if cid in _HIDDEN_CATEGORY_IDS:
-                continue
-            active_ids.setdefault(cid, (prod.get("CategoryName") or "").strip())
-
-        result = []
-        for cid, product_name in active_ids.items():
-            known = names.get(cid) or {}
-            name = known.get("Name") or product_name
-            if not name:
-                continue  # khong biet ten -> khong hien chip trong
-            result.append({
+            categories.append({
                 "Id": cid,
                 "Name": name,
-                "Path": known.get("Path") or _category_path(name),
+                "Path": cat.get("Path") or _category_path(name),
             })
 
-        result.sort(key=lambda c: c["Name"])
-        return jsonify(result)
+        # Loc danh muc khong con hang - CHI khi cache products dang am, tranh full scan
+        cached_products = product_service.get_cached_all_products()
+        if cached_products:
+            active_ids = set()
+            for prod in cached_products:
+                if not _is_orderable(prod):
+                    continue
+                try:
+                    active_ids.add(int(prod.get("CategoryId")))
+                except (TypeError, ValueError):
+                    continue
+            filtered = [c for c in categories if c["Id"] in active_ids]
+            if filtered:
+                categories = filtered
+
+        categories.sort(key=lambda c: c["Name"])
+        return jsonify(categories)
 
     @bp.route("/products/by-category/<int:category_id>", methods=["GET"])
     @handle_api_errors

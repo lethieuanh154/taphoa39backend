@@ -160,6 +160,11 @@ def _warmup_product_cache(product_service):
             print(f"🔄 [CacheRefresh] Refreshed {len(products)} products in {elapsed:.0f}ms")
         except Exception as e:
             print(f"❌ [CacheRefresh] Failed: {e}")
+        # Danh muc: goi KiotViet o thread nen, KHONG bao gio trong request khach
+        try:
+            product_service.refresh_categories_from_kiotviet()
+        except Exception as e:
+            print(f"❌ [CacheRefresh] Categories failed: {e}")
 
     def _warmup_and_schedule():
         # Initial warmup
@@ -170,6 +175,11 @@ def _warmup_product_cache(product_service):
             print(f"🔥 [Warmup] Product cache loaded: {len(products)} products in {elapsed:.0f}ms")
         except Exception as e:
             print(f"❌ [Warmup] Product cache warmup failed: {e}")
+
+        try:
+            product_service.refresh_categories_from_kiotviet()
+        except Exception as e:
+            print(f"❌ [Warmup] Categories warmup failed: {e}")
 
         # Schedule periodic refresh
         while True:

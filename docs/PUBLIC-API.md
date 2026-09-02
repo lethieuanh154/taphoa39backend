@@ -17,15 +17,17 @@ Che giấu dữ liệu nội bộ khỏi khách hàng (F12/Network) và chống 
 | GET | `/api/public/orders/<id>` | `/api/firebase/orders/<id>` (giờ đã GATE admin) |
 | POST | `/api/public/add_order` | `/api/firebase/add_order` |
 
-## `GET /api/public/categories` — danh mục có snapshot dự phòng
-`/api/kiotviet/categories` gọi thẳng KiotViet: sai/hết credentials → **502** → DatHang nhận `[]` và **mất sạch thanh danh mục** (lỗi đã xảy ra thật).
+## `GET /api/public/categories` — snapshot, KHÔNG chạm KiotViet/full scan
+`/api/kiotviet/categories` gọi thẳng KiotViet: sai/hết credentials → **502** → DatHang nhận `[]` và **mất sạch thanh danh mục** (đã xảy ra thật).
 
-Endpoint mới ghép 2 nguồn:
-- **Tên danh mục** ← `product_service.read_categories()`: KiotViet (`get_category()`, cache 6h) → thành công thì **ghi snapshot xuống Firestore `app_config/categories`**; thất bại thì đọc lại snapshot cũ. Nghĩa là chỉ cần KiotViet sống 1 lần là các lần chết sau đó DatHang vẫn có danh mục.
-- **Danh mục được hiện** ← `CategoryId` của sản phẩm `_is_orderable` trong `read_all_products()`, trừ `_HIDDEN_CATEGORY_IDS`. Danh mục không còn hàng thì không hiện (bấm vào không ra trang rỗng).
-- Thiếu tên trong snapshot → lấy `CategoryName` trên chính product. Vẫn không có tên → bỏ qua (không hiện chip trống).
+**Hai thứ TUYỆT ĐỐI không được làm trong endpoint này** (cả hai đều đã gây 504 trên prod 02/09/2026):
+1. **Gọi KiotViet** — HTTP ra ngoài, chậm/treo là giữ luôn thread gunicorn (`--workers=1`) → nginx 504 lan sang mọi API khác. KiotViet chỉ được gọi trong `refresh_categories_from_kiotviet()`, chạy ở thread nền (warmup + CacheRefresh 55 phút).
+2. **`read_all_products()`** — stream cả collection, trên prod trả `503 Query timed out. Please try either limiting the entities scanned`.
 
-`Path` sinh bằng `_category_path()` (`unidecode`): `"GIA VỊ - ĐỒ KHÔ"` → `GIA_VI_DO_KHO`.
+Luồng thực tế:
+- **Tên danh mục** ← `product_service.read_categories()`: cache RAM (6h) → snapshot Firestore `app_config/categories` → KiotViet **chỉ khi chưa từng có snapshot** (lần chạy đầu).
+- **Lọc "còn hàng"** ← chỉ áp dụng khi `get_cached_all_products()` trả về cache đang ấm; cache nguội thì bỏ qua bước lọc chứ **không** kéo thêm full scan. Lọc ra rỗng thì giữ nguyên danh sách gốc (thà thừa còn hơn mất thanh danh mục).
+- Trừ `_HIDDEN_CATEGORY_IDS`, sort theo tên, `Path` sinh bằng `_category_path()` (`unidecode`): `"GIA VỊ - ĐỒ KHÔ"` → `GIA_VI_DO_KHO`.
 
 ## Whitelist sản phẩm (`_public_product`) — đã làm gọn
 GIỮ (14 field FE thực dùng): `Id, Code, Name, FullName, Image, BasePrice, Unit, Description, CategoryId, CategoryName, ConversionValue` (product-detail), `MasterUnitId` (GroupService grouping), `NormalizedName` (offline search có dấu), `OnHand` (đã gộp clone).

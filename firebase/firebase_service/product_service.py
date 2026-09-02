@@ -103,29 +103,52 @@ class FirestoreProductService:
     CONFIG_COLLECTION = "app_config"
 
     def read_categories(self) -> List[Dict]:
-        """Danh sach danh muc [{Id, Name, Path}].
+        """Danh sach danh muc [{Id, Name, Path}] - DUONG PHUC VU REQUEST KHACH.
 
-        Uu tien KiotViet (nguon chuan) va LUU SNAPSHOT xuong Firestore. Khi token KiotViet
-        het han (`get_token()` tra None -> get_category() = None) thi doc lai snapshot cu,
-        thay vi tra rong lam FE mat sach thanh danh muc.
+        TUYET DOI khong goi KiotViet o day: `get_category()` la HTTP ra ngoai, cham/treo
+        thi giu luon thread gunicorn (--workers=1) -> nginx 504 ca cac API khac. KiotViet
+        chi duoc goi trong `refresh_categories_from_kiotviet()` chay o thread nen.
+        Thu tu: cache RAM -> snapshot Firestore (1 doc, co deadline) -> KiotViet (chi khi
+        chua he co snapshot, tuc lan chay dau tien).
         """
         if self.cache.has(self.CATEGORIES_CACHE_KEY):
             return self.cache.get(self.CATEGORIES_CACHE_KEY)
 
-        categories = None
-        try:
-            categories = get_category()
-        except Exception as e:
-            print(f"[read_categories] KiotViet error: {e}")
-
-        if categories:
-            self._save_categories_snapshot(categories)
-        else:
-            categories = self._read_categories_snapshot()
-            print(f"[read_categories] KiotViet unavailable -> snapshot ({len(categories)} muc)")
+        categories = self._read_categories_snapshot()
+        if not categories:
+            # Bootstrap: chua co snapshot nao -> danh phai goi KiotViet 1 lan
+            categories = self.refresh_categories_from_kiotviet() or []
 
         self.cache.set(self.CATEGORIES_CACHE_KEY, categories, ttl=self.CATEGORIES_TTL)
         return categories
+
+    def refresh_categories_from_kiotviet(self) -> Optional[List[Dict]]:
+        """Lay danh muc moi tu KiotViet roi ghi snapshot. Goi tu thread nen, KHONG tu request."""
+        try:
+            categories = get_category()
+        except Exception as e:
+            print(f"[Categories] KiotViet error: {e}")
+            return None
+
+        if not categories:
+            print("[Categories] KiotViet khong tra du lieu -> giu snapshot cu")
+            return None
+
+        self._save_categories_snapshot(categories)
+        self.cache.set(self.CATEGORIES_CACHE_KEY, categories, ttl=self.CATEGORIES_TTL)
+        print(f"[Categories] Refreshed {len(categories)} danh muc tu KiotViet")
+        return categories
+
+    def get_cached_all_products(self) -> Optional[List[Dict]]:
+        """Tra products dang nam trong cache, KHONG bao gio tu di fetch.
+
+        `read_all_products()` stream ca collection -> tren prod da tung 503 "Query timed
+        out". Endpoint public chi duoc dung ban cache san, khong duoc keo them full scan.
+        """
+        cache_key = "all_products:inactive=False:deleted=False"
+        if self.cache.has(cache_key):
+            return self.cache.get(cache_key)
+        return None
 
     def _save_categories_snapshot(self, categories: List[Dict]) -> None:
         try:
