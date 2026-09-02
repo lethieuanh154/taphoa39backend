@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+import uuid
+from datetime import datetime, timezone
 
 from flask import Blueprint, jsonify, request
 from google.api_core.exceptions import ResourceExhausted
@@ -374,6 +376,92 @@ def create_firebase_customers_bp(customer_service, socketio) -> Blueprint:
 
         status_code = 404 if result.get("reason") == "not_found" else 400
         return jsonify(result), status_code
+
+    def _read_customer_doc(customer_id: str):
+        """Doc truc tiep customers/<Id>, tranh full scan read_all_customers()."""
+        doc_id = str(customer_id).strip()
+        if not doc_id:
+            return None
+        snapshot = customer_service.customers_ref.document(doc_id).get()
+        if not snapshot.exists:
+            return None
+        return snapshot.to_dict() or {}
+
+    def _sorted_notes(raw) -> list:
+        notes = [n for n in (raw or []) if isinstance(n, dict)]
+        notes.sort(key=lambda n: str(n.get("createdAt") or ""), reverse=True)
+        return notes
+
+    @bp.route("/customers/<customer_id>/notes", methods=["GET"])
+    @handle_api_errors
+    def get_customer_notes(customer_id: str):
+        data = _read_customer_doc(customer_id)
+        if data is None:
+            return jsonify({"status": "error", "message": "Customer not found"}), 404
+        return jsonify({"status": "ok", "notes": _sorted_notes(data.get("GiftNotes"))})
+
+    @bp.route("/customers/<customer_id>/notes", methods=["POST"])
+    @handle_api_errors
+    def add_customer_note(customer_id: str):
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            return jsonify({"status": "error", "message": "JSON body is required"}), 400
+
+        text = (payload.get("text") or "").strip()
+        if not text:
+            return jsonify({"status": "error", "message": "text is required"}), 400
+        text = text[:500]
+
+        data = _read_customer_doc(customer_id)
+        if data is None:
+            return jsonify({"status": "error", "message": "Customer not found"}), 404
+
+        note = {
+            "id": uuid.uuid4().hex,
+            "text": text,
+            "createdAt": datetime.now(timezone.utc).isoformat(),
+            "createdBy": (payload.get("createdBy") or "").strip(),
+        }
+        notes = [n for n in (data.get("GiftNotes") or []) if isinstance(n, dict)]
+        notes.append(note)
+
+        result = customer_service.update_customer(str(customer_id), {"GiftNotes": notes})
+        if not result.get("updated"):
+            status_code = 404 if result.get("reason") == "not_found" else 400
+            return jsonify(result), status_code
+
+        updated_customer = dict(data)
+        updated_customer["GiftNotes"] = notes
+        broadcast_customer_updates(socketio, [
+            {"applied": True, "customer": updated_customer}
+        ])
+
+        return jsonify({"status": "ok", "note": note, "notes": _sorted_notes(notes)})
+
+    @bp.route("/customers/<customer_id>/notes/<note_id>", methods=["DELETE"])
+    @handle_api_errors
+    def delete_customer_note(customer_id: str, note_id: str):
+        data = _read_customer_doc(customer_id)
+        if data is None:
+            return jsonify({"status": "error", "message": "Customer not found"}), 404
+
+        notes = [n for n in (data.get("GiftNotes") or []) if isinstance(n, dict)]
+        remaining = [n for n in notes if str(n.get("id")) != str(note_id)]
+        if len(remaining) == len(notes):
+            return jsonify({"status": "error", "message": "Note not found"}), 404
+
+        result = customer_service.update_customer(str(customer_id), {"GiftNotes": remaining})
+        if not result.get("updated"):
+            status_code = 404 if result.get("reason") == "not_found" else 400
+            return jsonify(result), status_code
+
+        updated_customer = dict(data)
+        updated_customer["GiftNotes"] = remaining
+        broadcast_customer_updates(socketio, [
+            {"applied": True, "customer": updated_customer}
+        ])
+
+        return jsonify({"status": "ok", "notes": _sorted_notes(remaining)})
 
     @bp.route("/customers/<customer_id>/clear_debt", methods=["POST"])
     @handle_api_errors

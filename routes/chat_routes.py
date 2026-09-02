@@ -1,10 +1,59 @@
 """REST API routes for chat messages."""
 from __future__ import annotations
+
+import base64
+import hashlib
+import hmac
+import os
 import time
 
 import bcrypt
 from flask import Blueprint, jsonify, request
 from routes.shared import handle_api_errors
+
+# Token phien khach hang (app DatHang) - ky HMAC, phat khi verify-identity thanh cong.
+# Muc dich: /api/chat/customer-notes chi tra du lieu cho nguoi DA dang nhap dung mat khau,
+# thay vi ai biet so dien thoai cung doc duoc.
+_CUSTOMER_TOKEN_TTL = 30 * 24 * 3600
+
+
+def _customer_token_secret() -> str:
+    return (
+        os.getenv("CUSTOMER_TOKEN_SECRET")
+        or os.getenv("GOOGLE_CLIENT_SECRET")
+        or os.getenv("ZALO_APP_SECRET")
+        or ""
+    ).strip()
+
+
+def issue_customer_token(subject: str) -> str:
+    """Token dang '<base64(subject|exp)>.<hmac>'. Subject = Code khach hang."""
+    secret = _customer_token_secret()
+    if not secret or not subject:
+        return ""
+    exp = int(time.time()) + _CUSTOMER_TOKEN_TTL
+    raw = base64.urlsafe_b64encode(f"{subject}|{exp}".encode("utf-8")).decode("ascii").rstrip("=")
+    sig = hmac.new(secret.encode("utf-8"), raw.encode("ascii"), hashlib.sha256).hexdigest()[:32]
+    return f"{raw}.{sig}"
+
+
+def verify_customer_token(token: str, subject: str) -> bool:
+    secret = _customer_token_secret()
+    if not secret or not token or not subject:
+        return False
+    try:
+        raw, sig = token.split(".", 1)
+        expected = hmac.new(secret.encode("utf-8"), raw.encode("ascii"), hashlib.sha256).hexdigest()[:32]
+        if not hmac.compare_digest(sig, expected):
+            return False
+        padded = raw + "=" * (-len(raw) % 4)
+        payload = base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8")
+        token_subject, exp = payload.rsplit("|", 1)
+        if int(exp) < int(time.time()):
+            return False
+        return token_subject == subject
+    except Exception:
+        return False
 
 
 def create_chat_routes_bp(chat_service, socketio, customer_service=None):
@@ -73,7 +122,7 @@ def create_chat_routes_bp(chat_service, socketio, customer_service=None):
                 return jsonify({"verified": False, "requirePassword": True, "name": name, "identity": identity_val, "phone": phone_val, "code": code}), 200
             if not ok:
                 return jsonify({"verified": False, "message": "Sai mật khẩu"}), 401
-            return jsonify({"verified": True, "name": name, "identity": identity_val, "phone": phone_val, "code": code, "type": type_val, "giftPoint": gift_point, "hasPassword": has_pw})
+            return jsonify({"verified": True, "name": name, "identity": identity_val, "phone": phone_val, "code": code, "type": type_val, "giftPoint": gift_point, "hasPassword": has_pw, "token": issue_customer_token(code or identity_val)})
 
         # Query by Code
         try:
@@ -200,6 +249,58 @@ def create_chat_routes_bp(chat_service, socketio, customer_service=None):
         doc_ref.update({"Password": hashed})
 
         return jsonify({"success": True, "message": "Đổi mật khẩu thành công"})
+
+    @bp.route("/customer-notes", methods=["POST"])
+    @handle_api_errors
+    def customer_notes():
+        """Danh sach ghi chu tang qua (GiftNotes) - nhan vien ghi tu BanHang /customers-page.
+        Bat buoc dang nhap: gui 'token' (phat boi verify-identity) hoac 'password' cua khach.
+        Khong lo createdBy cho app khach DatHang."""
+        data = request.get_json(silent=True) or {}
+        identity = (data.get("identity") or "").strip()
+        token = (data.get("token") or "").strip()
+        password = (data.get("password") or "").strip()
+
+        if not identity:
+            return jsonify({"notes": [], "message": "identity required"}), 400
+
+        if not customer_service:
+            return jsonify({"notes": []})
+
+        customer = None
+        for field in ("Code", "ContactNumber"):
+            try:
+                for doc in customer_service.customers_ref.where(field, "==", identity).limit(1).stream():
+                    customer = doc.to_dict() or {}
+                    break
+            except Exception as e:
+                print(f"[customer-notes] {field} query ERROR: {type(e).__name__}: {e}")
+            if customer is not None:
+                break
+
+        if customer is None:
+            return jsonify({"notes": [], "message": "Không tìm thấy khách hàng"}), 404
+
+        subject = (customer.get("Code") or "").strip() or identity
+        authorized = verify_customer_token(token, subject)
+
+        if not authorized and password:
+            stored_hash = customer.get("Password", "")
+            if stored_hash:
+                try:
+                    authorized = bcrypt.checkpw(password.encode("utf-8"), stored_hash.encode("utf-8"))
+                except Exception:
+                    authorized = False
+
+        if not authorized:
+            return jsonify({"notes": [], "message": "Vui lòng đăng nhập lại để xem lịch sử tặng quà"}), 401
+
+        notes = [n for n in (customer.get("GiftNotes") or []) if isinstance(n, dict)]
+        notes.sort(key=lambda n: str(n.get("createdAt") or ""), reverse=True)
+        return jsonify({"notes": [
+            {"id": n.get("id"), "text": n.get("text") or "", "createdAt": n.get("createdAt")}
+            for n in notes
+        ]})
 
     @bp.route("/messages/<conversation_id>", methods=["GET"])
     @handle_api_errors
