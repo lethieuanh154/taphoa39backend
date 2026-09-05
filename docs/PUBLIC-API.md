@@ -45,9 +45,9 @@ Sync toàn bộ dùng `resource/fetch?resourceName=Products`, field `Image` tr�
 
 Backfill: `python scripts/fix_variant_images_from_kiotviet.py [--dry-run] [--master <id>] [--limit N] [--yes]`. Script gom products theo `MasterProductId`, **chỉ** gọi API cho nhóm có ≥2 SP trùng URL `Image` (1 request/nhóm), rồi ghi field **`ImageVariant`**.
 
-Vì sao không ghi đè thẳng `Image`: `sync_products_from_kiotviet()` ghi bằng `batch.set(..., merge=True)` với payload thô từ KiotViet → `Image` sẽ bị ảnh master ghi đè lại ở lần sync sau, còn `ImageVariant` không nằm trong payload nên sống sót.
+Vì sao dùng field riêng thay vì ghi đè thẳng `Image`: `sync_products_from_kiotviet()` ghi bằng `batch.set(..., merge=True)` với payload thô từ KiotViet → `Image` sẽ bị ảnh master ghi đè lại ở lần sync sau. `ImageVariant` không nằm trong payload nên sống sót, và **sync đã được patch để tôn trọng nó**: bước 1 `select([... , "ImageVariant"])` dựng map `variant_images`, bước 3 gán `product_to_store["Image"] = variant_images[doc_id]` **sau** khi tính checksum (checksum vẫn theo dữ liệu KiotViet → không ghi lại vô hạn). Clone tự nhận ảnh đúng qua `_sync_clones_with_originals()` vì `Image` nằm trong `SYNC_FIELDS`.
 
-Chưa xử lý: BanHang/Management đọc qua endpoint nội bộ (`/api/firebase/products/*`) nên vẫn thấy ảnh master.
+Giới hạn còn lại: doc có checksum không đổi thì sync bỏ qua, `Image` giữ nguyên ảnh master cũ → BanHang/Management (đọc doc thô qua `/api/firebase/products/*`) vẫn thấy sai cho tới lần sync có thay đổi. DatHang không bị vì `_public_product` ưu tiên `ImageVariant`.
 
 ## Whitelist khuyến mãi (`_public_promotion`)
 GIỮ: `id, type, name, hasGift, hasPercentDiscount, hasFixedDiscount, discountPercent, discountAmount, minQuantity, giftQuantity, giftProductId, giftProductName, giftProductCode, giftProductBasePrice, giftItems, giftProducts, fromDate, toDate, priority, targetProductId, targetProductName, targetProduct` (đã whitelist).

@@ -800,14 +800,21 @@ class FirestoreProductService:
             existing_checksums = {}
             existing_ids = set()
             clone_product_ids = set()  # ✅ NEW: Track clone products
+            variant_images = {}  # ✅ NEW: doc_id -> ImageVariant (anh rieng tung bien the)
 
-            for doc in self.products_ref.select(["SyncChecksum", "isClone"]).stream():
+            for doc in self.products_ref.select(["SyncChecksum", "isClone", "ImageVariant"]).stream():
                 data = doc.to_dict() or {}
                 existing_checksums[doc.id] = data.get("SyncChecksum")
                 existing_ids.add(doc.id)
                 # ✅ NEW: Track if this product is a clone
                 if data.get("isClone") is True or data.get("isClone") == "true":
                     clone_product_ids.add(doc.id)
+                # ✅ NEW: API sync (resource/fetch) tra `Image` cap MASTER PRODUCT -> moi bien the
+                # trong nhom deu trung mot anh. Anh rieng tung bien the duoc backfill vao
+                # `ImageVariant` (scripts/fix_variant_images_from_kiotviet.py) va uu tien hon.
+                image_variant = data.get("ImageVariant")
+                if image_variant:
+                    variant_images[doc.id] = image_variant
 
             checksum_time = time.time() - checksum_start
             print(f"  ✅ Đã lấy {len(existing_checksums)} checksums trong {checksum_time:.2f}s")
@@ -886,6 +893,12 @@ class FirestoreProductService:
                     if "OnHand" in product_to_store:
                         product_to_store.pop("OnHand", None)
                     print(f"  ⏭️ Clone product {doc_id}: Skipping OnHand sync (preserving OnHandNV)")
+
+                # ✅ NEW: Giu anh rieng cua bien the, khong cho anh master tu KiotViet ghi de.
+                # Dat SAU khi tinh checksum (checksum van theo du lieu KiotViet) nen khong gay
+                # ghi lai vo han o lan sync sau.
+                if doc_id in variant_images:
+                    product_to_store["Image"] = variant_images[doc_id]
 
                 to_upsert.append((doc_id, product_to_store))
 
