@@ -36,6 +36,19 @@ CẮT: `Cost, OldCost, PackCost, _original*, OnHandNV, CloneOnHandNV (raw), Sync
 
 Lọc **server-side** (không để FE tự lọc bằng field nhạy cảm): bỏ clone / KM `(km)` Cost=0 / danh mục ẩn (`1440125, 1787413`) / deleted-inactive. **Gộp `CloneOnHandNV` vào `OnHand`** (ẩn cơ chế clone, vẫn báo đúng tồn kho).
 
+### Ảnh sản phẩm — `ImageVariant` ưu tiên hơn `Image`
+`"Image": p.get("ImageVariant") or p.get("Image")`.
+
+Sync toàn bộ dùng `resource/fetch?resourceName=Products`, field `Image` trả về là **ảnh cấp master product**, dùng chung cho mọi biến thể trong nhóm → nhiều SP khác mã vạch hiển thị **trùng một ảnh** trên DatHang. Ví dụ master `SPC004308` "Trà Tea plus 1L" gồm 3 mã vạch × 4 đơn vị = 12 biến thể, cả 12 doc cùng một URL ảnh.
+
+Ảnh riêng từng biến thể chỉ có ở `POST branchs/{branchId}/masterproducts?MasterProductId=...` — client mới: `FromKiotViet/get_master_product_variants.py` (`get_variants()`, `get_variant_images()`).
+
+Backfill: `python scripts/fix_variant_images_from_kiotviet.py [--dry-run] [--master <id>] [--limit N] [--yes]`. Script gom products theo `MasterProductId`, **chỉ** gọi API cho nhóm có ≥2 SP trùng URL `Image` (1 request/nhóm), rồi ghi field **`ImageVariant`**.
+
+Vì sao không ghi đè thẳng `Image`: `sync_products_from_kiotviet()` ghi bằng `batch.set(..., merge=True)` với payload thô từ KiotViet → `Image` sẽ bị ảnh master ghi đè lại ở lần sync sau, còn `ImageVariant` không nằm trong payload nên sống sót.
+
+Chưa xử lý: BanHang/Management đọc qua endpoint nội bộ (`/api/firebase/products/*`) nên vẫn thấy ảnh master.
+
 ## Whitelist khuyến mãi (`_public_promotion`)
 GIỮ: `id, type, name, hasGift, hasPercentDiscount, hasFixedDiscount, discountPercent, discountAmount, minQuantity, giftQuantity, giftProductId, giftProductName, giftProductCode, giftProductBasePrice, giftItems, giftProducts, fromDate, toDate, priority, targetProductId, targetProductName, targetProduct` (đã whitelist).
 CẮT toàn bộ `kiotViet*`, `createdDate/modifiedDate/isEnabled`, `targetProductCode`.

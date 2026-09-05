@@ -37,14 +37,17 @@ def _to_float(v) -> float:
 
 def _public_product(p: dict) -> dict:
     """Chi giu field khach hang duoc phep thay.
-    Gop ton kho clone vao OnHand; cat Cost/OnHandNV/sync/kiotViet noi bo."""
+    Gop ton kho clone vao OnHand; cat Cost/OnHandNV/sync/kiotViet noi bo.
+    Anh: uu tien `ImageVariant` (anh rieng tung bien the, do
+    scripts/fix_variant_images_from_kiotviet.py ghi) roi moi den `Image` - `Image` tu sync
+    KiotViet la anh cap MASTER nen moi bien the trong nhom deu trung nhau."""
     on_hand = _to_float(p.get("OnHand")) + _to_float(p.get("CloneOnHandNV"))
     return {
         "Id": p.get("Id"),
         "Code": p.get("Code"),
         "Name": p.get("Name"),
         "FullName": p.get("FullName"),
-        "Image": p.get("Image"),
+        "Image": p.get("ImageVariant") or p.get("Image"),
         "BasePrice": p.get("BasePrice"),
         "Unit": p.get("Unit"),
         "Description": p.get("Description") or "",
