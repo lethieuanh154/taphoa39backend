@@ -79,6 +79,25 @@ Product của target/gift resolve qua **cache dict trong 1 request** (`_resolve`
 
 Ràng buộc: `_STORE_LAT/_STORE_LNG`, tier ship, dòng phí ship (`Id 43370064 / Code SP170288`) phải khớp FE. Đơn nội bộ (BanHang/Management) vẫn qua `/api/firebase/add_order` cũ.
 
+## Cache sản phẩm — chống stampede (sửa 11/09/2026)
+
+`search` và `featured` đều đi qua `read_all_products()`. Cache hit ~5ms; cache **miss = full scan 13.4k doc, 14 query tuần tự, 18–20s**. Nên mọi thứ ở đây xoay quanh một luật: **cache không bao giờ được rỗng**.
+
+| Hàm (`firebase/firebase_service/product_service.py`) | Vai trò |
+|---|---|
+| `_build_all_products(include_inactive, include_deleted)` | Full scan thuần → `List[Dict]`. **Không đọc, không ghi cache.** Lỗi giữa chừng thì raise (không cache kết quả dang dở). |
+| `read_all_products(...)` | Đường phục vụ request. Cache hit → trả ngay. Miss → **single-flight**: 1 thread build, các thread khác chờ lock rồi dùng chung (double-check cache sau khi lấy được lock). |
+| `refresh_all_products_cache()` | Đường của scheduler (`_warmup_product_cache` trong `app.py`, 55 phút/lần). Build xong **rồi mới swap** vào cache, sau đó mới xoá các key dẫn xuất (`featured_products:*`, `products_by_category:*`, `clone_stock_map`). Fetch fail → raise, **cache cũ giữ nguyên**. |
+
+**Ba lỗi đã gây ra sự cố prod 11/09/2026** (API `search` treo 20s–3 phút):
+1. Scheduler `invalidate_all_product_caches()` **trước** khi fetch → 18–20s cache rỗng → mọi request khách tự kéo full scan riêng.
+2. Không có single-flight → N request đồng thời = N full scan song song trên `--workers=1` → đè nhau, `DEADLINE_EXCEEDED`, thời gian phình **18s → 96s → 234s → fail**.
+3. `query.stream(timeout=...)` **không truyền `retry=`** → firestore rơi vào nhánh `retry is DEFAULT`, đọc `gapic_callable._retry` (`query.py:264`) → `AttributeError: '_UnaryStreamMultiCallable' object has no attribute '_retry'` (google-cloud-firestore 2.20.2 + google-api-core 2.25.0). Lỗi này **che mất `DEADLINE_EXCEEDED` thật** và làm retry không bao giờ chạy.
+
+→ `PRODUCT_PAGE_RETRY` (`gapi_retry.Retry`) giờ được truyền tường minh vào `query.stream()`. **Không được bỏ `retry=`** khi đụng vào `_stream_all_product_docs()`.
+
+`invalidate_all_product_caches()` vẫn giữ (xoá thẳng, để cache rỗng) — **chỉ** dùng cho KiotViet full sync / cleanup batch, **không** dùng ở đường refresh định kỳ.
+
 ## CÒN MỞ (ngoài scope `firebase_public.py`)
 - **`/api/firebase/*` không auth**: ĐÃ FIX bằng admin-auth gate (`X-Id-Token`, `ENFORCE_ADMIN_AUTH`). Xem `ADMIN-AUTH.md`.
 - **`GET /api/firebase/orders/<id>` rò PII/totalCost**: ĐÃ FIX — endpoint full giờ gate admin; DatHang dùng `/api/public/orders/<id>` slim. (Residual nhỏ: nội dung đơn — tên món/giá — vẫn xem được nếu đoán ID; muốn kín hẳn thì token theo đơn.)

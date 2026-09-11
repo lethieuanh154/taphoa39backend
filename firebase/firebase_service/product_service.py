@@ -12,6 +12,9 @@ from firebase.firebase_hanghoa.product_class import Product
 from dateutil.parser import parse as parse_date
 from typing import Any, Dict, List, Optional, Set
 from datetime import datetime
+import threading
+from google.api_core import exceptions as gapi_exceptions
+from google.api_core import retry as gapi_retry
 from firebase.init_firebase import init_firestore
 
 load_dotenv()
@@ -36,6 +39,23 @@ CACHE_TTL = 3600
 PRODUCT_PAGE_SIZE = 1000
 PRODUCT_PAGE_TIMEOUT = 30
 PRODUCT_PAGE_RETRIES = 2
+# PHAI truyen retry= tuong minh cho query.stream(). Neu chi truyen timeout=, firestore
+# roi vao nhanh `retry is DEFAULT` -> doc `gapic_callable._retry` (query.py:264) ->
+# AttributeError: '_UnaryStreamMultiCallable' object has no attribute '_retry'
+# (google-cloud-firestore 2.20.2 + google-api-core 2.25.0). Loi nay che mat loi that
+# (DEADLINE_EXCEEDED) va lam retry KHONG BAO GIO chay -> prod 11/09/2026 fail ca refresh.
+PRODUCT_PAGE_RETRY = gapi_retry.Retry(
+    predicate=gapi_retry.if_exception_type(
+        gapi_exceptions.DeadlineExceeded,
+        gapi_exceptions.ServiceUnavailable,
+        gapi_exceptions.InternalServerError,
+        gapi_exceptions.Aborted,
+    ),
+    initial=1.0,
+    maximum=8.0,
+    multiplier=2.0,
+    timeout=PRODUCT_PAGE_TIMEOUT,
+)
 CACHE_TTL_CLONE_STOCK = 3600
 
 # Sử dụng init_firestore thay vì khởi tạo trực tiếp
@@ -53,6 +73,17 @@ class FirestoreProductService:
         """
         self.cache = cache
         self.products_ref = db.collection(COLLECTION_NAME)
+        # Single-flight: nhieu request cung miss 1 cache key chi duoc chay 1 full scan
+        self._build_locks: Dict[str, threading.Lock] = {}
+        self._build_locks_guard = threading.Lock()
+
+    def _get_build_lock(self, key: str) -> threading.Lock:
+        with self._build_locks_guard:
+            lock = self._build_locks.get(key)
+            if lock is None:
+                lock = threading.Lock()
+                self._build_locks[key] = lock
+            return lock
 
     @staticmethod
     def _normalize_string(s: str) -> str:
@@ -194,7 +225,7 @@ class FirestoreProductService:
             page = None
             for attempt in range(PRODUCT_PAGE_RETRIES + 1):
                 try:
-                    page = list(query.stream(timeout=PRODUCT_PAGE_TIMEOUT))
+                    page = list(query.stream(retry=PRODUCT_PAGE_RETRY, timeout=PRODUCT_PAGE_TIMEOUT))
                     break
                 except Exception as e:
                     if attempt >= PRODUCT_PAGE_RETRIES:
@@ -211,15 +242,14 @@ class FirestoreProductService:
                 return
             last_doc = page[-1]
 
-    def read_all_products(self, include_inactive: bool = False, include_deleted: bool = False):
-        """Read products from Firestore."""
-        cache_key = f"all_products:inactive={include_inactive}:deleted={include_deleted}"
-        if self.cache.has(cache_key):
-            return self.cache.get(cache_key)
+    def _build_all_products(self, include_inactive: bool = False, include_deleted: bool = False) -> List[Dict]:
+        """Full scan collection products -> list dict. KHONG doc, KHONG ghi cache.
 
-        docs = self._stream_all_product_docs()
+        Loi giua chung se RAISE (xem `_stream_all_product_docs`). Caller khong duoc cache
+        ket qua dang do, neu khong se cache thieu san pham ma khong ai biet.
+        """
         result = []
-        for doc in docs:
+        for doc in self._stream_all_product_docs():
             data = doc.to_dict() or {}
 
             is_active = self._coerce_bool(data.get("isActive"), True)
@@ -233,8 +263,52 @@ class FirestoreProductService:
             enriched = dict(data)
             result.append(enriched)
 
-        self.cache.set(cache_key, result, ttl=CACHE_TTL)
         return result
+
+    def read_all_products(self, include_inactive: bool = False, include_deleted: bool = False):
+        """Read products from Firestore.
+
+        Single-flight: cache miss -> chi 1 thread chay full scan, cac thread khac doi roi
+        dung chung ket qua. Truoc day N request dong thoi = N full scan song song (moi cai
+        14 query x 13k doc) tren gunicorn --workers=1 -> de nhau, DEADLINE_EXCEEDED, thoi
+        gian phinh 18s -> 234s (prod 11/09/2026).
+        """
+        cache_key = f"all_products:inactive={include_inactive}:deleted={include_deleted}"
+        if self.cache.has(cache_key):
+            return self.cache.get(cache_key)
+
+        with self._get_build_lock(cache_key):
+            # Double-check: thread khac co the vua build xong trong luc minh doi lock
+            if self.cache.has(cache_key):
+                return self.cache.get(cache_key)
+
+            result = self._build_all_products(include_inactive, include_deleted)
+            self.cache.set(cache_key, result, ttl=CACHE_TTL)
+            return result
+
+    def refresh_all_products_cache(self) -> List[Dict]:
+        """Build lai cache products cho scheduler - KHONG lam trong cache giua chung.
+
+        Truoc day scheduler goi `invalidate_all_product_caches()` ROI moi fetch: trong
+        18-20s do cache rong nen moi request khach tu keo full scan rieng (stampede).
+        Gio fetch xong moi swap -> cache luon co du lieu (cu hoac moi), khong bao gio rong.
+        Fetch that bai -> raise, cache cu duoc giu nguyen.
+        """
+        cache_key = "all_products:inactive=False:deleted=False"
+        with self._get_build_lock(cache_key):
+            fresh = self._build_all_products(include_inactive=False, include_deleted=False)
+            self.cache.set(cache_key, fresh, ttl=CACHE_TTL)
+
+        # Cac key dan xuat duoc build lai tu list tren (trong RAM, khong ton Firestore)
+        # -> chi xoa SAU khi da co data moi.
+        self.cache.invalidate("all_products")
+        self.cache.invalidate("all_products:inactive=True:deleted=False")
+        self.cache.invalidate("all_products:inactive=False:deleted=True")
+        self.cache.invalidate("all_products:inactive=True:deleted=True")
+        self.cache.invalidate("clone_stock_map")
+        self.cache.invalidate_prefix("featured_products:")
+        self.cache.invalidate_prefix("products_by_category:")
+        return fresh
 
     def read_product(self, product_id):
         if self.cache.has(product_id):

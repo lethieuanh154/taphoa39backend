@@ -153,9 +153,10 @@ def _warmup_product_cache(product_service):
     def _refresh_cache():
         try:
             t0 = time.time()
-            # Invalidate để force re-fetch từ Firestore
-            product_service.invalidate_all_product_caches()
-            products = product_service.read_all_products(include_inactive=False, include_deleted=False)
+            # Fetch xong MOI swap vao cache. KHONG invalidate truoc: lam vay thi trong
+            # 18-20s fetch, cache rong -> moi request khach tu keo full scan rieng
+            # (stampede -> refresh phinh 18s len 234s roi fail, prod 11/09/2026).
+            products = product_service.refresh_all_products_cache()
             elapsed = (time.time() - t0) * 1000
             print(f"🔄 [CacheRefresh] Refreshed {len(products)} products in {elapsed:.0f}ms")
         except Exception as e:
