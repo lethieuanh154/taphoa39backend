@@ -59,7 +59,16 @@ CẮT toàn bộ `kiotViet*`, `createdDate/modifiedDate/isEnabled`, `targetProdu
 - `fromDate/toDate`: hiển thị hạn KM + đếm ngược trên trang chủ.
 - `priority`: sắp xếp thứ tự hiển thị.
 
-Product của target/gift resolve qua **cache dict trong 1 request** (`_resolve`) → không đọc Firestore trùng khi nhiều KM dùng chung 1 SP.
+### Resolve product của target/gift — batch, KHÔNG N+1 (sửa 13/09/2026)
+Bản cũ `_resolve()` gọi `read_product()` từng SP một: **120 KM → 157 doc.get() tuần tự** → cold cache mất **>60s** → nginx trả **504**, DatHang nuốt lỗi và Home mất luôn dải "Khuyến mại".
+
+Cách hiện tại:
+1. Gom hết `targetProductId` + `giftItems[].productId` → **`product_service.read_products_bulk(ids)`**: đọc cache RAM trước, phần thiếu gọi `db.get_all()` theo lô 300 → **1 round-trip** thay vì N. Trả `{product_id: product}`, id không tồn tại thì không có key.
+2. Cache luôn **response đã dựng xong** ở `promotion_service.cache` key `public_active_promotions` (`PUBLIC_ACTIVE_PROMOS_TTL` = 300s). `_invalidate_cache()` của promotion service xoá key này cùng `active_promotions`, nên tạo/sửa/xoá/toggle KM là thấy ngay.
+
+`/api/firebase/promotions/active` (BanHang/Management) dùng cùng `read_products_bulk`, và **copy dict** thay vì gán `promo["targetProduct"]` in-place — bản cũ mutate đúng object đang nằm trong cache `active_promotions`.
+
+> nginx cần bật `gzip` cho `application/json`: payload endpoint này ~280KB thô, gzip còn ~30KB (xem `TapHoa39DatHang/deployDataOnline`).
 
 ## `POST /api/public/add_order` — DỰNG LẠI đơn server-side
 `_recompute_order_economics()` **KHÔNG tin gì từ client trừ `{productId, quantity}`** của dòng mua thật. Dựng lại toàn bộ `cartItems` + tiền từ Firestore:

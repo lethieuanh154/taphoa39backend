@@ -10,6 +10,10 @@ from unidecode import unidecode
 from routes.shared import handle_api_errors, notify_order_created
 from routes.firebase_orders import _deduct_redeemed_points
 from firebase.firebase_service.order_notification_service import notify_order_realtime
+from firebase.firebase_service.promotion_service import (
+    PUBLIC_ACTIVE_PROMOS_KEY,
+    PUBLIC_ACTIVE_PROMOS_TTL,
+)
 
 # Danh muc an (vd: thuoc la) - khong hien thi cho khach hang
 _HIDDEN_CATEGORY_IDS = {1440125, 1787413}
@@ -548,30 +552,43 @@ def create_firebase_public_bp(
     @bp.route("/promotions/active", methods=["GET"])
     @handle_api_errors
     def public_active_promotions():
+        # Cache ca response da dung san: dung N+1 read_product() (157 round-trip Firestore
+        # -> >60s -> nginx 504) moi lan cache active_promotions het han.
+        cached = promotion_service.cache.get(PUBLIC_ACTIVE_PROMOS_KEY)
+        if cached is not None:
+            return jsonify(cached)
+
         promos = promotion_service.read_active_promotions()
-        result = []
-        product_cache: dict = {}
 
-        def _resolve(product_id) -> dict | None:
-            key = str(product_id)
-            if key not in product_cache:
-                product = product_service.read_product(key)
-                product_cache[key] = _public_product(product) if product else None
-            return product_cache[key]
-
+        # Gom toan bo productId (target + gift) roi doc 1 lan bang Firestore get_all
+        needed = []
+        gift_entries_by_promo = []
         for pr in promos:
-            target_product = None
+            entries = _public_gift_entries(pr)
+            gift_entries_by_promo.append(entries)
+            if pr.get("targetProductId"):
+                needed.append(str(pr.get("targetProductId")))
+            for entry in entries:
+                if entry.get("productId"):
+                    needed.append(str(entry["productId"]))
+
+        raw_products = product_service.read_products_bulk(needed)
+        product_cache = {k: _public_product(v) for k, v in raw_products.items()}
+
+        result = []
+        for pr, entries in zip(promos, gift_entries_by_promo):
             pid = pr.get("targetProductId")
-            if pid:
-                target_product = _resolve(pid)
+            target_product = product_cache.get(str(pid)) if pid else None
 
             gift_products = []
-            for entry in _public_gift_entries(pr):
-                gp = _resolve(entry["productId"])
+            for entry in entries:
+                gp = product_cache.get(str(entry["productId"]))
                 if gp:
                     gift_products.append({**gp, "GiftQuantity": entry.get("quantity") or 1})
 
             result.append(_public_promotion(pr, target_product, gift_products))
+
+        promotion_service.cache.set(PUBLIC_ACTIVE_PROMOS_KEY, result, ttl=PUBLIC_ACTIVE_PROMOS_TTL)
         return jsonify(result)
 
     @bp.route("/orders/<order_id>", methods=["GET"])

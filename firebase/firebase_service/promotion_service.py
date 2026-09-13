@@ -10,6 +10,9 @@ from firebase.firebase_service.cache import Cache
 COLLECTION_NAME = "promotions"
 CACHE_TTL = 1800       # 30 min for all promotions
 CACHE_TTL_ACTIVE = 300  # 5 min for active promotions
+# Response da dung san cua /api/public/promotions/active (gom ca targetProduct/giftProducts)
+PUBLIC_ACTIVE_PROMOS_KEY = "public_active_promotions"
+PUBLIC_ACTIVE_PROMOS_TTL = 300
 
 # Init Firestore from FIREBASE_SERVICE_ACCOUNT_DATHANG project
 db = init_firestore("FIREBASE_SERVICE_ACCOUNT_DATHANG", app_name="dathang_app")
@@ -304,3 +307,4 @@ class FirestorePromotionService:
         """Invalidate all promotion caches."""
         self.cache.invalidate_prefix("all_promotions:")
         self.cache.invalidate("active_promotions")
+        self.cache.invalidate(PUBLIC_ACTIVE_PROMOS_KEY)

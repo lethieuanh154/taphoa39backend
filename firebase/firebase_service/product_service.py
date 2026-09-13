@@ -321,6 +321,34 @@ class FirestoreProductService:
             return product
         return None
 
+    def read_products_bulk(self, product_ids) -> Dict[str, Dict]:
+        """Doc nhieu san pham 1 luot bang Firestore get_all thay vi N lan document().get().
+        Tra map {product_id(str): product}. Id khong ton tai thi khong co trong map."""
+        result: Dict[str, Dict] = {}
+        missing: List[str] = []
+        seen: Set[str] = set()
+
+        for pid in product_ids:
+            key = str(pid) if pid is not None else ""
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            cached = self.cache.get(key)
+            if cached is not None:
+                result[key] = cached
+            else:
+                missing.append(key)
+
+        # get_all khong gioi han cung nhu 'in' query, nhung chia lo cho an toan bo nho/thoi gian
+        for i in range(0, len(missing), 300):
+            refs = [self.products_ref.document(pid) for pid in missing[i:i + 300]]
+            for doc in db.get_all(refs):
+                if doc.exists:
+                    data = doc.to_dict()
+                    result[doc.id] = data
+                    self.cache.set(doc.id, data, ttl=CACHE_TTL)
+        return result
+
     def get_products_by_master_unit_id(self, master_unit_id: str) -> List[Dict]:
         """
         Get all products (siblings) that share the same MasterUnitId.

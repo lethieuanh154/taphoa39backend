@@ -33,17 +33,25 @@ def create_firebase_promotions_bp(promotion_service, product_service, socketio) 
             "isActive", "isDeleted", "isClone", "OnHandNV", "Description",
             "ConversionValue", "MasterUnitId", "MasterProductId", "ModifiedDate",
         )
+        # 1 lan get_all thay vi N lan document().get() (120 KM -> 120 round-trip Firestore)
+        products = product_service.read_products_bulk(
+            [p.get("targetProductId") for p in promos if p.get("targetProductId")]
+        )
+
+        # Copy: promos la object nam trong cache cua promotion_service, khong duoc mutate
+        enriched = []
         for promo in promos:
             pid = promo.get("targetProductId")
             if not pid:
+                enriched.append(promo)
                 continue
-            product = product_service.read_product(str(pid))
-            if product:
-                promo["targetProduct"] = {k: product.get(k) for k in _PRODUCT_FIELDS if k in product}
-            else:
-                promo["targetProduct"] = None
+            product = products.get(str(pid))
+            enriched.append({
+                **promo,
+                "targetProduct": {k: product.get(k) for k in _PRODUCT_FIELDS if k in product} if product else None,
+            })
 
-        return jsonify(promos)
+        return jsonify(enriched)
 
     @bp.route("/promotions/<promo_id>", methods=["GET"])
     @handle_api_errors
