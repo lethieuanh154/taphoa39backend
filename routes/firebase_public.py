@@ -42,6 +42,8 @@ def _to_float(v) -> float:
 def _public_product(p: dict) -> dict:
     """Chi giu field khach hang duoc phep thay.
     Gop ton kho clone vao OnHand; cat Cost/OnHandNV/sync/kiotViet noi bo.
+    Description KHONG public: field nay dang chua ghi chu noi bo cua nhan vien
+    (gia si, gia nhap, "k vat"...). Chi mo lai khi du lieu da duoc lam sach.
     Anh: uu tien `ImageVariant` (anh rieng tung bien the, do
     scripts/fix_variant_images_from_kiotviet.py ghi) roi moi den `Image` - `Image` tu sync
     KiotViet la anh cap MASTER nen moi bien the trong nhom deu trung nhau."""
@@ -54,7 +56,6 @@ def _public_product(p: dict) -> dict:
         "Image": p.get("ImageVariant") or p.get("Image"),
         "BasePrice": p.get("BasePrice"),
         "Unit": p.get("Unit"),
-        "Description": p.get("Description") or "",
         "CategoryId": p.get("CategoryId"),
         "CategoryName": p.get("CategoryName") or "",
         "ConversionValue": p.get("ConversionValue"),

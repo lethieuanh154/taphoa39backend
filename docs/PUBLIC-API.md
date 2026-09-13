@@ -30,9 +30,12 @@ Luồng thực tế:
 - Trừ `_HIDDEN_CATEGORY_IDS`, sort theo tên, `Path` sinh bằng `_category_path()` (`unidecode`): `"GIA VỊ - ĐỒ KHÔ"` → `GIA_VI_DO_KHO`.
 
 ## Whitelist sản phẩm (`_public_product`) — đã làm gọn
-GIỮ (14 field FE thực dùng): `Id, Code, Name, FullName, Image, BasePrice, Unit, Description, CategoryId, CategoryName, ConversionValue` (product-detail), `MasterUnitId` (GroupService grouping), `NormalizedName` (offline search có dấu), `OnHand` (đã gộp clone).
+GIỮ (13 field FE thực dùng): `Id, Code, Name, FullName, Image, BasePrice, Unit, CategoryId, CategoryName, ConversionValue` (product-detail), `MasterUnitId` (GroupService grouping), `NormalizedName` (offline search có dấu), `OnHand` (đã gộp clone).
 `CategoryName` thêm vào để DatHang **dựng lại danh mục offline** từ IndexedDB khi cả 2 endpoint danh mục chết.
 CẮT: `Cost, OldCost, PackCost, _original*, OnHandNV, CloneOnHandNV (raw), SyncChecksum, SyncTimestamp, Revision, MasterCode, kiotViet*` + `NormalizedCode, MasterProductId, isActive, isDeleted` (BE đã lọc sẵn → FE default khi thiếu).
+
+**`Description` đã bị cắt (2026-09-14).** Field này trong Firestore đang chứa ghi chú nội bộ của nhân viên — `"k vat"`, `"1T = 12c"`, `"1T (20g) = 570k"`, `"21/3: 4.4/gói"` (giá sỉ / giá nhập) — và trước đó lọt nguyên vào response public. Khoảng 6-13% sản phẩm có nội dung dạng này, phần còn lại rỗng.
+Muốn mở lại (ví dụ để nút info mô tả trên card DatHang hoạt động): làm sạch `Description` trên KiotViet trước, rồi thêm lại `"Description": p.get("Description") or ""` vào `_public_product`. FE đã strip HTML sẵn trong `mapProduct()`.
 
 Lọc **server-side** (không để FE tự lọc bằng field nhạy cảm): bỏ clone / KM `(km)` Cost=0 / danh mục ẩn (`1440125, 1787413`) / deleted-inactive. **Gộp `CloneOnHandNV` vào `OnHand`** (ẩn cơ chế clone, vẫn báo đúng tồn kho).
 
