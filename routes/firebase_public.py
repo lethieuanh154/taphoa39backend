@@ -108,9 +108,17 @@ def _valid_latlng(lat, lng) -> bool:
     return 8.0 <= lat <= 24.0 and 102.0 <= lng <= 110.0
 
 
-def _serialize_public_products(products: list) -> list:
-    """Loc bo clone / KM / danh muc an / deleted-inactive roi whitelist field."""
-    return [_public_product(p) for p in products if _is_orderable(p)]
+def _serialize_public_products(products: list, reserved_map: dict | None = None) -> list:
+    """Loc bo clone / KM / danh muc an / deleted-inactive roi whitelist field.
+    `reserved_map` = so luong dang bi don online giu -> tru khoi OnHand hien thi,
+    de khach khong dat trung phan hang khach khac da giu."""
+    cleaned = [_public_product(p) for p in products if _is_orderable(p)]
+    if reserved_map:
+        for item in cleaned:
+            held = _to_float(reserved_map.get(str(item.get("Id"))))
+            if held > 0:
+                item["OnHand"] = max(0.0, _to_float(item.get("OnHand")) - held)
+    return cleaned
 
 
 def _public_order(o: dict) -> dict:
@@ -282,7 +290,8 @@ def _order_line(prod, qty, unit_price, is_gift, is_promo, sale_off=0.0):
     }
 
 
-def _recompute_order_economics(order, product_service, promotion_service, customer_service) -> dict:
+def _recompute_order_economics(order, product_service, promotion_service, customer_service,
+                               reserved_map=None, clone_stock_map=None) -> dict:
     """Dung lai TOAN BO don tu server: BO QUA gia/gift/promo/ship do client gui.
     Chi tin {productId, quantity} cua dong mua that; gift/Type3/ship deu tao lai tu server.
     Tra ve {ok, error?, customerPaid, suspicious}."""
@@ -307,6 +316,21 @@ def _recompute_order_economics(order, product_service, promotion_service, custom
         if not _is_orderable(server):
             name = (server or {}).get("Name") or (server or {}).get("FullName") or pid
             return {"ok": False, "error": f"San pham '{name}' ngung ban hoac khong hop le"}
+
+        # Ton kha dung = ton that - phan don online khac dang giu.
+        # FE co the doc IndexedDB cu nen phai chan o server, khong tin so luong client thay.
+        name = server.get("FullName") or server.get("Name") or pid
+        available = _to_float(server.get("OnHand"))
+        if clone_stock_map:
+            available += _to_float(clone_stock_map.get(str(pid)))
+        if reserved_map:
+            available -= _to_float(reserved_map.get(str(pid)))
+        if qty > available:
+            if available <= 0:
+                return {"ok": False, "error": f"San pham '{name}' da het hang"}
+            return {"ok": False,
+                    "error": f"San pham '{name}' chi con {available:g}, khong du {qty:g}"}
+
         purchased.append((server, str(pid), qty))
 
     if not purchased:
@@ -426,13 +450,25 @@ def _paginate():
 
 
 def create_firebase_public_bp(
-    product_service, promotion_service, order_service, customer_service, socketio
+    product_service, promotion_service, order_service, customer_service, socketio,
+    reservation_service=None
 ) -> Blueprint:
     """API public cho app DatHang - chi tra field an toan, khach khong thay du lieu noi bo."""
     bp = Blueprint("firebase_public", __name__, url_prefix="/api/public")
 
-    def _enrich_clone_stock(products):
-        """Gop OnHandNV cua clone vao product goc.
+    def _reserved_map() -> dict:
+        """So luong dang bi don online giu, theo productId. Loi -> coi nhu khong giu
+        (tha hien thi du ton con hon chan ca trang san pham)."""
+        if not reservation_service:
+            return {}
+        try:
+            return reservation_service.get_reserved_map()
+        except Exception as e:
+            print(f"[public] reserved map error: {type(e).__name__}: {e}")
+            return {}
+
+    def _clone_stock_map() -> dict:
+        """{productGocId: tong OnHandNV cua cac clone}.
         Dung chung cache key 'clone_stock_map' voi endpoint noi bo de tiet kiem quota."""
         cache_key = "clone_stock_map"
         if product_service.cache.has(cache_key):
@@ -452,7 +488,57 @@ def create_firebase_public_bp(
                 if source_id:
                     clone_stock[source_id] = clone_stock.get(source_id, 0) + on_hand_nv
             product_service.cache.set(cache_key, clone_stock, ttl=3600)
+        return clone_stock
 
+    def _reserve_stock_for_order(order: dict) -> None:
+        """Giu hang cho don vua tao. Loi giu hang KHONG duoc lam hong don da luu:
+        don van hop le, chi la khong giu duoc cho -> log de xu ly tay."""
+        oid = str(order.get("id") or "?")
+
+        if not reservation_service:
+            print(f"[reserve] don {oid}: BO QUA - reservation_service = None "
+                  f"(app.py chua truyen service vao create_firebase_public_bp?)")
+            return
+
+        cart = order.get("cartItems") or []
+        items = []
+        skipped = 0
+        for it in cart:
+            prod = it.get("product") or {}
+            pid = prod.get("Id")
+            if not pid or pid == _SHIP_PRODUCT_ID or prod.get("Code") == _SHIP_PRODUCT_CODE:
+                skipped += 1
+                continue
+            items.append({
+                "productId": str(pid),
+                "code": prod.get("Code") or "",
+                "name": prod.get("FullName") or prod.get("Name") or "",
+                "quantity": _to_float(it.get("quantity")),
+            })
+
+        print(f"[reserve] don {oid}: {len(cart)} dong gio hang -> {len(items)} dong giu hang "
+              f"({skipped} dong bo qua: ship/thieu Id)")
+
+        if not items:
+            print(f"[reserve] don {oid}: KHONG giu hang - khong co dong nao hop le")
+            return
+
+        try:
+            result = reservation_service.create_for_order(
+                oid, order.get("customer"), items
+            )
+            if result.get("success"):
+                resv = result.get("reservation") or {}
+                print(f"[reserve] don {oid}: DA GIU {len(items)} mat hang, "
+                      f"het han {resv.get('expiresAt')}")
+            else:
+                print(f"[reserve] don {oid}: GIU HANG THAT BAI - {result.get('error')}")
+        except Exception as e:
+            print(f"[reserve] don {oid}: LOI NGOAI Y - {type(e).__name__}: {e}")
+
+    def _enrich_clone_stock(products):
+        """Gop OnHandNV cua clone vao product goc."""
+        clone_stock = _clone_stock_map()
         for p in products:
             pid = str(p.get("Id", ""))
             p["CloneOnHandNV"] = clone_stock.get(pid, 0)
@@ -463,7 +549,7 @@ def create_firebase_public_bp(
     def public_featured():
         products = product_service.get_featured_products()
         products = _enrich_clone_stock(products)
-        cleaned = _serialize_public_products(products)
+        cleaned = _serialize_public_products(products, _reserved_map())
         total = len(cleaned)
         limit, offset = _paginate()
         page = cleaned[offset:offset + limit] if limit > 0 else cleaned
@@ -522,7 +608,7 @@ def create_firebase_public_bp(
     def public_by_category(category_id: int):
         products = product_service.read_products_by_category(category_id)
         products = _enrich_clone_stock(products)
-        cleaned = _serialize_public_products(products)
+        cleaned = _serialize_public_products(products, _reserved_map())
         total = len(cleaned)
         limit, offset = _paginate()
         page = cleaned[offset:offset + limit] if limit > 0 else cleaned
@@ -547,7 +633,7 @@ def create_firebase_public_bp(
         limit = min(max(limit, 1), 200)
         products = product_service.search_products(query, limit=limit)
         products = _enrich_clone_stock(products)
-        cleaned = _serialize_public_products(products)
+        cleaned = _serialize_public_products(products, _reserved_map())
         return jsonify({"products": cleaned, "count": len(cleaned), "query": query})
 
     @bp.route("/promotions/active", methods=["GET"])
@@ -574,7 +660,14 @@ def create_firebase_public_bp(
                     needed.append(str(entry["productId"]))
 
         raw_products = product_service.read_products_bulk(needed)
-        product_cache = {k: _public_product(v) for k, v in raw_products.items()}
+        reserved = _reserved_map()
+        product_cache = {}
+        for k, v in raw_products.items():
+            pub = _public_product(v)
+            held = _to_float(reserved.get(str(pub.get("Id"))))
+            if held > 0:
+                pub["OnHand"] = max(0.0, _to_float(pub.get("OnHand")) - held)
+            product_cache[k] = pub
 
         result = []
         for pr, entries in zip(promos, gift_entries_by_promo):
@@ -613,8 +706,12 @@ def create_firebase_public_bp(
         if len(phone) < 9 or not phone.lstrip("+").isdigit():
             return jsonify({"error": "So dien thoai khong hop le"}), 400
 
-        # Tinh lai toan bo tu server; reject neu don khong hop le
-        econ = _recompute_order_economics(order, product_service, promotion_service, customer_service)
+        # Tinh lai toan bo tu server; reject neu don khong hop le.
+        # Ton kha dung da tru phan don online khac dang giu -> chan oversell.
+        econ = _recompute_order_economics(
+            order, product_service, promotion_service, customer_service,
+            reserved_map=_reserved_map(), clone_stock_map=_clone_stock_map()
+        )
         if not econ.get("ok"):
             return jsonify({"error": econ.get("error", "Don hang khong hop le")}), 400
 
@@ -629,6 +726,9 @@ def create_firebase_public_bp(
                 return jsonify({"error": "Order ID da ton tai"}), 409
             raise
         result = {"message": "order added"}
+        # Giu hang TRUOC khi tru diem: neu tru diem loi thi don da luu van duoc giu cho,
+        # con thieu ban giu hang thi ton kho sai cho moi khach khac.
+        _reserve_stock_for_order(order)
         _deduct_redeemed_points(order, customer_service)
 
         order_id = None

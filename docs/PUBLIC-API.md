@@ -39,6 +39,8 @@ Muốn mở lại (ví dụ để nút info mô tả trên card DatHang hoạt �
 
 Lọc **server-side** (không để FE tự lọc bằng field nhạy cảm): bỏ clone / KM `(km)` Cost=0 / danh mục ẩn (`1440125, 1787413`) / deleted-inactive. **Gộp `CloneOnHandNV` vào `OnHand`** (ẩn cơ chế clone, vẫn báo đúng tồn kho).
 
+**`OnHand` đã trừ phần đơn online đang giữ (2026-09-14).** `_serialize_public_products(products, reserved_map)` trừ số giữ hàng còn hạn khỏi `OnHand` trước khi trả về, nên khách không đặt trùng phần hàng khách khác đã giữ. `add_order` cũng chặn oversell theo `OnHand + clone_stock − reserved`. Chi tiết: `docs/RESERVATION.md`.
+
 ### Ảnh sản phẩm — `ImageVariant` ưu tiên hơn `Image`
 `"Image": p.get("ImageVariant") or p.get("Image")`.
 

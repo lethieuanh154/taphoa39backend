@@ -35,6 +35,8 @@ from routes.customer_registration import create_customer_registration_bp
 from routes.zalo_routes import create_zalo_routes_bp
 from routes.gmail_routes import create_gmail_routes_bp
 from routes.merged_products_audit_routes import create_merged_products_audit_bp
+from routes.reservation_routes import create_reservation_bp
+from firebase.firebase_service.reservation_service import ReservationService
 from routes.chat_routes import create_chat_routes_bp
 from firebase.firebase_service.chat_service import FirestoreChatService
 from firebase.firebase_service.promotion_service import FirestorePromotionService
@@ -107,9 +109,14 @@ def _build_app() -> Flask:
     # Promotions (khuyến mại)
     app.register_blueprint(create_firebase_promotions_bp(promotion_service, product_service, socketio))
 
+    # Giu hang cho don dat online (KHONG dung toi OnHand - xem reservation_service.py)
+    reservation_service = ReservationService()
+    app.register_blueprint(create_reservation_bp(reservation_service, order_service))
+
     # Public API cho app DatHang (che giấu dữ liệu nội bộ: Cost, OnHandNV, kiotViet...)
     app.register_blueprint(create_firebase_public_bp(
-        product_service, promotion_service, order_service, customer_service, socketio
+        product_service, promotion_service, order_service, customer_service, socketio,
+        reservation_service
     ))
 
     # Trang hoa don dien tu cho khach (/hd/<token>) - public, bao ve bang token ngau nhien
@@ -138,6 +145,10 @@ def _build_app() -> Flask:
 
     # Schedule daily audit cleanup at 5:00 AM
     _schedule_audit_cleanup(audit_service)
+
+    # Danh dau don giu hang qua 24h -> expired (lazy expiry van la nguon dung,
+    # scheduler chi de status don hien dung o BanHang/Management)
+    _schedule_reservation_expiry(reservation_service, order_service)
 
     return app
 
@@ -218,6 +229,46 @@ def _schedule_audit_cleanup(audit_service):
         print(f"⏰ [Scheduler] Next audit cleanup at {next_run.strftime('%Y-%m-%d %H:%M')} ({delay:.0f}s)")
 
     _schedule_next()
+
+
+def _schedule_reservation_expiry(reservation_service, order_service):
+    """Moi gio: danh dau ban giu hang qua han + set don 'pending' qua han thanh 'expired'."""
+    import threading
+
+    INTERVAL_SECONDS = 3600
+
+    def _run():
+        try:
+            result = reservation_service.expire_overdue()
+            expired_ids = result.get("expired") or []
+            updated = 0
+            for oid in expired_ids:
+                try:
+                    existing = order_service.read_order(str(oid))
+                    if not existing or existing.get("status") != "pending":
+                        continue  # don da xu ly -> khong dong vao
+                    order_service.orders_ref.document(str(oid)).update({"status": "expired"})
+                    updated += 1
+                except Exception as e:
+                    print(f"❌ [Reservation] Loi set expired don {oid}: {type(e).__name__}: {e}")
+            if updated:
+                try:
+                    order_service.cache.invalidate("all_orders")
+                except Exception:
+                    pass
+                print(f"⏳ [Reservation] {updated} don chuyen sang 'expired'")
+        except Exception as e:
+            print(f"❌ [Reservation] Expiry job loi: {type(e).__name__}: {e}")
+        finally:
+            _schedule_next()
+
+    def _schedule_next():
+        timer = threading.Timer(INTERVAL_SECONDS, _run)
+        timer.daemon = True
+        timer.start()
+
+    _schedule_next()
+    print(f"⏰ [Reservation] Kiem tra don giu hang qua han moi {INTERVAL_SECONDS // 60} phut")
 
 
 app = _build_app()
