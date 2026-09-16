@@ -309,13 +309,18 @@ def _recompute_order_economics(order, product_service, promotion_service, custom
             continue  # KHONG tin -> gift/promo se dung lai tu server
         qty = _to_float(it.get("quantity"))
         if qty <= 0 or qty > 100000:
-            return {"ok": False, "error": "So luong khong hop le"}
+            return {"ok": False, "error": (
+                f"Số lượng đặt không hợp lệ ({qty:g}). Số lượng phải lớn hơn 0 và không quá 100.000. "
+                "Vui lòng mở lại giỏ hàng và nhập lại số lượng.")}
         if not pid:
             continue
         server = product_service.read_product(str(pid))
         if not _is_orderable(server):
             name = (server or {}).get("Name") or (server or {}).get("FullName") or pid
-            return {"ok": False, "error": f"San pham '{name}' ngung ban hoac khong hop le"}
+            return {"ok": False, "error": (
+                f"Sản phẩm \"{name}\" đã ngừng bán hoặc không còn nhận đặt online "
+                "(cửa hàng vừa gỡ sản phẩm này). "
+                "Vui lòng xoá sản phẩm đó khỏi giỏ hàng rồi bấm Đặt hàng lại.")}
 
         # Ton kha dung = ton that - phan don online khac dang giu.
         # FE co the doc IndexedDB cu nen phai chan o server, khong tin so luong client thay.
@@ -326,15 +331,24 @@ def _recompute_order_economics(order, product_service, promotion_service, custom
         if reserved_map:
             available -= _to_float(reserved_map.get(str(pid)))
         if qty > available:
+            unit = (server.get("Unit") or "").strip()
+            unit_txt = f" {unit}" if unit else ""
             if available <= 0:
-                return {"ok": False, "error": f"San pham '{name}' da het hang"}
-            return {"ok": False,
-                    "error": f"San pham '{name}' chi con {available:g}, khong du {qty:g}"}
+                return {"ok": False, "error": (
+                    f"Sản phẩm \"{name}\" đã hết hàng tại thời điểm bạn bấm đặt "
+                    "(có thể vừa có khách khác đặt trước). "
+                    "Vui lòng xoá sản phẩm đó khỏi giỏ hàng hoặc chọn sản phẩm khác rồi đặt lại.")}
+            return {"ok": False, "error": (
+                f"Sản phẩm \"{name}\" chỉ còn {available:g}{unit_txt}, không đủ {qty:g}{unit_txt} như bạn đặt "
+                "(tồn kho đã thay đổi hoặc đang giữ cho đơn khác). "
+                f"Vui lòng giảm số lượng xuống tối đa {available:g}{unit_txt} rồi đặt lại.")}
 
         purchased.append((server, str(pid), qty))
 
     if not purchased:
-        return {"ok": False, "error": "Gio hang trong hoac san pham khong hop le"}
+        return {"ok": False, "error": (
+            "Giỏ hàng trống, hoặc tất cả sản phẩm trong giỏ đều đã ngừng bán nên không tạo được đơn. "
+            "Vui lòng quay lại trang chủ chọn sản phẩm rồi đặt lại.")}
 
     # 2. Promotion engine (gia SERVER)
     promo_cart = [{"productId": pid, "code": s.get("Code"), "quantity": qty,
@@ -390,9 +404,15 @@ def _recompute_order_economics(order, product_service, promotion_service, custom
     if order.get("wantDelivery"):
         lat, lng = order.get("lat"), order.get("lng")
         if not _valid_latlng(lat, lng):
-            return {"ok": False, "error": "Giao hang can vi tri (lat/lng) hop le"}
+            return {"ok": False, "error": (
+                "Chưa xác định được vị trí địa chỉ giao hàng trên bản đồ nên không tính được phí ship. "
+                "Vui lòng nhập lại địa chỉ (có dấu phẩy giữa số nhà, đường, phường, quận) "
+                "và đợi hệ thống tính xong khoảng cách, hoặc chọn hình thức tự đến lấy hàng.")}
         if subtotal < _MIN_DELIVERY_SUBTOTAL:
-            return {"ok": False, "error": "Don giao hang toi thieu 200.000d"}
+            return {"ok": False, "error": (
+                f"Đơn hàng {subtotal:,.0f}đ chưa đủ mức tối thiểu "
+                f"{_MIN_DELIVERY_SUBTOTAL:,.0f}đ (chưa tính phí ship) để được giao hàng. "
+                "Vui lòng mua thêm, hoặc bỏ chọn giao hàng và tự đến lấy tại cửa hàng.")}
         distance = _recompute_distance_km(lat, lng, None)  # KHONG fallback distanceKm client
         order["distanceKm"] = distance
         ship_items = [{"product": s, "quantity": qty} for (s, _pid, qty) in purchased]
@@ -704,7 +724,10 @@ def create_firebase_public_bp(
         # Validate SDT khach hang
         phone = ((order.get("customer") or {}).get("ContactNumber") or "").strip()
         if len(phone) < 9 or not phone.lstrip("+").isdigit():
-            return jsonify({"error": "So dien thoai khong hop le"}), 400
+            return jsonify({"error": (
+                "Số điện thoại không hợp lệ nên cửa hàng không thể liên hệ giao hàng. "
+                "Vui lòng nhập số từ 9 chữ số trở lên, chỉ gồm chữ số (không khoảng trắng, không dấu chấm).")
+            }), 400
 
         # Tinh lai toan bo tu server; reject neu don khong hop le.
         # Ton kha dung da tru phan don online khac dang giu -> chan oversell.
@@ -713,7 +736,9 @@ def create_firebase_public_bp(
             reserved_map=_reserved_map(), clone_stock_map=_clone_stock_map()
         )
         if not econ.get("ok"):
-            return jsonify({"error": econ.get("error", "Don hang khong hop le")}), 400
+            return jsonify({"error": econ.get("error", (
+                "Đơn hàng không hợp lệ nên chưa được ghi nhận. "
+                "Vui lòng kiểm tra lại giỏ hàng và thông tin nhận hàng rồi đặt lại."))}), 400
 
         # Luu ATOMIC: create() fail neu id da ton tai -> chan overwrite (khong race nhu read+set)
         oid = str(order.get("id") or ("DH" + str(int(time.time() * 1000))))
@@ -723,8 +748,15 @@ def create_firebase_public_bp(
             order_service.cache.invalidate("all_orders")
         except Exception as e:
             if type(e).__name__ in ("AlreadyExists", "Conflict") or "already exist" in str(e).lower():
-                return jsonify({"error": "Order ID da ton tai"}), 409
-            raise
+                return jsonify({"error": (
+                    f"Đơn hàng {oid} đã được gửi trước đó rồi, hệ thống không tạo đơn trùng. "
+                    "Vui lòng kiểm tra mục \"Đơn hàng của tôi\" — nếu đã thấy đơn thì không cần đặt lại.")
+                }), 409
+            print(f"[public add_order] SAVE FAILED oid={oid} {type(e).__name__}: {e}")
+            return jsonify({"error": (
+                "Hệ thống cửa hàng đang bận nên chưa lưu được đơn của bạn (lỗi máy chủ). "
+                "Đơn CHƯA được ghi nhận. Vui lòng thử lại sau ít phút, "
+                "hoặc gọi trực tiếp cho cửa hàng để đặt hàng.")}), 503
         result = {"message": "order added"}
         # Giu hang TRUOC khi tru diem: neu tru diem loi thi don da luu van duoc giu cho,
         # con thieu ban giu hang thi ton kho sai cho moi khach khac.
