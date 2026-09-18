@@ -3,6 +3,14 @@ FROM python:3.11-slim
 # Tạo biến môi trường
 ENV e=local
 
+# BAT BUOC: gunicorn buffer stdout -> toan bo `print()` (log [KiotVietSync], [CacheRefresh],
+# [AUTH], [reserve]...) khong bao gio hien ra `docker logs`. Sync KiotViet that bai se im
+# lang tuyet doi neu thieu dong nay.
+ENV PYTHONUNBUFFERED=1
+
+# Chu ky tu dong keo ton kho KiotViet -> Firestore (phut). Dat 0 de TAT khi co su co.
+ENV KIOTVIET_AUTO_SYNC_MINUTES=15
+
 WORKDIR /app
 
 COPY . /app

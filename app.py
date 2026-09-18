@@ -150,6 +150,9 @@ def _build_app() -> Flask:
     # scheduler chi de status don hien dung o BanHang/Management)
     _schedule_reservation_expiry(reservation_service, order_service)
 
+    # Keo ton kho KiotViet -> Firestore dinh ky, de DatHang khong ban hang da het o quay
+    _schedule_kiotviet_auto_sync(product_service, socketio)
+
     return app
 
 
@@ -269,6 +272,79 @@ def _schedule_reservation_expiry(reservation_service, order_service):
 
     _schedule_next()
     print(f"⏰ [Reservation] Kiem tra don giu hang qua han moi {INTERVAL_SECONDS // 60} phut")
+
+
+def _schedule_kiotviet_auto_sync(product_service, socketio):
+    """Dinh ky keo ton kho tu KiotViet ve Firestore roi broadcast WebSocket.
+
+    PHAI chay o thread nen: mot lan fetch KiotViet la 1 request pageSize=20000, thuong
+    mat 30-60s (FromKiotViet/get_entire_product.py). Goi no trong request cua khach se an
+    het thread cua gunicorn (--workers=1 --threads=32) -> nginx 504 toan bo API.
+
+    Tat bang env KIOTVIET_AUTO_SYNC_MINUTES=0.
+    """
+    import threading
+    import time
+
+    from routes.shared import broadcast_products_onhand_updated
+
+    try:
+        interval_minutes = int(os.getenv("KIOTVIET_AUTO_SYNC_MINUTES", "15"))
+    except ValueError:
+        interval_minutes = 15
+
+    if interval_minutes <= 0:
+        print("⏸️ [KiotVietSync] Auto sync TAT (KIOTVIET_AUTO_SYNC_MINUTES=0)")
+        return
+
+    interval_seconds = interval_minutes * 60
+    running = threading.Lock()
+
+    def _run_once():
+        # Non-blocking: tick truoc chua xong (KiotViet cham) thi BO tick nay, khong xep
+        # hang - xep hang se don nhieu lan fetch 20k SP chong len nhau.
+        if not running.acquire(blocking=False):
+            print("⏭️ [KiotVietSync] Tick truoc chua xong -> bo qua luot nay")
+            return
+        try:
+            result = product_service.sync_products_from_kiotviet()
+            if not result.get("success"):
+                print(f"❌ [KiotVietSync] {result.get('message')}: {result.get('error')}")
+                return
+
+            stats = result.get("stats") or {}
+            print(f"🔄 [KiotVietSync] {stats.get('updated_or_created', 0)} SP thay doi "
+                  f"/ {stats.get('total_api_items', 0)} SP KiotViet "
+                  f"trong {stats.get('total_time_seconds', 0)}s")
+
+            # sync_products_from_kiotviet() ket thuc bang invalidate_all_product_caches()
+            # -> cache rong. Phai nap lai NGAY, neu khong request khach ke tiep tu keo
+            # full scan rieng (stampede, da lam refresh phinh 18s len 234s - prod 11/09/2026).
+            try:
+                product_service.refresh_all_products_cache()
+            except Exception as e:
+                print(f"❌ [KiotVietSync] Nap lai cache that bai: {type(e).__name__}: {e}")
+
+            changed = result.get("changed_products") or []
+            if changed:
+                try:
+                    broadcast_products_onhand_updated(socketio, changed)
+                except Exception as e:
+                    print(f"❌ [KiotVietSync] Broadcast that bai: {type(e).__name__}: {e}")
+        except Exception as e:
+            print(f"❌ [KiotVietSync] Sync loi: {type(e).__name__}: {e}")
+        finally:
+            running.release()
+
+    def _loop():
+        # Ngu truoc: nhuong luot boot cho warmup cache va login KiotViet.
+        while True:
+            time.sleep(interval_seconds)
+            _run_once()
+
+    thread = threading.Thread(target=_loop, daemon=True)
+    thread.start()
+    print(f"⏰ [KiotVietSync] Tu dong sync ton kho KiotViet moi {interval_minutes} phut")
 
 
 app = _build_app()

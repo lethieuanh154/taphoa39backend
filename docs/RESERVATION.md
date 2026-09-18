@@ -9,9 +9,11 @@
 Vì vậy số giữ hàng nằm ở collection riêng:
 
 ```
-Tồn hiển thị cho khách = OnHand + CloneOnHandNV − Reserved
-                         └── KiotViet ghi đè ──┘   └─ của mình ─┘
+Tồn hiển thị cho khách = OnHand − Reserved
+                         └ KiotViet ┘  └ của mình ┘
 ```
+
+> **Đổi 18/09/2026:** công thức cũ có cộng `CloneOnHandNV`. Đã bỏ — DatHang không bán hàng clone, cộng vào thì SP hết hàng trên KiotViet vẫn hiện còn.
 
 Tiền lệ: `OnHandNV` và `ImageVariant` cũng là field tự tạo và sống sót qua sync nhờ `batch.set(..., merge=True)`.
 
@@ -64,10 +66,12 @@ active ──[hủy đơn]──────────> released (canceled)
 `_recompute_order_economics()` nay kiểm tra tồn khả dụng cho từng dòng hàng:
 
 ```
-available = OnHand + clone_stock − reserved
+available = OnHand − reserved          ← OnHand đọc FRESH, KHÔNG qua cache
 qty > available  →  400 "San pham 'X' chi con N, khong du M"
 available <= 0   →  400 "San pham 'X' da het hang"
 ```
+
+`OnHand` lấy bằng `read_product_fresh()` (bỏ qua cache doc-lẻ TTL 3600s) — dùng `read_product()` thì lớp chặn này so với số cũ tới 1 tiếng. `clone_stock` đã bỏ khỏi công thức (18/09/2026), cho khớp đúng con số khách nhìn thấy.
 
 Trước đây `_is_orderable()` chỉ lọc active/deleted/clone/danh mục ẩn, **không hề kiểm tra tồn** — server nhận đơn cả khi hàng đã hết, chặn oversell chỉ nằm ở FE dựa trên IndexedDB có thể cũ.
 

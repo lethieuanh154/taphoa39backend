@@ -47,6 +47,13 @@ def create_firebase_products_bp(product_service, socketio) -> Blueprint:
                 updates_for_broadcast.append({"Id": str(pid), "OnHand": converted_onhand, "updateType": "OnHand"})
 
         if updates_for_broadcast:
+            # Dong bo cache RAM TRUOC khi broadcast: hanh ghi o tren di thang Firestore bang
+            # transaction, khong qua service nen cache con giu so cu -> khach MOI vao DatHang
+            # doc /api/public/* van thay ton cu (khach dang mo thi WS da sua roi).
+            t_cache = _time.time()
+            patched = product_service.patch_stock_caches(updates_for_broadcast)
+            print(f"⏱️ [update_onhand_batch] patch cache: {(_time.time() - t_cache)*1000:.0f}ms "
+                  f"| {patched} ban ghi")
             broadcast_products_onhand_updated(socketio, updates_for_broadcast)
 
         t_end = _time.time()

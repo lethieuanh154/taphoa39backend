@@ -57,6 +57,8 @@ PRODUCT_PAGE_RETRY = gapi_retry.Retry(
     timeout=PRODUCT_PAGE_TIMEOUT,
 )
 CACHE_TTL_CLONE_STOCK = 3600
+# Tran so SP duoc emit qua WebSocket sau mot lan sync KiotViet (xem sync_products_from_kiotviet)
+MAX_SYNC_BROADCAST = 500
 
 # Sử dụng init_firestore thay vì khởi tạo trực tiếp
 db = init_firestore("FIREBASE_SERVICE_ACCOUNT_PRODUCT", app_name="product_app")
@@ -320,6 +322,23 @@ class FirestoreProductService:
             self.cache.set(product_id, product, ttl=CACHE_TTL)
             return product
         return None
+
+    def read_product_fresh(self, product_id):
+        """Doc thang Firestore, BO QUA cache doc-le (CACHE_TTL = 3600s).
+
+        Dung cho luong VALIDATE TON KHO luc tao don online: `read_product()` co the tra
+        OnHand cu tới 1 tieng -> khach dat trung hang da ban het o quay, don van duoc nhan.
+        Chi goi tren vai SP trong gio hang (khong phai vong lap toan bo products).
+        Doc xong thi nap lai cache de cac luong khac cung huong so moi.
+        """
+        key = str(product_id)
+        doc = self.products_ref.document(key).get()
+        if not doc.exists:
+            self.cache.invalidate(key)
+            return None
+        product = doc.to_dict()
+        self.cache.set(key, product, ttl=CACHE_TTL)
+        return product
 
     def read_products_bulk(self, product_ids) -> Dict[str, Dict]:
         """Doc nhieu san pham 1 luot bang Firestore get_all thay vi N lan document().get().
@@ -1056,10 +1075,35 @@ class FirestoreProductService:
             print(f"   - Inactive: {inactive_count}")
             print(f"   - Deleted: {deleted_count}")
 
+            # Danh sach SP vua doi, dang gon de caller broadcast WebSocket (DatHang/BanHang
+            # dang mo se thay ton kho moi ma khong can reload trang).
+            # Cap lai: lan sync dau sau khi doi logic checksum co the dung ca chuc nghin SP,
+            # emit het se lam nghen socket -> bo qua, client lay lai o lan load sau.
+            changed_products = []
+            if len(to_upsert) <= MAX_SYNC_BROADCAST:
+                for doc_id, payload in to_upsert:
+                    # Id phai la so: cac client (BanHang/Management/DatHang) key IndexedDB
+                    # theo Id dang number, emit string se khong khop record nao.
+                    pid = payload.get("Id")
+                    if pid is None:
+                        try:
+                            pid = int(doc_id)
+                        except (TypeError, ValueError):
+                            pid = doc_id
+                    entry = {"Id": pid}
+                    for field in ("OnHand", "BasePrice", "Cost", "Name", "FullName",
+                                  "Code", "ModifiedDate"):
+                        if payload.get(field) is not None:
+                            entry[field] = payload.get(field)
+                    changed_products.append(entry)
+            elif to_upsert:
+                print(f"  ⚠️ {len(to_upsert)} SP thay doi > {MAX_SYNC_BROADCAST} -> bo qua broadcast WebSocket")
+
             return {
                 "success": True,
                 "message": "Đồng bộ thành công",
                 "version": "optimized_v2",
+                "changed_products": changed_products,
                 "stats": {
                     "total_api_items": len(api_items),
                     "updated_or_created": len(to_upsert),
@@ -1678,6 +1722,47 @@ class FirestoreProductService:
         self.cache.invalidate_prefix("products_by_category:")
 
         print(f"🗑️ Invalidated ALL product cache keys")
+
+    def patch_stock_caches(self, updates):
+        """Dong bo cache RAM sau khi BanHang ghi thang OnHand/OnHandNV xuong Firestore.
+
+        `update_products_from_banhang_app_to_firestore()` ghi bang transaction, KHONG di qua
+        service nen truoc day khong dung den cache -> Firestore dung nhung `/api/public/*`
+        van tra so cu toi 15-55 phut (khach moi vao thay "con 3", bam Dat hang thi bao het).
+
+        Chien luoc theo tung loai cache, de KHONG phat sinh doc Firestore:
+        - `all_products` / `products_by_category:` -> patch in-place (invalidate se bat
+          `read_products_by_category()` query lai Firestore).
+        - `featured_products:` -> xoa han. Build lai chi la filter+sort tren `all_products`
+          da nam san trong RAM (~3ms/15k SP, 0 read Firestore), va patch in-place khong du:
+          `get_featured_products()` giu ban sao rieng da sort.
+        - doc le theo id -> xoa, lan doc sau lay ban moi.
+
+        Args:
+            updates: list [{"Id": ..., "OnHand"|"OnHandNV": so}, ...]
+        Returns:
+            So ban ghi da patch trong cac list cache.
+        """
+        updates_by_id = {}
+        for u in updates or []:
+            pid = u.get("Id")
+            if pid is None:
+                continue
+            fields = {k: v for k, v in u.items()
+                      if k in ("OnHand", "OnHandNV") and v is not None}
+            if fields:
+                updates_by_id[str(pid)] = fields
+
+        if not updates_by_id:
+            return 0
+
+        for pid in updates_by_id:
+            self.cache.invalidate(pid)
+
+        patched = self.cache.bulk_update_items_in_lists("all_products", "Id", updates_by_id)
+        patched += self.cache.bulk_update_items_in_lists("products_by_category:", "Id", updates_by_id)
+        self.cache.invalidate_prefix("featured_products:")
+        return patched
 
     def _smart_invalidate_product(self, product_id, updated_data=None, category_id=None, is_delete=False, affects_stock=False):
         """Smart invalidation: cập nhật cache in-place thay vì xóa toàn bộ.

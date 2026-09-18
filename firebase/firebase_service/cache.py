@@ -52,6 +52,34 @@ class Cache:
                     data[i] = {**item, **updated_data}
                     break
 
+    def bulk_update_items_in_lists(self, prefix, item_id_field, updates_by_id):
+        """Patch NHIEU item cung luc trong moi list cache khop prefix, duyet list DUNG 1 LAN.
+
+        Goi update_item_in_lists() trong vong lap se duyet lai ca list cho tung san pham
+        (hoa don 20 mon x 15k SP = 300k vong). Ham nay tra ve so item da patch.
+
+        Args:
+            updates_by_id: {str(item_id): {field: value}}
+        """
+        if not updates_by_id:
+            return 0
+        patched = 0
+        for key, entry in list(self.store.items()):
+            if not key.startswith(prefix):
+                continue
+            if time.time() >= entry["expires"]:
+                self.store.pop(key, None)
+                continue
+            data = entry["data"]
+            if not isinstance(data, list):
+                continue
+            for i, item in enumerate(data):
+                upd = updates_by_id.get(str(item.get(item_id_field)))
+                if upd:
+                    data[i] = {**item, **upd}
+                    patched += 1
+        return patched
+
     def remove_item_from_lists(self, prefix, item_id_field, item_id):
         """
         Remove a single item from all cached lists matching prefix.

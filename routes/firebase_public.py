@@ -41,13 +41,16 @@ def _to_float(v) -> float:
 
 def _public_product(p: dict) -> dict:
     """Chi giu field khach hang duoc phep thay.
-    Gop ton kho clone vao OnHand; cat Cost/OnHandNV/sync/kiotViet noi bo.
+    Cat Cost/OnHandNV/sync/kiotViet noi bo.
+
+    OnHand = ton KiotViet THUAN, KHONG cong CloneOnHandNV: DatHang khong ban hang clone.
+    Truoc day co cong vao -> SP KiotViet het hang nhung con ton clone van hien "con hang",
+    khach dat duoc thu nhan vien khong lay ra ban duoc (bao 18/09/2026).
     Description KHONG public: field nay dang chua ghi chu noi bo cua nhan vien
     (gia si, gia nhap, "k vat"...). Chi mo lai khi du lieu da duoc lam sach.
     Anh: uu tien `ImageVariant` (anh rieng tung bien the, do
     scripts/fix_variant_images_from_kiotviet.py ghi) roi moi den `Image` - `Image` tu sync
     KiotViet la anh cap MASTER nen moi bien the trong nhom deu trung nhau."""
-    on_hand = _to_float(p.get("OnHand")) + _to_float(p.get("CloneOnHandNV"))
     return {
         "Id": p.get("Id"),
         "Code": p.get("Code"),
@@ -61,7 +64,7 @@ def _public_product(p: dict) -> dict:
         "ConversionValue": p.get("ConversionValue"),
         "MasterUnitId": p.get("MasterUnitId"),
         "NormalizedName": p.get("NormalizedName") or "",
-        "OnHand": on_hand,
+        "OnHand": _to_float(p.get("OnHand")),
     }
 
 
@@ -119,6 +122,29 @@ def _serialize_public_products(products: list, reserved_map: dict | None = None)
             if held > 0:
                 item["OnHand"] = max(0.0, _to_float(item.get("OnHand")) - held)
     return cleaned
+
+
+def _paginate_public_products(products: list, reserved_map: dict | None = None):
+    """Loc -> cat trang -> CHI SAU DO moi serialize. Tra `(page, total, offset)`.
+
+    Truoc day serialize ca ~15k SP roi moi cat lay 20 (`_serialize_public_products` o tren):
+    14ms CPU moi request, ke ca khi khach chi cuon them mot trang. `_is_orderable()` khong
+    dung dict nen loc rat re; chi trang thuc su tra ve moi can `_public_product()` -> 4ms.
+    Ket qua tra ve giong het cach cu.
+
+    `limit <= 0` (client khong truyen) van tra toan bo, giu nguyen hanh vi cu.
+    """
+    orderable = [p for p in products if _is_orderable(p)]
+    total = len(orderable)
+    limit, offset = _paginate()
+    selected = orderable[offset:offset + limit] if limit > 0 else orderable
+    page = [_public_product(p) for p in selected]
+    if reserved_map:
+        for item in page:
+            held = _to_float(reserved_map.get(str(item.get("Id"))))
+            if held > 0:
+                item["OnHand"] = max(0.0, _to_float(item.get("OnHand")) - held)
+    return page, total, offset
 
 
 def _public_order(o: dict) -> dict:
@@ -291,7 +317,7 @@ def _order_line(prod, qty, unit_price, is_gift, is_promo, sale_off=0.0):
 
 
 def _recompute_order_economics(order, product_service, promotion_service, customer_service,
-                               reserved_map=None, clone_stock_map=None) -> dict:
+                               reserved_map=None) -> dict:
     """Dung lai TOAN BO don tu server: BO QUA gia/gift/promo/ship do client gui.
     Chi tin {productId, quantity} cua dong mua that; gift/Type3/ship deu tao lai tu server.
     Tra ve {ok, error?, customerPaid, suspicious}."""
@@ -314,7 +340,9 @@ def _recompute_order_economics(order, product_service, promotion_service, custom
                 "Vui lòng mở lại giỏ hàng và nhập lại số lượng.")}
         if not pid:
             continue
-        server = product_service.read_product(str(pid))
+        # Ton kho phai doc FRESH: read_product() co cache 3600s -> validate bang so cu
+        # ca tieng, khach van dat duoc hang da het o quay. Chi vai SP trong gio nen re.
+        server = product_service.read_product_fresh(str(pid))
         if not _is_orderable(server):
             name = (server or {}).get("Name") or (server or {}).get("FullName") or pid
             return {"ok": False, "error": (
@@ -322,12 +350,12 @@ def _recompute_order_economics(order, product_service, promotion_service, custom
                 "(cửa hàng vừa gỡ sản phẩm này). "
                 "Vui lòng xoá sản phẩm đó khỏi giỏ hàng rồi bấm Đặt hàng lại.")}
 
-        # Ton kha dung = ton that - phan don online khac dang giu.
+        # Ton kha dung = ton KiotViet - phan don online khac dang giu. KHONG cong ton clone:
+        # DatHang khong ban hang clone (khop _public_product), cong vao la nhan don qua so
+        # hang thuc su lay ra ban duoc.
         # FE co the doc IndexedDB cu nen phai chan o server, khong tin so luong client thay.
         name = server.get("FullName") or server.get("Name") or pid
         available = _to_float(server.get("OnHand"))
-        if clone_stock_map:
-            available += _to_float(clone_stock_map.get(str(pid)))
         if reserved_map:
             available -= _to_float(reserved_map.get(str(pid)))
         if qty > available:
@@ -487,29 +515,6 @@ def create_firebase_public_bp(
             print(f"[public] reserved map error: {type(e).__name__}: {e}")
             return {}
 
-    def _clone_stock_map() -> dict:
-        """{productGocId: tong OnHandNV cua cac clone}.
-        Dung chung cache key 'clone_stock_map' voi endpoint noi bo de tiet kiem quota."""
-        cache_key = "clone_stock_map"
-        if product_service.cache.has(cache_key):
-            clone_stock = product_service.cache.get(cache_key)
-        else:
-            all_products = product_service.read_all_products(include_inactive=False, include_deleted=False)
-            clone_stock = {}
-            for p in all_products:
-                is_clone = p.get("isClone") is True or p.get("isClone") == "true"
-                on_hand_nv = _to_float(p.get("OnHandNV"))
-                on_hand = _to_float(p.get("OnHand"))
-                if not (is_clone or (on_hand_nv > 0 and on_hand == 0)):
-                    continue
-                if on_hand_nv <= 0:
-                    continue
-                source_id = str(p.get("CloneSourceId") or "")
-                if source_id:
-                    clone_stock[source_id] = clone_stock.get(source_id, 0) + on_hand_nv
-            product_service.cache.set(cache_key, clone_stock, ttl=3600)
-        return clone_stock
-
     def _reserve_stock_for_order(order: dict) -> None:
         """Giu hang cho don vua tao. Loi giu hang KHONG duoc lam hong don da luu:
         don van hop le, chi la khong giu duoc cho -> log de xu ly tay."""
@@ -556,23 +561,11 @@ def create_firebase_public_bp(
         except Exception as e:
             print(f"[reserve] don {oid}: LOI NGOAI Y - {type(e).__name__}: {e}")
 
-    def _enrich_clone_stock(products):
-        """Gop OnHandNV cua clone vao product goc."""
-        clone_stock = _clone_stock_map()
-        for p in products:
-            pid = str(p.get("Id", ""))
-            p["CloneOnHandNV"] = clone_stock.get(pid, 0)
-        return products
-
     @bp.route("/products/featured", methods=["GET"])
     @handle_api_errors
     def public_featured():
         products = product_service.get_featured_products()
-        products = _enrich_clone_stock(products)
-        cleaned = _serialize_public_products(products, _reserved_map())
-        total = len(cleaned)
-        limit, offset = _paginate()
-        page = cleaned[offset:offset + limit] if limit > 0 else cleaned
+        page, total, offset = _paginate_public_products(products, _reserved_map())
         return jsonify({
             "products": page,
             "count": len(page),
@@ -627,11 +620,7 @@ def create_firebase_public_bp(
     @handle_api_errors
     def public_by_category(category_id: int):
         products = product_service.read_products_by_category(category_id)
-        products = _enrich_clone_stock(products)
-        cleaned = _serialize_public_products(products, _reserved_map())
-        total = len(cleaned)
-        limit, offset = _paginate()
-        page = cleaned[offset:offset + limit] if limit > 0 else cleaned
+        page, total, offset = _paginate_public_products(products, _reserved_map())
         return jsonify({
             "products": page,
             "count": len(page),
@@ -652,7 +641,6 @@ def create_firebase_public_bp(
             limit = 80
         limit = min(max(limit, 1), 200)
         products = product_service.search_products(query, limit=limit)
-        products = _enrich_clone_stock(products)
         cleaned = _serialize_public_products(products, _reserved_map())
         return jsonify({"products": cleaned, "count": len(cleaned), "query": query})
 
@@ -733,7 +721,7 @@ def create_firebase_public_bp(
         # Ton kha dung da tru phan don online khac dang giu -> chan oversell.
         econ = _recompute_order_economics(
             order, product_service, promotion_service, customer_service,
-            reserved_map=_reserved_map(), clone_stock_map=_clone_stock_map()
+            reserved_map=_reserved_map()
         )
         if not econ.get("ok"):
             return jsonify({"error": econ.get("error", (

@@ -30,16 +30,18 @@ Luồng thực tế:
 - Trừ `_HIDDEN_CATEGORY_IDS`, sort theo tên, `Path` sinh bằng `_category_path()` (`unidecode`): `"GIA VỊ - ĐỒ KHÔ"` → `GIA_VI_DO_KHO`.
 
 ## Whitelist sản phẩm (`_public_product`) — đã làm gọn
-GIỮ (13 field FE thực dùng): `Id, Code, Name, FullName, Image, BasePrice, Unit, CategoryId, CategoryName, ConversionValue` (product-detail), `MasterUnitId` (GroupService grouping), `NormalizedName` (offline search có dấu), `OnHand` (đã gộp clone).
+GIỮ (13 field FE thực dùng): `Id, Code, Name, FullName, Image, BasePrice, Unit, CategoryId, CategoryName, ConversionValue` (product-detail), `MasterUnitId` (GroupService grouping), `NormalizedName` (offline search có dấu), `OnHand` (**tồn KiotViet thuần, KHÔNG gộp clone** — xem dưới).
 `CategoryName` thêm vào để DatHang **dựng lại danh mục offline** từ IndexedDB khi cả 2 endpoint danh mục chết.
 CẮT: `Cost, OldCost, PackCost, _original*, OnHandNV, CloneOnHandNV (raw), SyncChecksum, SyncTimestamp, Revision, MasterCode, kiotViet*` + `NormalizedCode, MasterProductId, isActive, isDeleted` (BE đã lọc sẵn → FE default khi thiếu).
 
 **`Description` đã bị cắt (2026-09-14).** Field này trong Firestore đang chứa ghi chú nội bộ của nhân viên — `"k vat"`, `"1T = 12c"`, `"1T (20g) = 570k"`, `"21/3: 4.4/gói"` (giá sỉ / giá nhập) — và trước đó lọt nguyên vào response public. Khoảng 6-13% sản phẩm có nội dung dạng này, phần còn lại rỗng.
 Muốn mở lại (ví dụ để nút info mô tả trên card DatHang hoạt động): làm sạch `Description` trên KiotViet trước, rồi thêm lại `"Description": p.get("Description") or ""` vào `_public_product`. FE đã strip HTML sẵn trong `mapProduct()`.
 
-Lọc **server-side** (không để FE tự lọc bằng field nhạy cảm): bỏ clone / KM `(km)` Cost=0 / danh mục ẩn (`1440125, 1787413`) / deleted-inactive. **Gộp `CloneOnHandNV` vào `OnHand`** (ẩn cơ chế clone, vẫn báo đúng tồn kho).
+Lọc **server-side** (không để FE tự lọc bằng field nhạy cảm): bỏ clone / KM `(km)` Cost=0 / danh mục ẩn (`1440125, 1787413`) / deleted-inactive.
 
-**`OnHand` đã trừ phần đơn online đang giữ (2026-09-14).** `_serialize_public_products(products, reserved_map)` trừ số giữ hàng còn hạn khỏi `OnHand` trước khi trả về, nên khách không đặt trùng phần hàng khách khác đã giữ. `add_order` cũng chặn oversell theo `OnHand + clone_stock − reserved`. Chi tiết: `docs/RESERVATION.md`.
+**KHÔNG gộp `CloneOnHandNV` vào `OnHand` (đổi 18/09/2026).** Trước đây có gộp, với lý do "ẩn cơ chế clone, vẫn báo đúng tồn kho" — sai: **DatHang không bán hàng clone**. SP hết hàng trên KiotViet nhưng còn tồn clone vẫn hiện "còn hàng", khách đặt được thứ nhân viên không lấy ra bán được. `_public_product()` giờ trả `OnHand` thuần từ KiotViet. `_clone_stock_map()` và `_enrich_clone_stock()` đã xoá khỏi `firebase_public.py` (hết chỗ gọi; cache key `clone_stock_map` vẫn còn dùng ở `firebase_products.py` cho đường nội bộ).
+
+**`OnHand` đã trừ phần đơn online đang giữ (2026-09-14).** `_serialize_public_products(products, reserved_map)` trừ số giữ hàng còn hạn khỏi `OnHand` trước khi trả về, nên khách không đặt trùng phần hàng khách khác đã giữ. `add_order` cũng chặn oversell theo `OnHand − reserved` (bỏ `clone_stock` từ 18/09/2026, cho khớp con số hiển thị). Chi tiết: `docs/RESERVATION.md`.
 
 ### Ảnh sản phẩm — `ImageVariant` ưu tiên hơn `Image`
 `"Image": p.get("ImageVariant") or p.get("Image")`.
@@ -112,8 +114,97 @@ Ràng buộc: `_STORE_LAT/_STORE_LNG`, tier ship, dòng phí ship (`Id 43370064 
 
 `invalidate_all_product_caches()` vẫn giữ (xoá thẳng, để cache rỗng) — **chỉ** dùng cho KiotViet full sync / cleanup batch, **không** dùng ở đường refresh định kỳ.
 
+## Đồng bộ tồn kho KiotViet (thêm 18/09/2026)
+
+Trước đây DatHang chỉ đọc snapshot Firestore, mà Firestore **chỉ đổi khi user bấm full reload thủ công ở BanHang**. KiotViet bán hết trong ngày → DatHang vẫn hiện còn hàng, khách đặt được hàng không có.
+
+### E1 — validate đơn đọc tồn kho FRESH
+
+| | |
+|---|---|
+| Hàm | `read_product_fresh(product_id)` — `firebase/firebase_service/product_service.py` |
+| Vào / ra | `product_id` (str\|int) → `Dict` sản phẩm, hoặc `None` nếu doc không tồn tại |
+| Khác `read_product()` | **Bỏ qua cache doc-lẻ** (`CACHE_TTL = 3600`), đọc thẳng Firestore rồi nạp lại cache |
+| Gọi từ | `_recompute_order_economics()` trong `routes/firebase_public.py`, đúng vòng validate `qty > available` |
+
+Vì sao cần: `read_product()` cache 1 tiếng → lớp chặn oversell đang so số lượng đặt với **OnHand cũ tới 60 phút**. Chỉ gọi trên vài SP trong giỏ nên chi phí Firestore không đáng kể (không phải vòng lặp toàn bộ products).
+
+> Dòng quà tặng (`read_product(gid)`, ~line 386) **vẫn dùng cache** — chỉ lấy tên/giá để hiển thị, không tham gia check tồn kho.
+
+### E2 — scheduler tự kéo KiotViet → Firestore
+
+| | |
+|---|---|
+| Hàm | `_schedule_kiotviet_auto_sync(product_service, socketio)` — `app.py` |
+| Chu kỳ | env `KIOTVIET_AUTO_SYNC_MINUTES`, mặc định **15**; đặt `0` để **tắt** |
+| Thread | daemon riêng, `threading.Lock` non-blocking — tick trước chưa xong thì **bỏ** tick này, không xếp hàng |
+
+Mỗi lượt chạy 3 bước, theo đúng thứ tự:
+1. `sync_products_from_kiotviet()` — fetch KiotViet, so `SyncChecksum`, chỉ ghi SP đổi.
+2. `refresh_all_products_cache()` — **bắt buộc**: bước 1 kết thúc bằng `invalidate_all_product_caches()` nên cache rỗng; không nạp lại ngay thì request khách kế tiếp tự kéo full scan (đúng vết stampede 11/09/2026 ở mục trên).
+3. `broadcast_products_onhand_updated(socketio, changed)` — client đang mở thấy tồn kho mới, không cần reload.
+
+**KHÔNG BAO GIỜ gọi KiotViet trong request của khách.** Một lần fetch là `pageSize: 20000`, thường 30–60s (`FromKiotViet/get_entire_product.py`). Trên gunicorn `--workers=1 --threads=32`, vài khách mở Home cùng lúc là cạn thread → nginx 504 toàn bộ API. `public_categories()` đã có sẵn cảnh báo này.
+
+`sync_products_from_kiotviet()` nay trả thêm key **`changed_products`**: list `{Id, OnHand, BasePrice, Cost, Name, FullName, Code, ModifiedDate}` của SP vừa đổi (chỉ field khác `None`). `Id` ép về **number** để khớp key IndexedDB của client. Quá `MAX_SYNC_BROADCAST = 500` SP thì trả list rỗng + log cảnh báo — emit cả chục nghìn SP sẽ nghẹn socket, client lấy lại ở lần load sau.
+
+### Còn lệch — chưa xử
+
+- ~~**SP có clone**: WS emit `OnHand` thô, IndexedDB DatHang lưu `OnHand` đã gộp clone → WS ghi đè gây lệch.~~ **Hết lệch** sau khi bỏ gộp clone (cùng ngày): cả `_public_product()` lẫn WS giờ cùng nói `OnHand` thuần KiotViet.
+- **Rác còn lại ở FE DatHang**: `product-card.component.ts` và `product-detail.component.ts` vẫn cộng `+ (product.CloneOnHandNV || 0)`. Field này không còn trong payload → luôn `undefined` → `|| 0`, **vô hại nhưng là code chết**. Dọn ở bước FE riêng (rule: không sửa FE + BE trong cùng một bước).
+- **Sync thủ công ở BanHang chạy song song với scheduler**: lock chỉ có trong scheduler. Hai luồng có thể fetch KiotViet cùng lúc; ghi Firestore là `batch.set(merge=True)` nên idempotent, hệ quả chỉ là tốn quota.
+- **Realtime thật (push)** cần webhook của KiotViet **Public API** (`public.kiotapi.com`, OAuth `client_id`/`client_secret`). Dự án đang dùng **internal API** (`api-man1.kiotviet.vn`, login UserName/Password + `FingerPrintKey`) — API này **không có webhook**, chỉ pull được.
+
+## BanHang bán hàng → cache RAM phải được vá (sửa 18/09/2026)
+
+`PUT /api/firebase/products/update_onhand_batch` gọi `update_products_from_banhang_app_to_firestore()` (`firebase/firebase_hanghoa/import_to_firestore.py`) — hàm này ghi Firestore bằng **transaction trực tiếp, không đi qua `product_service`**, nên trước đây **không đụng một dòng cache nào**.
+
+Hậu quả: Firestore đúng, cache RAM sai → nghịch lý
+- khách **đang mở** DatHang: `broadcast_products_onhand_updated()` bắn ngay → IndexedDB đúng tức thì;
+- khách **mới vào / F5**: đọc `/api/public/*` từ cache → thấy tồn cũ tới **15–55 phút**.
+
+Triệu chứng nhận dạng: *card hiện "còn 3", bấm Đặt hàng thì báo "đã hết hàng"* (validate dùng `read_product_fresh()` nên luôn đúng — xem E1).
+
+Route nay gọi `product_service.patch_stock_caches(updates)` trước khi broadcast. Chiến lược **khác nhau theo từng loại cache**, cốt để không phát sinh đọc Firestore:
+
+| Cache | Xử lý | Vì sao |
+|---|---|---|
+| `all_products*` | patch in-place | Invalidate = full scan 15k doc |
+| `products_by_category:*` | patch in-place | Invalidate = `read_products_by_category()` query lại Firestore |
+| `featured_products:*` | **xoá hẳn** | `get_featured_products()` giữ bản sao riêng đã sort nên patch không đủ. Build lại chỉ là filter+sort trên `all_products` đã nằm sẵn trong RAM — **~3 ms/15k SP, 0 read Firestore** |
+| doc lẻ theo id | xoá | Lần đọc sau lấy bản mới |
+
+`Cache.bulk_update_items_in_lists(prefix, id_field, updates_by_id)` duyệt mỗi list **đúng 1 lần** cho cả lô. Gọi `update_item_in_lists()` trong vòng lặp thì chi phí tăng tuyến tính theo số món:
+
+| Hoá đơn | `bulk_update_items_in_lists` | vòng lặp từng món |
+|---|---|---|
+| 1 món | 3,0 ms | 1,9 ms |
+| 20 món | **3,3 ms** | 26,1 ms |
+| 50 món | **3,1 ms** | 64,0 ms |
+
+Tổng chi phí mỗi hoá đơn ≈ **3,3 ms** (patch) + **3,3 ms** (rebuild featured ở request kế tiếp) ≈ **6,6 ms**, không tốn read Firestore. Với nhịp 1–2 hoá đơn/phút là không đáng kể.
+
+> **Trần đồng thời của backend KHÔNG phải CPU.** `transports=['polling']` (app.py) → mỗi client Socket.IO đang mở **giữ một thread** gunicorn tới `pingInterval` 25s, trong khi `--threads=32`. Xem rule trong `CLAUDE.md`. Đừng dùng số ms ở trên để suy ra số người đồng thời.
+
+### Lọc trước, serialize sau — `_paginate_public_products()` (sửa 18/09/2026)
+Trước đây `public_featured()` / `public_by_category()` dựng dict cho cả ~15k SP **rồi mới** cắt `[offset:offset+limit]` lấy 20 cái — **14 ms CPU mỗi request**, kể cả khi khách chỉ cuộn thêm một trang.
+
+`_paginate_public_products(products, reserved_map)` đảo thứ tự: `_is_orderable()` (không dựng dict, rất rẻ) → cắt trang → `_public_product()` **chỉ cho trang thực sự trả về** → trừ `reserved_map` trên đúng trang đó. Trả `(page, total, offset)`.
+
+| | mỗi request | RAM thêm |
+|---|---|---|
+| Cũ: serialize 15k rồi cắt | 14,1 ms | — |
+| **Nay: lọc → cắt → serialize 20** | **4,2 ms** | **0** |
+| (đã cân nhắc) cache list đã serialize | 0,01 ms | 2–4 MB |
+
+**Đã cân nhắc và bỏ** phương án cache list đã serialize, dù nhanh hơn 1369×: nó thêm **một cache key nữa phải nhớ invalidate mỗi khi tồn kho đổi** — đúng họ với bug `featured_products:*` bị quên xoá ở mục trên. Mua 4 ms bằng một mầm bug cùng loại là lỗ.
+
+`_serialize_public_products()` **vẫn giữ** cho `public_search()`: search trả tối đa 200 SP và không phân trang, nên không có gì để tiết kiệm.
+
+> Đây là tối ưu **latency đuôi lúc burst**, không phải tăng trần người dùng. Ở tải thường (~5 req/s) endpoint này chỉ ăn ~7% một core; giá trị thật là khi cả nhà cùng mở app một lúc (60 request dồn: ~840 ms → ~250 ms CPU qua GIL). Trần đồng thời vẫn là 32 thread long-poll — xem cảnh báo ở mục trên.
+
 ## CÒN MỞ (ngoài scope `firebase_public.py`)
 - **`/api/firebase/*` không auth**: ĐÃ FIX bằng admin-auth gate (`X-Id-Token`, `ENFORCE_ADMIN_AUTH`). Xem `ADMIN-AUTH.md`.
 - **`GET /api/firebase/orders/<id>` rò PII/totalCost**: ĐÃ FIX — endpoint full giờ gate admin; DatHang dùng `/api/public/orders/<id>` slim. (Residual nhỏ: nội dung đơn — tên món/giá — vẫn xem được nếu đoán ID; muốn kín hẳn thì token theo đơn.)
 - **`/api/firebase/promotions/apply` tin `basePrice` client**: chỉ ảnh hưởng số HIỂN THỊ; số TÍNH TIỀN đã đúng vì add_order tự chạy lại engine với giá server.
-- **Stock hard-check trong add_order**: chưa làm (cần enrich clone-stock để tránh reject oan SP bán qua clone).
+- ~~**Stock hard-check trong add_order**: chưa làm~~ → ĐÃ LÀM. `_recompute_order_economics()` chặn `qty > OnHand - reserved`, và từ 18/09/2026 đọc tồn kho FRESH (E1, mục trên) nên không còn so với cache 1 tiếng.
