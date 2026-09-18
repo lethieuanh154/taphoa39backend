@@ -157,6 +157,12 @@ e=local                                    # Environment
 KIOTVIET_USER=...                          # KiotViet credentials
 KIOTVIET_PASSWORD=...
 KIOTVIET_RETAILER=...
+KvPasswordChangedAt=2026-09-18                 # Ngày đổi mật khẩu KiotViet gần nhất (YYYY-MM-DD).
+                                               # /api/auth/login + /api/auth/refresh trả về trong
+                                               # kiotviet.password_changed_at; FE BanHang dùng để
+                                               # tính cảnh báo hạn 90 ngày. Mỗi lần đổi mật khẩu
+                                               # KiotViet PHẢI cập nhật biến này, nếu không mọi máy
+                                               # sẽ cảnh báo sai. Bỏ trống = tắt cảnh báo.
 GEMINI_API_KEY=...                         # Google Gemini API
 GEMINI_FLASH_MODEL=gemini-1.5-flash
 GEMINI_PRO_MODEL=gemini-1.5-pro

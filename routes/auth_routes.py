@@ -5,7 +5,7 @@ from functools import wraps
 from firebase.firebase_auth.auth_firebase_setup import verify_firebase_token
 from firebase.firebase_auth.user_management import UserManager
 
-from Utility.get_env import UserName, Password, LatestBranchId, retailer
+from Utility.get_env import UserName, Password, LatestBranchId, retailer, KvPasswordChangedAt
 from FromKiotViet.get_authorization import get_authen_with_credentials
 
 auth_bp = Blueprint('auth', __name__, url_prefix='/api/auth')
@@ -97,7 +97,8 @@ def login():
             "kiotviet": {
                 "access_token": kiotviet_token,
                 "retailer": retailer,
-                "branch_id": LatestBranchId
+                "branch_id": LatestBranchId,
+                "password_changed_at": KvPasswordChangedAt
             }
         }), 200
         
@@ -127,7 +128,8 @@ def refresh_token():
         "kiotviet": {
             "access_token": kiotviet_token,
             "retailer": retailer,
-            "branch_id": LatestBranchId
+            "branch_id": LatestBranchId,
+            "password_changed_at": KvPasswordChangedAt
         }
     }), 200
 
