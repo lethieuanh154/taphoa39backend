@@ -81,7 +81,20 @@ Cách hiện tại:
 `_recompute_order_economics()` **KHÔNG tin gì từ client trừ `{productId, quantity}`** của dòng mua thật. Dựng lại toàn bộ `cartItems` + tiền từ Firestore:
 - **Bỏ mọi dòng `isGift`/`isPromotionItem` client gửi** → gift/Type3 tạo lại từ `apply_promotions()` (chống tiêm hàng tặng giả để lấy free).
 - **Giá bán**: `BasePrice` từ Firestore; giảm giá Type2/Type3 tính server-side (khớp làm tròn floor-1000 của FE).
-- **Ship**: port `calculateShipCost()`; tính lại `distanceKm` từ `lat/lng` (store `16.019693, 108.197694`, ROAD_FACTOR 1.3, `Math.round`→`floor(x/1000+0.5)*1000`).
+- **Ship**: port `calculateShipCost()`; tính lại `distanceKm` từ `lat/lng` (store `16.019693, 108.197694`, ROAD_FACTOR 1.3, `Math.round`→`floor(x/1000+0.5)*1000`). Bảng phí (23/09/2026, **bỏ phụ phí hàng nặng**):
+
+  | Subtotal | freeKm | đ/km | minKm |
+  |---|---|---|---|
+  | < 200.000 | — không giao — | | |
+  | < 500.000 | 0 | 13.000 | **1,0** |
+  | < 1.000.000 | 1 | 6.000 | 0 |
+  | < 2.000.000 | 2 | 5.000 | 0 |
+  | < 5.000.000 | 3 | 5.000 | 0 |
+  | < 10.000.000 | 5 | 5.000 | 0 |
+  | ≥ 10.000.000 | 8 | 4.000 | 0 |
+
+  `chargeable = max(minKm, distanceKm - freeKm)`. `minKm` chỉ khác 0 ở bậc đầu — đơn nhỏ ở rất gần vẫn phải trả tối thiểu 1km, vì chi phí giao có phần cố định ~10.000đ không phụ thuộc quãng đường.
+- **Chiết khấu sỉ hàng thùng** (`_pickup_bulk_discount()`, mới 23/09/2026): **> 10 thùng** hàng nặng (`_HEAVY_PATTERN`, `Unit == "thùng"`) → **2.000đ/thùng**. **CHỈ khi `wantDelivery == false`** — giá sỉ là giá tại cửa hàng, không cộng gộp với giao hàng. Cap ở `subtotal`. Ghi ra `order["pickupBulkDiscount"]` + `order["heavyCaseCount"]`, cộng vào `discountAmount`, và trừ khỏi subtotal **trước** khi cap điểm thưởng (`subtotal_payable`).
 - **Điểm thưởng**: cap theo số dư THẬT (`_calc_gift_point()` trong `verify-identity`), không tin `giftPoint` client.
 - **Giá vốn**: `totalCost` từ `Cost` server → BanHang theo dõi lợi nhuận. Dòng cartItems dùng `_public_product` → **KHÔNG lưu `Cost` per-line** (tránh rò qua GET order).
 - **Chống overwrite (atomic)**: dùng `orders_ref.document(id).create()` → `409` nếu id tồn tại (không còn race read+set). Không có id → server tự sinh `DH+timestamp`.
@@ -93,7 +106,7 @@ Cách hiện tại:
 ## `GET /api/public/orders/<id>` — chi tiết đơn SLIM (cho my-orders/confirm)
 `_public_order()`: chỉ trả `id, status, createdDate, customerPaid, wantDelivery, desiredDelivery*, cartItems[{product.Name/Image, quantity, unitPrice}]`. **CẮT** SĐT/địa chỉ/lat-lng/`totalCost`/`discountAmount`. `/api/firebase/orders/<id>` (full) giờ đã **GATE admin**. FE `order-api.getOrderById` đã repoint sang path này.
 
-Ràng buộc: `_STORE_LAT/_STORE_LNG`, tier ship, dòng phí ship (`Id 43370064 / Code SP170288`) phải khớp FE. Đơn nội bộ (BanHang/Management) vẫn qua `/api/firebase/add_order` cũ.
+Ràng buộc: `_STORE_LAT/_STORE_LNG`, tier ship, `_BULK_DISCOUNT_MIN_CASES/_BULK_DISCOUNT_PER_CASE`, `_HEAVY_PATTERN`, dòng phí ship (`Id 43370064 / Code SP170288`) phải khớp FE (`TapHoa39DatHang/src/app/services/shipping.service.ts`). Đơn nội bộ (BanHang/Management) vẫn qua `/api/firebase/add_order` cũ.
 
 ## Cache sản phẩm — chống stampede (sửa 11/09/2026)
 

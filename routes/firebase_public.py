@@ -26,6 +26,8 @@ _SHIP_PRODUCT_ID = 43370064
 _SHIP_PRODUCT_CODE = "SP170288"
 _MIN_DELIVERY_SUBTOTAL = 200000
 _SUSPICIOUS_UNDERPAY = 1000  # client tra thieu hon server qua muc nay -> gan co
+_BULK_DISCOUNT_MIN_CASES = 10    # phai NHIEU HON muc nay moi duoc chiet khau si
+_BULK_DISCOUNT_PER_CASE = 2000   # d/thung, chi khi khach tu den lay hang
 _HEAVY_PATTERN = re.compile(
     r"\b(bia|nước suối|nước khoáng|sữa|nước ngọt|nước tăng lực|nước giải khát)\b",
     re.IGNORECASE,
@@ -245,8 +247,8 @@ def _recompute_distance_km(lat, lng, fallback_km) -> float:
     return math.ceil(road * 10) / 10
 
 
-def _heavy_surcharge(real_items) -> int:
-    """Port calculateHeavySurcharge() cua FE."""
+def _heavy_case_count(real_items) -> float:
+    """Tong so thung hang nang trong don. Port countHeavyCases() cua FE."""
     total_cases = 0.0
     for r in real_items:
         p = r["product"]
@@ -254,33 +256,38 @@ def _heavy_surcharge(real_items) -> int:
         name = p.get("FullName") or p.get("Name") or ""
         if unit == "thùng" and _HEAVY_PATTERN.search(name):
             total_cases += r["quantity"]
-    if total_cases > 20:
-        return 100000
-    if total_cases > 10:
-        return 50000
-    if total_cases > 5:
-        return 20000
-    return 0
+    return total_cases
 
 
-def _calc_ship_cost(subtotal, distance_km, real_items) -> float:
-    """Port calculateShipCost() cua FE ShippingService."""
+def _pickup_bulk_discount(real_items) -> float:
+    """Chiet khau si khi khach TU DEN LAY hang: tren 10 thung hang nang -> 2.000d/thung.
+    KHONG ap dung cho don giao hang (gia si la gia tai cua hang).
+    Port calculatePickupBulkDiscount() cua FE."""
+    cases = _heavy_case_count(real_items)
+    if cases <= _BULK_DISCOUNT_MIN_CASES:
+        return 0.0
+    return cases * _BULK_DISCOUNT_PER_CASE
+
+
+def _calc_ship_cost(subtotal, distance_km) -> float:
+    """Port calculateShipCost() cua FE ShippingService. Khong con phu phi hang nang."""
     if subtotal < _MIN_DELIVERY_SUBTOTAL:
         return 0.0
     if subtotal < 500000:
-        free_km, rate = 0, 12000
+        free_km, rate, min_km = 0, 13000, 1.0   # tinh toi thieu 1km
     elif subtotal < 1000000:
-        free_km, rate = 2, 6000
+        free_km, rate, min_km = 1, 6000, 0.0
     elif subtotal < 2000000:
-        free_km, rate = 3, 5000
+        free_km, rate, min_km = 2, 5000, 0.0
+    elif subtotal < 5000000:
+        free_km, rate, min_km = 3, 5000, 0.0
     elif subtotal < 10000000:
-        free_km, rate = 5, 5000
+        free_km, rate, min_km = 5, 5000, 0.0
     else:
-        free_km, rate = 7, 4000
-    chargeable = max(0.0, distance_km - free_km)
+        free_km, rate, min_km = 8, 4000, 0.0
+    chargeable = max(min_km, distance_km - free_km)
     raw = chargeable * rate
-    ship = math.floor(raw / 1000 + 0.5) * 1000  # khop Math.round cua JS
-    return ship + _heavy_surcharge(real_items)
+    return math.floor(raw / 1000 + 0.5) * 1000  # khop Math.round cua JS
 
 
 def _customer_available_points(customer_service, customer) -> float:
@@ -427,8 +434,10 @@ def _recompute_order_economics(order, product_service, promotion_service, custom
             total_cost += _to_float(gs.get("Cost")) * gqty
             new_items.append(_order_line(gs, gqty, 0.0, True, True))
 
-    # 4. Ship: tinh lai tu lat/lng (khong tin shipCost/distanceKm client)
+    # 4. Ship / chiet khau si: dung lai tu server (khong tin shipCost/distanceKm client)
+    real_lines = [{"product": s, "quantity": qty} for (s, _pid, qty) in purchased]
     ship_cost = 0.0
+    bulk_discount = 0.0
     if order.get("wantDelivery"):
         lat, lng = order.get("lat"), order.get("lng")
         if not _valid_latlng(lat, lng):
@@ -443,13 +452,17 @@ def _recompute_order_economics(order, product_service, promotion_service, custom
                 "Vui lòng mua thêm, hoặc bỏ chọn giao hàng và tự đến lấy tại cửa hàng.")}
         distance = _recompute_distance_km(lat, lng, None)  # KHONG fallback distanceKm client
         order["distanceKm"] = distance
-        ship_items = [{"product": s, "quantity": qty} for (s, _pid, qty) in purchased]
-        ship_cost = _calc_ship_cost(subtotal, distance, ship_items)
+        ship_cost = _calc_ship_cost(subtotal, distance)
         if ship_cost > 0:
             new_items.append(_order_line(
                 {"Id": _SHIP_PRODUCT_ID, "Code": _SHIP_PRODUCT_CODE, "Name": "Phi Giao hang",
                  "FullName": "Phi Giao hang", "BasePrice": ship_cost, "Unit": "Dich vu"},
                 1, ship_cost, False, False))
+    else:
+        # Tu den lay hang -> chiet khau si hang thung. KHONG cong gop voi don giao hang.
+        bulk_discount = min(_pickup_bulk_discount(real_lines), subtotal)
+
+    subtotal_payable = subtotal - bulk_discount
 
     # 5. Diem thuong: cap theo so du THAT (logic RewardService.calculateFinal)
     available = _customer_available_points(customer_service, order.get("customer"))
@@ -457,16 +470,18 @@ def _recompute_order_economics(order, product_service, promotion_service, custom
     req_order = max(0.0, _to_float(order.get("pointsUsedForOrder")))
     pts_ship = min(available, ship_cost, req_ship) if req_ship > 0 else 0.0
     remaining = max(0.0, available - pts_ship)
-    pts_order = min(remaining, subtotal, req_order) if req_order > 0 else 0.0
+    pts_order = min(remaining, subtotal_payable, req_order) if req_order > 0 else 0.0
 
-    customer_paid = max(0.0, (subtotal - pts_order) + (ship_cost - pts_ship))
+    customer_paid = max(0.0, (subtotal_payable - pts_order) + (ship_cost - pts_ship))
 
     # 6. Ghi de order bang du lieu server (chan ly)
     order["cartItems"] = new_items
     order["shipCost"] = ship_cost
+    order["pickupBulkDiscount"] = bulk_discount
+    order["heavyCaseCount"] = _heavy_case_count(real_lines)
     order["pointsUsedForShip"] = pts_ship
     order["pointsUsedForOrder"] = pts_order
-    order["discountAmount"] = total_discount + pts_order
+    order["discountAmount"] = total_discount + pts_order + bulk_discount
     order["totalCost"] = total_cost
     order["totalQuantity"] = sum(q for (_s, _p, q) in purchased)
     order["customerPaid"] = customer_paid
