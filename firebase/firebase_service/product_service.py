@@ -1001,6 +1001,11 @@ class FirestoreProductService:
                 if not is_active:
                     product_to_store["StoreForIndexedDB"] = True
 
+                # KiotViet khong tra ProductType cho moi SP -> dung ghi None de len Firestore,
+                # merge=True se set null va xoa mat gia tri cu. Thieu key thi merge giu nguyen.
+                if product_to_store.get("ProductType") is None:
+                    product_to_store.pop("ProductType", None)
+
                 # ✅ Enforce inventory rule: KiotViet products are originals, so they should not have onHandNV.
                 # The 'isClone' flag is internal to our app, so we can't use the generic sanitizer here.
                 if "onHandNV" in product_to_store:

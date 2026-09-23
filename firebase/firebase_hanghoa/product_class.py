@@ -93,6 +93,11 @@ class Product:
     OrderTemplate: Optional[str] = None
     TaxIds: Optional[List[int]] = None
     Tax: Optional[Union[int, str]] = None  # Tax value: 0, 5, 8, 10 (number) hoac "KCT", "KKKNT" (string)
+    # KiotViet ProductType: 1=hang hoa, 2=combo, 3=DICH VU (khong co ton kho, BasePrice=0,
+    # gia dat theo tung lan ban). FE loai dich vu khoi moi logic kho + refresh gia —
+    # xem TapHoa39BanHang/src/app/shared/product-type.ts. Thieu field nay thi FE khong
+    # phan biet duoc dich vu voi hang hoa het hang.
+    ProductType: Optional[int] = None
 
     @staticmethod
     def from_dict(data: dict) -> "Product":
@@ -180,4 +185,5 @@ class Product:
             OrderTemplate=data.get("OrderTemplate"),
             TaxIds=tax_ids,
             Tax=tax_value,
+            ProductType=safe_int(data.get("ProductType")),
         )
