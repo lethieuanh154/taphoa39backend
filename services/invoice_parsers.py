@@ -558,7 +558,10 @@ class TaxInvoiceXMLParser:
                     # - has_per_item_tax → tính amount + taxAmount
                     # - Không có per-item tax (dạng C26TTH) → None (FE hiển thị "-")
                     ttkhac_amount = TaxInvoiceXMLParser._parse_amount(find_in_ttkhac(hhdv_element, 'Amount', 'AmountOC', 'TongTien_CoThue', 'Thành tiền thanh toán của hàng hóa'))
-                    if ttkhac_amount > item_amount:
+                    # MISA (Tâm Bảo Phương): TTKhac/Amount = SL × ĐG (trước CK, trước thuế) → KHÔNG phải sau thuế
+                    is_gross_amount = (stckhau > 0 and item_quantity > 0 and item_unit_price > 0
+                                       and abs(ttkhac_amount - item_quantity * item_unit_price) < 2)
+                    if ttkhac_amount > item_amount and not is_gross_amount:
                         item_amount_after_tax = ttkhac_amount
                     elif has_per_item_tax:
                         item_amount_after_tax = item_amount + item_tax_amount

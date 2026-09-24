@@ -145,7 +145,10 @@ class TaxInvoiceXMLParser:
             # Chiết khấu giảm trừ dòng (STCKhau). ThTien = SL×DGia CHƯA trừ chiết khấu,
             # nên base trước thuế thực tế = ThTien - STCKhau.
             discount = TaxInvoiceXMLParser._get_float(item_tag, 'STCKhau')
-            net_before_tax = amount - discount
+            gross = TaxInvoiceXMLParser._get_float(item_tag, 'SLuong') * TaxInvoiceXMLParser._get_float(item_tag, 'DGia')
+            # MISA: ThTien đã trừ CK sẵn (ThTien ≈ SL×ĐG - STCKhau) → không trừ lần nữa
+            ck_already_deducted = discount > 0 and gross > 0 and abs(amount - (gross - discount)) < 2
+            net_before_tax = amount if ck_already_deducted else amount - discount
             # Lấy thuế per-item: ưu tiên TThue direct tag, fallback TTKhac/VATAmount
             tax_amount = TaxInvoiceXMLParser._get_float(item_tag, 'TThue')
             if tax_amount == 0:
@@ -170,7 +173,9 @@ class TaxInvoiceXMLParser:
             # - TTKhac/Amount = thành tiền thanh toán (đã trừ chiết khấu + gồm thuế) nếu > net_before_tax
             # - Ngược lại (dạng B MISA: Amount = trước thuế) thì tính = net_before_tax + tax_amount
             ttkhac_amount = TaxInvoiceXMLParser._get_ttkhac_float(item_tag, 'Amount', 'AmountOC', 'TongTien_CoThue', 'Thành tiền thanh toán của hàng hóa')
-            if ttkhac_amount > net_before_tax:
+            # MISA (Tâm Bảo Phương): TTKhac/Amount = SL × ĐG (trước CK, trước thuế) → KHÔNG phải sau thuế
+            is_gross_amount = discount > 0 and gross > 0 and abs(ttkhac_amount - gross) < 2
+            if ttkhac_amount > net_before_tax and not is_gross_amount:
                 amount_after_tax = ttkhac_amount
             else:
                 amount_after_tax = net_before_tax + tax_amount
