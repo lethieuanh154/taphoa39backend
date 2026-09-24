@@ -13,6 +13,26 @@ CACHE_TTL_ACTIVE = 300  # 5 min for active promotions
 # Response da dung san cua /api/public/promotions/active (gom ca targetProduct/giftProducts)
 PUBLIC_ACTIVE_PROMOS_KEY = "public_active_promotions"
 PUBLIC_ACTIVE_PROMOS_TTL = 300
+# KM ngan ngay (< 7 ngay) = KM banner popup Home DatHang, toi da 4 SP chay trung thoi gian
+FLASH_BANNER_MAX_DAYS = 7
+FLASH_BANNER_MAX_PRODUCTS = 4
+
+
+def parse_iso(value) -> Optional[datetime]:
+    try:
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def is_flash_banner(promo: Dict) -> bool:
+    """Suy ra tu fromDate/toDate - khong luu field rieng."""
+    start = parse_iso(promo.get("fromDate"))
+    end = parse_iso(promo.get("toDate"))
+    if not start or not end or end <= start:
+        return False
+    return (end - start).total_seconds() < FLASH_BANNER_MAX_DAYS * 86400
 
 # Init Firestore from FIREBASE_SERVICE_ACCOUNT_DATHANG project
 db = init_firestore("FIREBASE_SERVICE_ACCOUNT_DATHANG", app_name="dathang_app")

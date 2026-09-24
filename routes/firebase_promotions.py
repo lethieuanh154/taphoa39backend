@@ -1,11 +1,38 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from flask import Blueprint, jsonify, request
 from routes.shared import handle_api_errors
+from firebase.firebase_service.promotion_service import (
+    FLASH_BANNER_MAX_PRODUCTS, is_flash_banner, parse_iso,
+)
 
 
 def create_firebase_promotions_bp(promotion_service, product_service, socketio) -> Blueprint:
     bp = Blueprint("firebase_promotions", __name__, url_prefix="/api/firebase")
+
+    def _flash_banner_error(promo: dict, promo_id: str | None = None) -> str | None:
+        """KM ngan ngay (< 7 ngay) = banner DatHang: toi da 4 SP chay trung thoi gian."""
+        if not is_flash_banner(promo):
+            return None
+        start = parse_iso(promo.get("fromDate"))
+        end = parse_iso(promo.get("toDate"))
+
+        now = datetime.now(timezone.utc)
+        products = {str(promo.get("targetProductId"))}
+        for other in promotion_service.read_all_promotions(include_disabled=False):
+            if other.get("id") == promo_id or not is_flash_banner(other):
+                continue
+            o_start = parse_iso(other.get("fromDate"))
+            o_end = parse_iso(other.get("toDate"))
+            if o_end < now:
+                continue
+            if o_start < end and o_end > start:
+                products.add(str(other.get("targetProductId")))
+        if len(products) > FLASH_BANNER_MAX_PRODUCTS:
+            return f"KM duoi 7 ngay (banner DatHang) toi da {FLASH_BANNER_MAX_PRODUCTS} san pham cung thoi gian"
+        return None
 
     # ──────────────────────────────────────────────
     # READ
@@ -110,6 +137,10 @@ def create_firebase_promotions_bp(promotion_service, product_service, socketio) 
         if has_fixed and not data.get("discountAmount"):
             return jsonify({"status": "error", "message": "Giam tien requires discountAmount"}), 400
 
+        err = _flash_banner_error(data)
+        if err:
+            return jsonify({"status": "error", "message": err}), 400
+
         result = promotion_service.create_promotion(data)
 
         # Broadcast via WebSocket
@@ -127,6 +158,14 @@ def create_firebase_promotions_bp(promotion_service, product_service, socketio) 
         data = request.get_json(silent=True)
         if not data:
             return jsonify({"status": "error", "message": "No data provided"}), 400
+
+        if any(k in data for k in ("fromDate", "toDate", "targetProductId", "isEnabled")):
+            existing = promotion_service.read_promotion(promo_id) or {}
+            merged = {**existing, **data}
+            if merged.get("isEnabled", True):
+                err = _flash_banner_error(merged, promo_id)
+                if err:
+                    return jsonify({"status": "error", "message": err}), 400
 
         result = promotion_service.update_promotion(promo_id, data)
 
@@ -156,6 +195,11 @@ def create_firebase_promotions_bp(promotion_service, product_service, socketio) 
     def toggle_promotion(promo_id: str):
         data = request.get_json(silent=True) or {}
         enabled = data.get("isEnabled", True)
+        if enabled:
+            existing = promotion_service.read_promotion(promo_id)
+            err = _flash_banner_error(existing, promo_id) if existing else None
+            if err:
+                return jsonify({"status": "error", "message": err}), 400
         result = promotion_service.toggle_promotion(promo_id, enabled)
 
         if socketio:

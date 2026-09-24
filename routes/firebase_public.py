@@ -13,6 +13,7 @@ from firebase.firebase_service.order_notification_service import notify_order_re
 from firebase.firebase_service.promotion_service import (
     PUBLIC_ACTIVE_PROMOS_KEY,
     PUBLIC_ACTIVE_PROMOS_TTL,
+    is_flash_banner,
 )
 
 # Danh muc an (vd: thuoc la) - khong hien thi cho khach hang
@@ -224,6 +225,7 @@ def _public_promotion(pr: dict, target_product: dict | None,
         "fromDate": pr.get("fromDate"),
         "toDate": pr.get("toDate"),
         "priority": pr.get("priority"),
+        "isFlashBanner": is_flash_banner(pr),
         "targetProductId": pr.get("targetProductId"),
         "targetProductName": pr.get("targetProductName"),
         "targetProduct": target_product,

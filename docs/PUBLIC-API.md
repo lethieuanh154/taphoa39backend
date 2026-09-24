@@ -57,7 +57,7 @@ Vì sao dùng field riêng thay vì ghi đè thẳng `Image`: `sync_products_fro
 Giới hạn còn lại: doc có checksum không đổi thì sync bỏ qua, `Image` giữ nguyên ảnh master cũ → BanHang/Management (đọc doc thô qua `/api/firebase/products/*`) vẫn thấy sai cho tới lần sync có thay đổi. DatHang không bị vì `_public_product` ưu tiên `ImageVariant`.
 
 ## Whitelist khuyến mãi (`_public_promotion`)
-GIỮ: `id, type, name, hasGift, hasPercentDiscount, hasFixedDiscount, discountPercent, discountAmount, minQuantity, giftQuantity, giftProductId, giftProductName, giftProductCode, giftProductBasePrice, giftItems, giftProducts, fromDate, toDate, priority, targetProductId, targetProductName, targetProduct` (đã whitelist).
+GIỮ: `id, type, name, hasGift, hasPercentDiscount, hasFixedDiscount, discountPercent, discountAmount, minQuantity, giftQuantity, giftProductId, giftProductName, giftProductCode, giftProductBasePrice, giftItems, giftProducts, fromDate, toDate, priority, isFlashBanner, targetProductId, targetProductName, targetProduct` (đã whitelist).
 CẮT toàn bộ `kiotViet*`, `createdDate/modifiedDate/isEnabled`, `targetProductCode`.
 
 **Mở lại (cho trang `/khuyen-mai` của DatHang)** — trước đây từng cắt để giảm size:
@@ -65,6 +65,7 @@ CẮT toàn bộ `kiotViet*`, `createdDate/modifiedDate/isEnabled`, `targetProdu
 - `giftProducts`: mảng `_public_product` của từng quà + `GiftQuantity` → trang KM render ảnh/giá quà tặng và SP mua kèm (Type 3) mà không phải gọi thêm API.
 - `fromDate/toDate`: hiển thị hạn KM + đếm ngược trên trang chủ.
 - `priority`: sắp xếp thứ tự hiển thị.
+- `isFlashBanner` (bool, **tính toán, không lưu Firestore**): `is_flash_banner()` = `toDate - fromDate < 7 ngày` → popup banner Home DatHang. Giới hạn 4 SP chồng thời gian validate ở `_flash_banner_error` (`routes/firebase_promotions.py`).
 
 ### Resolve product của target/gift — batch, KHÔNG N+1 (sửa 13/09/2026)
 Bản cũ `_resolve()` gọi `read_product()` từng SP một: **120 KM → 157 doc.get() tuần tự** → cold cache mất **>60s** → nginx trả **504**, DatHang nuốt lỗi và Home mất luôn dải "Khuyến mại".
