@@ -110,11 +110,13 @@ class BaseNamespace(Namespace):
 
 
 PRODUCTS_NS = '/api/websocket/products'
-# Namespace products dung chung cho DatHang (khach, khong login) va BanHang/Management (nhan vien).
-# Payload noi bo (Cost, OnHandNV, Description, hang gop...) CHI gui vao STAFF_ROOM;
-# PUBLIC_ROOM nhan ban da loc (xem routes/shared.py `_public_ws_product`).
+CUSTOMERS_NS = '/api/websocket/customers'
+# products/customers dung chung cho DatHang (khach, khong login) va BanHang/Management (nhan vien).
+# Payload noi bo (Cost, OnHandNV, Description, hang gop, su kien khach hang...) CHI gui vao
+# STAFF_ROOM; PUBLIC_ROOM nhan ban da loc (xem routes/shared.py `_public_ws_product`).
 STAFF_ROOM = 'staff'
 PUBLIC_ROOM = 'public'
+CUSTOMER_ROOM_PREFIX = 'customer:'
 
 
 def _ws_auth_enforced() -> bool:
@@ -132,12 +134,28 @@ def _verify_staff_token(token: Any) -> bool:
         return False
 
 
+def _is_staff_auth(auth: Any) -> bool:
+    token = auth.get('idToken') if isinstance(auth, dict) else None
+    return not _ws_auth_enforced() or _verify_staff_token(token)
+
+
+class StaffOnlyNamespace(BaseNamespace):
+    """invoices/orders/messages: 100% du lieu noi bo (don hang co SDT/dia chi/toa do/gia von,
+    hoa don, tin nhan). Khong co token nhan vien -> TU CHOI ket noi (khi ENFORCE_ADMIN_AUTH bat)."""
+
+    def on_connect(self, auth: Any = None):  # pragma: no cover - thin wrapper
+        if not _is_staff_auth(auth):
+            print(f"[ws-auth] BLOCK connect {self._namespace} sid={request.sid}")
+            return False
+        join_room(STAFF_ROOM, sid=request.sid, namespace=self._namespace)
+        return super().on_connect()
+
+
 class ProductsRoomNamespace(BaseNamespace):
     """Client moi vao PUBLIC_ROOM; gui event `authenticate` {idToken} hop le -> chuyen sang STAFF_ROOM."""
 
     def on_connect(self, auth: Any = None):  # pragma: no cover - thin wrapper
-        token = auth.get('idToken') if isinstance(auth, dict) else None
-        self._enter_room(not _ws_auth_enforced() or _verify_staff_token(token))
+        self._enter_room(_is_staff_auth(auth))
 
     def on_authenticate(self, data: Any):  # pragma: no cover - thin wrapper
         token = data.get('idToken') if isinstance(data, dict) else None
@@ -167,6 +185,23 @@ class ProductsRoomNamespace(BaseNamespace):
         return None
 
 
+class CustomersRoomNamespace(ProductsRoomNamespace):
+    """Nhan vien: moi su kien khach hang. Khach DatHang: CHI `bonus_updated` cua chinh minh,
+    qua room `customer:<code>` (gui `watch_customer {code}`) - truoc day ai ket noi cung nhan
+    diem cua moi khach."""
+
+    def on_watch_customer(self, data: Any):  # pragma: no cover - thin wrapper
+        code = str(data.get('code') or '').strip() if isinstance(data, dict) else ''
+        if not code or len(code) > 64:
+            return {'ok': False}
+        sid = request.sid
+        for r in rooms(sid=sid, namespace=self._namespace):
+            if isinstance(r, str) and r.startswith(CUSTOMER_ROOM_PREFIX):
+                leave_room(r, sid=sid, namespace=self._namespace)
+        join_room(CUSTOMER_ROOM_PREFIX + code, sid=sid, namespace=self._namespace)
+        return {'ok': True}
+
+
 def register_namespaces(socketio) -> None:
     """Register the Socket.IO namespaces with the provided `socketio` server.
 
@@ -176,10 +211,10 @@ def register_namespaces(socketio) -> None:
         return
 
     socketio.on_namespace(ProductsRoomNamespace(PRODUCTS_NS))
-    socketio.on_namespace(BaseNamespace('/api/websocket/customers'))
-    socketio.on_namespace(BaseNamespace('/api/websocket/invoices'))
-    socketio.on_namespace(BaseNamespace('/api/websocket/orders'))
-    socketio.on_namespace(BaseNamespace('/api/websocket/messages'))
+    socketio.on_namespace(CustomersRoomNamespace(CUSTOMERS_NS))
+    socketio.on_namespace(StaffOnlyNamespace('/api/websocket/invoices'))
+    socketio.on_namespace(StaffOnlyNamespace('/api/websocket/orders'))
+    socketio.on_namespace(StaffOnlyNamespace('/api/websocket/messages'))
 
 
 # In-memory store for last notifications per namespace. Structure:

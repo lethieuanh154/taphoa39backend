@@ -240,6 +240,25 @@ Replay khi connect (`LAST_NOTIFIES`): `set_last_notify(ns, event, data, public_d
 
 FE staff: `websocket-realtime.service.ts` (mirror BanHang ⇄ Management) gửi token qua `auth` + `authenticate` khi `onIdTokenChanged`. **Thứ tự deploy:** FE Management trước, BE sau (BE cũ bỏ qua event lạ; ngược lại Management sẽ rơi vào room public → mất Cost/OnHandNV/hàng gộp realtime).
 
+## WebSocket — các namespace còn lại (27/09/2026)
+
+Trước đây **không namespace nào có auth**: ai kết nối cũng nhận `order_created` với **toàn bộ đơn** (SĐT, địa chỉ, toạ độ, `totalCost`), còn được replay đơn gần nhất khi vừa kết nối; nhận luôn `bonus_updated` (điểm) của mọi khách.
+
+| Namespace | Class | Không token (ENFORCE bật) | Có token nhân viên |
+|---|---|---|---|
+| `/api/websocket/invoices`, `/orders`, `/messages` | `StaffOnlyNamespace` | **từ chối kết nối** (`on_connect` → `False`) | như cũ |
+| `/api/websocket/customers` | `CustomersRoomNamespace` | room `public`; chỉ nhận `bonus_updated` của room `customer:<code>` đã `watch_customer {code}` | room `staff`: `customer_updated/customers_updated/customer_created` + relay |
+| `/api/websocket/products` | `ProductsRoomNamespace` | xem mục trên | |
+
+Token gửi qua Socket.IO `auth: {idToken}` lúc connect; namespace có room còn nhận event `authenticate {idToken}` sau khi đã kết nối. `ENFORCE_ADMIN_AUTH=false` → mọi client là staff (BE local tại quầy không đổi hành vi).
+
+Client:
+- BanHang/Management `firebase-websocket.service.ts` (mirror): `auth` callback + `onIdTokenChanged` → socket đã nối thì `authenticate`, socket bị từ chối thì `connect()` lại (socket.io-client **không** tự nối lại khi server từ chối namespace).
+- DatHang `WebSocketService.watchCustomer()` — gọi khi connect và sau khi khách xác nhận danh tính (`customer-identity-dialog`); mã = `sm_customer_code` || `sm_customer_identity`.
+- QRHoaDon (Flutter) `SocketIoPolling.authToken` → gói `40<ns>,{"idToken":...}`, lấy token mới mỗi phiên.
+
+**Deploy:** FE Management + QRHoaDon **trước**, BE sau (client mới gửi token cho BE cũ là vô hại; BE mới gặp client cũ không token → mất realtime).
+
 ## CÒN MỞ (ngoài scope `firebase_public.py`)
 - **`/api/firebase/*` không auth**: ĐÃ FIX bằng admin-auth gate (`X-Id-Token`, `ENFORCE_ADMIN_AUTH`). Xem `ADMIN-AUTH.md`.
 - **`GET /api/firebase/orders/<id>` rò PII/totalCost**: ĐÃ FIX — endpoint full giờ gate admin; DatHang dùng `/api/public/orders/<id>` slim. (Residual nhỏ: nội dung đơn — tên món/giá — vẫn xem được nếu đoán ID; muốn kín hẳn thì token theo đơn.)

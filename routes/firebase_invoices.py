@@ -527,8 +527,8 @@ def create_firebase_invoices_bp(invoice_service, product_service, customer_servi
 
         # If sender_sid supplied, skip sending to that socket id (avoid echo)
         emit_kwargs = {"namespace": ns_path}
-        if namespace == "products":
-            # Relay tu do (data bat ky) -> chi nhan vien; khach DatHang cung nghe namespace nay.
+        if namespace in ("products", "customers"):
+            # Relay tu do (data bat ky) -> chi nhan vien; khach DatHang cung nghe 2 namespace nay.
             emit_kwargs["to"] = "staff"
         if sender_sid:
             emit_kwargs["skip_sid"] = sender_sid

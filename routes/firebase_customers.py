@@ -5,6 +5,7 @@ import uuid
 from datetime import datetime, timezone
 
 from flask import Blueprint, jsonify, request
+from routes.firebase_websocket import CUSTOMERS_NS, CUSTOMER_ROOM_PREFIX
 from google.api_core.exceptions import ResourceExhausted
 
 from FromKiotViet.Model.customer import Customer
@@ -345,7 +346,9 @@ def create_firebase_customers_bp(customer_service, socketio) -> Blueprint:
                     "bonusAdded": amount,
                 }
                 logger.info("[bonus_updated] Emitting WS: %s", bonus_payload)
-                socketio.emit("bonus_updated", bonus_payload, namespace="/api/websocket/customers")
+                # Chi khach co ma nay (room rieng) - khong phat diem cua moi khach cho ca internet
+                socketio.emit("bonus_updated", bonus_payload, namespace=CUSTOMERS_NS,
+                              to=CUSTOMER_ROOM_PREFIX + str(customer_code))
 
             # Send Zalo notification (best-effort)
             zalo_sent = False

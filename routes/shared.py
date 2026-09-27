@@ -6,7 +6,7 @@ from flask import jsonify, request
 from google.api_core.exceptions import ResourceExhausted
 import traceback
 
-from routes.firebase_websocket import set_last_notify, PRODUCTS_NS, STAFF_ROOM, PUBLIC_ROOM
+from routes.firebase_websocket import set_last_notify, PRODUCTS_NS, CUSTOMERS_NS, STAFF_ROOM, PUBLIC_ROOM
 
 UPDATE_ID_KEYS: Tuple[str, ...] = ("Id", "id", "productId", "ProductId")
 ONHAND_KEYS: Tuple[str, ...] = ("OnHand", "onHand", "onhand")
@@ -334,10 +334,10 @@ def broadcast_customer_updates(socketio, results: Iterable[Dict[str, Any]]):
         cid_str = str(cid)
         ids.append(cid_str)
         if socketio:
-            socketio.emit('customer_updated', {'id': cid_str}, namespace='/api/websocket/customers')
+            socketio.emit('customer_updated', {'id': cid_str}, namespace=CUSTOMERS_NS, to=STAFF_ROOM)
 
     if ids and socketio:
-        socketio.emit('customers_updated', ids, namespace='/api/websocket/customers')
+        socketio.emit('customers_updated', ids, namespace=CUSTOMERS_NS, to=STAFF_ROOM)
 
 
 def notify_customer_created(socketio, customer: Dict[str, Any]):
@@ -348,7 +348,7 @@ def notify_customer_created(socketio, customer: Dict[str, Any]):
         return
     if not socketio:
         return
-    socketio.emit('customer_created', {'id': str(cid)}, namespace='/api/websocket/customers')
+    socketio.emit('customer_created', {'id': str(cid)}, namespace=CUSTOMERS_NS, to=STAFF_ROOM)
 
 
 def notify_invoice_updated(socketio, invoice: Dict[str, Any]):
