@@ -218,6 +218,28 @@ Trước đây `public_featured()` / `public_by_category()` dựng dict cho cả
 
 > Đây là tối ưu **latency đuôi lúc burst**, không phải tăng trần người dùng. Ở tải thường (~5 req/s) endpoint này chỉ ăn ~7% một core; giá trị thật là khi cả nhà cùng mở app một lúc (60 request dồn: ~840 ms → ~250 ms CPU qua GIL). Trần đồng thời vẫn là 32 thread long-poll — xem cảnh báo ở mục trên.
 
+## WebSocket `/api/websocket/products` — tách room staff/public (27/09/2026)
+
+Namespace này dùng chung cho DatHang (khách, không login) và BanHang/Management. Trước đây mọi client nhận **cùng** payload → khách đọc được `Cost` (giá vốn), `OnHandNV`, `Description` (ghi chú giá sỉ/giá nhập), SP clone/hàng nội bộ mới tạo và dữ liệu hàng gộp.
+
+`ProductsRoomNamespace` (`routes/firebase_websocket.py`):
+- Connect → room **`public`**. Có Firebase ID token hợp lệ (socket `auth: {idToken}` lúc connect, hoặc event `authenticate {idToken}` sau đó, ack `{ok}`) → room **`staff`**.
+- `ENFORCE_ADMIN_AUTH=false` (BE local tại quầy) → mọi client là staff, như trước.
+- `subscribe` bị vô hiệu ở namespace này (không cho tự join `staff`).
+
+Phát theo room:
+| Event | staff | public |
+|---|---|---|
+| `products_updated` | đủ field | `_public_ws_product()` whitelist: `Id, Code, Name, FullName, NormalizedName, NormalizedCode, OnHand, BasePrice, Unit, CategoryId, ConversionValue, MasterUnitId, isActive, isDeleted, ModifiedDate`; entry chỉ còn Id → bỏ |
+| `products_added` | đủ field | chỉ SP `_is_orderable` qua `_public_product` (bỏ clone/hàng nội bộ/KM/danh mục ẩn) |
+| `merged_products_updated` | có | **không** |
+| relay `POST .../notify` namespace `products` | có | **không** |
+| `products_onhand_updated` (chỉ Id), `promotions_updated`, `clone_stock_updated`, `product_onhand_updated` | có | có |
+
+Replay khi connect (`LAST_NOTIFIES`): `set_last_notify(ns, event, data, public_data)` — room public nhận `public_data` (None → không replay).
+
+FE staff: `websocket-realtime.service.ts` (mirror BanHang ⇄ Management) gửi token qua `auth` + `authenticate` khi `onIdTokenChanged`. **Thứ tự deploy:** FE Management trước, BE sau (BE cũ bỏ qua event lạ; ngược lại Management sẽ rơi vào room public → mất Cost/OnHandNV/hàng gộp realtime).
+
 ## CÒN MỞ (ngoài scope `firebase_public.py`)
 - **`/api/firebase/*` không auth**: ĐÃ FIX bằng admin-auth gate (`X-Id-Token`, `ENFORCE_ADMIN_AUTH`). Xem `ADMIN-AUTH.md`.
 - **`GET /api/firebase/orders/<id>` rò PII/totalCost**: ĐÃ FIX — endpoint full giờ gate admin; DatHang dùng `/api/public/orders/<id>` slim. (Residual nhỏ: nội dung đơn — tên món/giá — vẫn xem được nếu đoán ID; muốn kín hẳn thì token theo đơn.)

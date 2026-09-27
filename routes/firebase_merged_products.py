@@ -6,6 +6,7 @@ from __future__ import annotations
 from flask import Blueprint, jsonify, request
 
 from firebase.firebase_service.merged_products_service import MergedProductsService
+from routes.firebase_websocket import PRODUCTS_NS, STAFF_ROOM
 
 
 def create_firebase_merged_products_bp(socketio=None) -> Blueprint:
@@ -39,7 +40,8 @@ def create_firebase_merged_products_bp(socketio=None) -> Blueprint:
                         "lastModified": result.get("lastModified"),
                         "modifiedBy": modified_by
                     },
-                    namespace="/api/websocket/products"
+                    namespace=PRODUCTS_NS,
+                    to=STAFF_ROOM
                 )
                 print(f"📡 Broadcast merged_products_updated: {len(items)} items")
             except Exception as e:
@@ -68,7 +70,8 @@ def create_firebase_merged_products_bp(socketio=None) -> Blueprint:
                         "lastModified": result.get("lastModified"),
                         "modifiedBy": modified_by
                     },
-                    namespace="/api/websocket/products"
+                    namespace=PRODUCTS_NS,
+                    to=STAFF_ROOM
                 )
             except Exception as e:
                 print(f"⚠️ Failed to broadcast merged products update: {e}")
@@ -96,7 +99,8 @@ def create_firebase_merged_products_bp(socketio=None) -> Blueprint:
                         "lastModified": result.get("lastModified"),
                         "modifiedBy": modified_by
                     },
-                    namespace="/api/websocket/products"
+                    namespace=PRODUCTS_NS,
+                    to=STAFF_ROOM
                 )
             except Exception as e:
                 print(f"⚠️ Failed to broadcast merged products update: {e}")
@@ -125,7 +129,8 @@ def create_firebase_merged_products_bp(socketio=None) -> Blueprint:
                         "lastModified": result.get("lastModified"),
                         "modifiedBy": modified_by
                     },
-                    namespace="/api/websocket/products"
+                    namespace=PRODUCTS_NS,
+                    to=STAFF_ROOM
                 )
             except Exception as e:
                 print(f"⚠️ Failed to broadcast merged products update: {e}")
@@ -151,7 +156,8 @@ def create_firebase_merged_products_bp(socketio=None) -> Blueprint:
                         "lastModified": result.get("lastModified"),
                         "modifiedBy": modified_by
                     },
-                    namespace="/api/websocket/products"
+                    namespace=PRODUCTS_NS,
+                    to=STAFF_ROOM
                 )
             except Exception as e:
                 print(f"⚠️ Failed to broadcast merged products clear: {e}")

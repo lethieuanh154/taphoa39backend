@@ -5,7 +5,7 @@ Fix C3: bất kỳ ai cũng gọi được `songminhcr.com/api/firebase/orders` 
 ## Cơ chế
 - `routes/admin_auth.py` → `register_admin_auth(app)` (đăng ký trong `app.py`), dùng `@app.before_request`.
 - Gate MỌI `/api/*` **trừ** allowlist (public): `is_gated(method, path)`.
-  - **Không gate** (public/DatHang + tự có auth riêng): `/api/public/`, `/api/chat/`, `/api/websocket/`, `/api/auth/`, `/api/gmail/`, `/api/kiotviet/categories`, `/api/kiotviet/product-images`, `/api/item/`, `/api/osrm`, `POST /api/firebase/promotions/apply`.
+  - **Không gate** (public/DatHang + tự có auth riêng): `/api/public/`, `/api/chat/`, `/api/websocket/` (namespace products tự phân room staff/public theo ID token — xem PUBLIC-API.md), `/api/auth/`, `/api/gmail/`, `/api/kiotviet/categories`, `/api/kiotviet/product-images`, `/api/item/`, `/api/osrm`, `POST /api/firebase/promotions/apply`.
   - **Gate** (admin): mọi thứ còn lại (`/api/firebase/orders` list, `update_order`, `delete`, `customers`, `employees`, `get/products`, `/api/kiotviet/*` khác…).
 - Endpoint admin cần header **`X-Id-Token: <Firebase ID token>`** (hoặc `Authorization: Bearer <token>`). Verify bằng `verify_firebase_token`.
 

@@ -6,7 +6,7 @@ from flask import jsonify, request
 from google.api_core.exceptions import ResourceExhausted
 import traceback
 
-from routes.firebase_websocket import set_last_notify
+from routes.firebase_websocket import set_last_notify, PRODUCTS_NS, STAFF_ROOM, PUBLIC_ROOM
 
 UPDATE_ID_KEYS: Tuple[str, ...] = ("Id", "id", "productId", "ProductId")
 ONHAND_KEYS: Tuple[str, ...] = ("OnHand", "onHand", "onhand")
@@ -170,6 +170,20 @@ def notify_product_onhand_updated(socketio, product_id: Any, fields: Dict[str, A
     socketio.emit('product_onhand_updated', {'productId': str(product_id)}, namespace='/api/websocket/products')
 
 
+# Field SP khach DatHang duoc thay qua WS (khop whitelist `_public_product` REST).
+# KHONG co Cost/OnHandNV/Description (ghi chu noi bo: gia si, gia nhap).
+_PUBLIC_WS_PRODUCT_FIELDS = (
+    'Id', 'Code', 'Name', 'FullName', 'NormalizedName', 'NormalizedCode', 'OnHand', 'BasePrice',
+    'Unit', 'CategoryId', 'ConversionValue', 'MasterUnitId', 'isActive', 'isDeleted', 'ModifiedDate',
+)
+
+
+def _public_ws_product(item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Ban loc cho PUBLIC_ROOM; None neu khong con field nao co nghia (vd update chi co Cost/OnHandNV)."""
+    data = {k: item[k] for k in _PUBLIC_WS_PRODUCT_FIELDS if item.get(k) is not None}
+    return data if set(data) - {'Id', 'ModifiedDate'} else None
+
+
 def broadcast_products_onhand_updated(socketio, updates: Iterable[Dict[str, Any]]):
     updates_list = list(updates)
     if not updates_list:
@@ -216,22 +230,21 @@ def broadcast_products_onhand_updated(socketio, updates: Iterable[Dict[str, Any]
 
         products_data.append(product_data)
 
+    staff_payload = {'products': products_data, 'timestamp': timestamp, 'count': len(products_data)}
+    public_products = [p for p in (_public_ws_product(d) for d in products_data) if p]
+    public_payload = ({'products': public_products, 'timestamp': timestamp, 'count': len(public_products)}
+                      if public_products else None)
+
     # Emit full product data with timestamp for Initial Sync
-    socketio.emit('products_updated', {
-        'products': products_data,
-        'timestamp': timestamp,
-        'count': len(products_data)
-    }, namespace='/api/websocket/products')
+    socketio.emit('products_updated', staff_payload, namespace=PRODUCTS_NS, to=STAFF_ROOM)
+    if public_payload:
+        socketio.emit('products_updated', public_payload, namespace=PRODUCTS_NS, to=PUBLIC_ROOM)
 
     # Also emit legacy event for backward compatibility
-    socketio.emit('products_onhand_updated', ids, namespace='/api/websocket/products')
+    socketio.emit('products_onhand_updated', ids, namespace=PRODUCTS_NS)
 
     # Store last notify for Initial Sync when new clients connect
-    set_last_notify('/api/websocket/products', 'products_updated', {
-        'products': products_data,
-        'timestamp': timestamp,
-        'count': len(products_data)
-    })
+    set_last_notify(PRODUCTS_NS, 'products_updated', staff_payload, public_payload)
 
     print(f"📡 [WebSocket] Broadcast {len(products_data)} products updated at {timestamp}")
 
@@ -242,7 +255,7 @@ def broadcast_clone_stock_updated(socketio, items: Iterable[Dict[str, Any]]):
     items_list = list(items)
     if not socketio or not items_list:
         return
-    socketio.emit('clone_stock_updated', {'products': items_list}, namespace='/api/websocket/products')
+    socketio.emit('clone_stock_updated', {'products': items_list}, namespace=PRODUCTS_NS)
     print(f"📡 [WebSocket] Broadcast clone_stock_updated: {len(items_list)} SP original")
 
 
@@ -277,12 +290,23 @@ def broadcast_products_added(socketio, products: Iterable[Dict[str, Any]]):
     if not products_data:
         return
 
-    # Emit 'products_added' event with full product data
+    # Emit 'products_added' event with full product data (CHI staff)
     socketio.emit('products_added', {
         'products': products_data,
         'timestamp': timestamp,
         'count': len(products_data)
-    }, namespace='/api/websocket/products')
+    }, namespace=PRODUCTS_NS, to=STAFF_ROOM)
+
+    # Khach: bo clone/hang noi bo/KM/danh muc an + whitelist field nhu REST /api/public/*.
+    # Import muon: firebase_public import routes.shared -> import dau file se vong.
+    from routes.firebase_public import _is_orderable, _public_product
+    public_products = [_public_product(p) for p in products_data if _is_orderable(p)]
+    if public_products:
+        socketio.emit('products_added', {
+            'products': public_products,
+            'timestamp': timestamp,
+            'count': len(public_products)
+        }, namespace=PRODUCTS_NS, to=PUBLIC_ROOM)
 
     # ❌ REMOVED: Do NOT store products_added in LAST_NOTIFIES
     # Reason: products_added should only be emitted ONCE when products are created.

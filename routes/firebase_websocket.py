@@ -10,7 +10,9 @@ subscribe to rooms in the future.
 
 from __future__ import annotations
 
-from flask_socketio import Namespace, join_room
+import os
+
+from flask_socketio import Namespace, join_room, leave_room, rooms
 from flask import request
 from typing import Any
 from flask_socketio import SocketIO
@@ -107,6 +109,64 @@ class BaseNamespace(Namespace):
                 pass
 
 
+PRODUCTS_NS = '/api/websocket/products'
+# Namespace products dung chung cho DatHang (khach, khong login) va BanHang/Management (nhan vien).
+# Payload noi bo (Cost, OnHandNV, Description, hang gop...) CHI gui vao STAFF_ROOM;
+# PUBLIC_ROOM nhan ban da loc (xem routes/shared.py `_public_ws_product`).
+STAFF_ROOM = 'staff'
+PUBLIC_ROOM = 'public'
+
+
+def _ws_auth_enforced() -> bool:
+    """Cung co voi admin-auth REST: tat (BE local tai quay) -> moi client la staff nhu truoc."""
+    return os.getenv("ENFORCE_ADMIN_AUTH", "false").lower() in ("1", "true", "yes")
+
+
+def _verify_staff_token(token: Any) -> bool:
+    if not token or not isinstance(token, str):
+        return False
+    try:
+        from firebase.firebase_auth.auth_firebase_setup import verify_firebase_token
+        return bool(verify_firebase_token(token.strip()))
+    except Exception:
+        return False
+
+
+class ProductsRoomNamespace(BaseNamespace):
+    """Client moi vao PUBLIC_ROOM; gui event `authenticate` {idToken} hop le -> chuyen sang STAFF_ROOM."""
+
+    def on_connect(self, auth: Any = None):  # pragma: no cover - thin wrapper
+        token = auth.get('idToken') if isinstance(auth, dict) else None
+        self._enter_room(not _ws_auth_enforced() or _verify_staff_token(token))
+
+    def on_authenticate(self, data: Any):  # pragma: no cover - thin wrapper
+        token = data.get('idToken') if isinstance(data, dict) else None
+        if not _verify_staff_token(token):
+            return {'ok': False}
+        if STAFF_ROOM not in rooms(sid=request.sid, namespace=self._namespace):
+            self._enter_room(True)
+        return {'ok': True}
+
+    def _enter_room(self, staff: bool) -> None:
+        sid = request.sid
+        if staff:
+            leave_room(PUBLIC_ROOM, sid=sid, namespace=self._namespace)
+            join_room(STAFF_ROOM, sid=sid, namespace=self._namespace)
+        else:
+            join_room(PUBLIC_ROOM, sid=sid, namespace=self._namespace)
+        try:
+            last = LAST_NOTIFIES.get(self._namespace)
+            if last:
+                data = last.get("data") if staff else last.get("public_data")
+                if data is not None:
+                    self.emit(last.get("event"), data, room=sid)
+        except Exception:
+            pass
+
+    def on_subscribe(self, data: Any):  # pragma: no cover - khong cho tu join STAFF_ROOM
+        return None
+
+
 def register_namespaces(socketio) -> None:
     """Register the Socket.IO namespaces with the provided `socketio` server.
 
@@ -115,7 +175,7 @@ def register_namespaces(socketio) -> None:
     if not socketio:
         return
 
-    socketio.on_namespace(BaseNamespace('/api/websocket/products'))
+    socketio.on_namespace(ProductsRoomNamespace(PRODUCTS_NS))
     socketio.on_namespace(BaseNamespace('/api/websocket/customers'))
     socketio.on_namespace(BaseNamespace('/api/websocket/invoices'))
     socketio.on_namespace(BaseNamespace('/api/websocket/orders'))
@@ -128,11 +188,12 @@ def register_namespaces(socketio) -> None:
 LAST_NOTIFIES = {}
 
 
-def set_last_notify(namespace: str, event: str, data: object) -> None:
+def set_last_notify(namespace: str, event: str, data: object, public_data: object = None) -> None:
+    """`public_data` chi dung cho PRODUCTS_NS: ban da loc replay cho PUBLIC_ROOM (None = khong replay)."""
     try:
         if not namespace:
             return
-        LAST_NOTIFIES[namespace] = {"event": event, "data": data}
+        LAST_NOTIFIES[namespace] = {"event": event, "data": data, "public_data": public_data}
     except Exception:
         pass
 
