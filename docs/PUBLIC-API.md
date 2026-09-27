@@ -30,18 +30,19 @@ Luồng thực tế:
 - Trừ `_HIDDEN_CATEGORY_IDS`, sort theo tên, `Path` sinh bằng `_category_path()` (`unidecode`): `"GIA VỊ - ĐỒ KHÔ"` → `GIA_VI_DO_KHO`.
 
 ## Whitelist sản phẩm (`_public_product`) — đã làm gọn
-GIỮ (13 field FE thực dùng): `Id, Code, Name, FullName, Image, BasePrice, Unit, CategoryId, CategoryName, ConversionValue` (product-detail), `MasterUnitId` (GroupService grouping), `NormalizedName` (offline search có dấu), `OnHand` (**tồn KiotViet thuần, KHÔNG gộp clone** — xem dưới).
+GIỮ (13 field FE thực dùng): `Id, Code, Name, FullName, Image, BasePrice, Unit, CategoryId, CategoryName, ConversionValue` (product-detail), `MasterUnitId` (GroupService grouping), `NormalizedName` (offline search có dấu), `OnHand` (tồn KiotViet) + `CloneOnHandNV` (tổng tồn clone của SP — xem dưới).
 `CategoryName` thêm vào để DatHang **dựng lại danh mục offline** từ IndexedDB khi cả 2 endpoint danh mục chết.
-CẮT: `Cost, OldCost, PackCost, _original*, OnHandNV, CloneOnHandNV (raw), SyncChecksum, SyncTimestamp, Revision, MasterCode, kiotViet*` + `NormalizedCode, MasterProductId, isActive, isDeleted` (BE đã lọc sẵn → FE default khi thiếu).
+CẮT: `Cost, OldCost, PackCost, _original*, OnHandNV, SyncChecksum, SyncTimestamp, Revision, MasterCode, kiotViet*` + `NormalizedCode, MasterProductId, isActive, isDeleted` (BE đã lọc sẵn → FE default khi thiếu).
 
 **`Description` đã bị cắt (2026-09-14).** Field này trong Firestore đang chứa ghi chú nội bộ của nhân viên — `"k vat"`, `"1T = 12c"`, `"1T (20g) = 570k"`, `"21/3: 4.4/gói"` (giá sỉ / giá nhập) — và trước đó lọt nguyên vào response public. Khoảng 6-13% sản phẩm có nội dung dạng này, phần còn lại rỗng.
 Muốn mở lại (ví dụ để nút info mô tả trên card DatHang hoạt động): làm sạch `Description` trên KiotViet trước, rồi thêm lại `"Description": p.get("Description") or ""` vào `_public_product`. FE đã strip HTML sẵn trong `mapProduct()`.
 
-Lọc **server-side** (không để FE tự lọc bằng field nhạy cảm): bỏ clone / KM `(km)` Cost=0 / danh mục ẩn (`1440125, 1787413`) / deleted-inactive.
+Lọc **server-side** (không để FE tự lọc bằng field nhạy cảm): bỏ clone + hàng nội bộ (`isClone` true/"true" hoặc `KiotVietSync === false`) / KM `(km)` Cost=0 / danh mục ẩn (`1440125, 1787413`) / deleted-inactive.
 
-**KHÔNG gộp `CloneOnHandNV` vào `OnHand` (đổi 18/09/2026).** Trước đây có gộp, với lý do "ẩn cơ chế clone, vẫn báo đúng tồn kho" — sai: **DatHang không bán hàng clone**. SP hết hàng trên KiotViet nhưng còn tồn clone vẫn hiện "còn hàng", khách đặt được thứ nhân viên không lấy ra bán được. `_public_product()` giờ trả `OnHand` thuần từ KiotViet. `_clone_stock_map()` và `_enrich_clone_stock()` đã xoá khỏi `firebase_public.py` (hết chỗ gọi; cache key `clone_stock_map` vẫn còn dùng ở `firebase_products.py` cho đường nội bộ).
+**Trả lại `CloneOnHandNV` (đổi 27/09/2026).** User chốt: original hết/không đủ thì DatHang bán tiếp bằng tồn clone. `_public_product(p, clone_map)` trả `CloneOnHandNV` riêng (FE cộng `OnHand + CloneOnHandNV`), `add_order` validate theo `OnHand + clone − reserved`. Map lấy từ `ProductService.get_public_clone_stock_map()`: query `isClone in [True,"true"]` (KHÔNG full scan), cache `public_clone_stock` 600s dạng `{clone_id: [source_id, nv]}`, `patch_stock_caches()` vá tại chỗ khi BanHang ghi `OnHandNV`. Bỏ qua clone deleted/inactive và hàng nội bộ (`CloneSourceId` = chính Id). SP clone/hàng nội bộ vẫn không bao giờ được public.
+Lịch sử — **18/09/2026 từng bỏ gộp:** Trước đây có gộp, với lý do "ẩn cơ chế clone, vẫn báo đúng tồn kho" — sai: **DatHang không bán hàng clone**. SP hết hàng trên KiotViet nhưng còn tồn clone vẫn hiện "còn hàng", khách đặt được thứ nhân viên không lấy ra bán được. `_public_product()` giờ trả `OnHand` thuần từ KiotViet. `_clone_stock_map()` và `_enrich_clone_stock()` đã xoá khỏi `firebase_public.py` (hết chỗ gọi; cache key `clone_stock_map` vẫn còn dùng ở `firebase_products.py` cho đường nội bộ).
 
-**`OnHand` đã trừ phần đơn online đang giữ (2026-09-14).** `_serialize_public_products(products, reserved_map)` trừ số giữ hàng còn hạn khỏi `OnHand` trước khi trả về, nên khách không đặt trùng phần hàng khách khác đã giữ. `add_order` cũng chặn oversell theo `OnHand − reserved` (bỏ `clone_stock` từ 18/09/2026, cho khớp con số hiển thị). Chi tiết: `docs/RESERVATION.md`.
+**`OnHand` đã trừ phần đơn online đang giữ (2026-09-14).** `_serialize_public_products(products, reserved_map)` trừ số giữ hàng còn hạn khỏi `OnHand` trước khi trả về, nên khách không đặt trùng phần hàng khách khác đã giữ. `add_order` cũng chặn oversell theo `OnHand + clone − reserved` (cộng lại clone từ 27/09/2026). Chi tiết: `docs/RESERVATION.md`.
 
 ### Ảnh sản phẩm — `ImageVariant` ưu tiên hơn `Image`
 `"Image": p.get("ImageVariant") or p.get("Image")`.
@@ -165,7 +166,7 @@ Mỗi lượt chạy 3 bước, theo đúng thứ tự:
 ### Còn lệch — chưa xử
 
 - ~~**SP có clone**: WS emit `OnHand` thô, IndexedDB DatHang lưu `OnHand` đã gộp clone → WS ghi đè gây lệch.~~ **Hết lệch** sau khi bỏ gộp clone (cùng ngày): cả `_public_product()` lẫn WS giờ cùng nói `OnHand` thuần KiotViet.
-- **Rác còn lại ở FE DatHang**: `product-card.component.ts` và `product-detail.component.ts` vẫn cộng `+ (product.CloneOnHandNV || 0)`. Field này không còn trong payload → luôn `undefined` → `|| 0`, **vô hại nhưng là code chết**. Dọn ở bước FE riêng (rule: không sửa FE + BE trong cùng một bước).
+- ~~Rác FE DatHang cộng `CloneOnHandNV`~~ — không còn là rác từ 27/09/2026 (BE trả lại field). BanHang bán clone (`update_onhand_batch`) → sau `patch_stock_caches()` BE phát event riêng `clone_stock_updated` `{products: [{Id: original_id, CloneOnHandNV}]}` (namespace `/api/websocket/products`, `ProductService.public_clone_stock_for()` chỉ đọc cache). Không trộn vào `products_updated` để BanHang/Management không ghi field lạ vào IndexedDB. DatHang `ProductApiService.handleCloneStockUpdated()` cập nhật IndexedDB. Giới hạn: số qua WS là tồn clone thô (chưa trừ phần giữ tràn sang clone), sửa SP clone qua trang edit thì chỉ invalidate cache, không phát event.
 - **Sync thủ công ở BanHang chạy song song với scheduler**: lock chỉ có trong scheduler. Hai luồng có thể fetch KiotViet cùng lúc; ghi Firestore là `batch.set(merge=True)` nên idempotent, hệ quả chỉ là tốn quota.
 - **Realtime thật (push)** cần webhook của KiotViet **Public API** (`public.kiotapi.com`, OAuth `client_id`/`client_secret`). Dự án đang dùng **internal API** (`api-man1.kiotviet.vn`, login UserName/Password + `FingerPrintKey`) — API này **không có webhook**, chỉ pull được.
 

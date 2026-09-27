@@ -42,13 +42,13 @@ def _to_float(v) -> float:
         return 0.0
 
 
-def _public_product(p: dict) -> dict:
+def _public_product(p: dict, clone_map: dict | None = None) -> dict:
     """Chi giu field khach hang duoc phep thay.
     Cat Cost/OnHandNV/sync/kiotViet noi bo.
 
-    OnHand = ton KiotViet THUAN, KHONG cong CloneOnHandNV: DatHang khong ban hang clone.
-    Truoc day co cong vao -> SP KiotViet het hang nhung con ton clone van hien "con hang",
-    khach dat duoc thu nhan vien khong lay ra ban duoc (bao 18/09/2026).
+    OnHand = ton KiotViet, CloneOnHandNV = tong OnHandNV cac clone cua SP nay (user chot
+    27/09/2026: original het/khong du thi ban tiep bang ton clone). FE DatHang cong 2 so.
+    SP clone / hang noi bo van KHONG bao gio duoc public (xem _is_orderable).
     Description KHONG public: field nay dang chua ghi chu noi bo cua nhan vien
     (gia si, gia nhap, "k vat"...). Chi mo lai khi du lieu da duoc lam sach.
     Anh: uu tien `ImageVariant` (anh rieng tung bien the, do
@@ -68,7 +68,23 @@ def _public_product(p: dict) -> dict:
         "MasterUnitId": p.get("MasterUnitId"),
         "NormalizedName": p.get("NormalizedName") or "",
         "OnHand": _to_float(p.get("OnHand")),
+        "CloneOnHandNV": _to_float((clone_map or {}).get(str(p.get("Id")))),
     }
+
+
+def _deduct_reserved(item: dict, reserved_map: dict | None) -> dict:
+    """Tru phan don online dang giu: tru OnHand truoc, phan du tru tiep CloneOnHandNV."""
+    if not reserved_map:
+        return item
+    held = _to_float(reserved_map.get(str(item.get("Id"))))
+    if held <= 0:
+        return item
+    on_hand = _to_float(item.get("OnHand"))
+    item["OnHand"] = max(0.0, on_hand - held)
+    overflow = max(0.0, held - on_hand)
+    if overflow > 0:
+        item["CloneOnHandNV"] = max(0.0, _to_float(item.get("CloneOnHandNV")) - overflow)
+    return item
 
 
 def _is_km_product(p: dict) -> bool:
@@ -77,7 +93,9 @@ def _is_km_product(p: dict) -> bool:
 
 
 def _is_clone(p: dict) -> bool:
-    if p.get("isClone") is True:
+    if p.get("isClone") is True or p.get("isClone") == "true":
+        return True
+    if p.get("KiotVietSync") is False:
         return True
     return _to_float(p.get("OnHandNV")) > 0 and _to_float(p.get("OnHand")) == 0
 
@@ -114,20 +132,17 @@ def _valid_latlng(lat, lng) -> bool:
     return 8.0 <= lat <= 24.0 and 102.0 <= lng <= 110.0
 
 
-def _serialize_public_products(products: list, reserved_map: dict | None = None) -> list:
+def _serialize_public_products(products: list, reserved_map: dict | None = None,
+                               clone_map: dict | None = None) -> list:
     """Loc bo clone / KM / danh muc an / deleted-inactive roi whitelist field.
     `reserved_map` = so luong dang bi don online giu -> tru khoi OnHand hien thi,
     de khach khong dat trung phan hang khach khac da giu."""
-    cleaned = [_public_product(p) for p in products if _is_orderable(p)]
-    if reserved_map:
-        for item in cleaned:
-            held = _to_float(reserved_map.get(str(item.get("Id"))))
-            if held > 0:
-                item["OnHand"] = max(0.0, _to_float(item.get("OnHand")) - held)
-    return cleaned
+    return [_deduct_reserved(_public_product(p, clone_map), reserved_map)
+            for p in products if _is_orderable(p)]
 
 
-def _paginate_public_products(products: list, reserved_map: dict | None = None):
+def _paginate_public_products(products: list, reserved_map: dict | None = None,
+                              clone_map: dict | None = None):
     """Loc -> cat trang -> CHI SAU DO moi serialize. Tra `(page, total, offset)`.
 
     Truoc day serialize ca ~15k SP roi moi cat lay 20 (`_serialize_public_products` o tren):
@@ -141,12 +156,7 @@ def _paginate_public_products(products: list, reserved_map: dict | None = None):
     total = len(orderable)
     limit, offset = _paginate()
     selected = orderable[offset:offset + limit] if limit > 0 else orderable
-    page = [_public_product(p) for p in selected]
-    if reserved_map:
-        for item in page:
-            held = _to_float(reserved_map.get(str(item.get("Id"))))
-            if held > 0:
-                item["OnHand"] = max(0.0, _to_float(item.get("OnHand")) - held)
+    page = [_deduct_reserved(_public_product(p, clone_map), reserved_map) for p in selected]
     return page, total, offset
 
 
@@ -359,12 +369,15 @@ def _recompute_order_economics(order, product_service, promotion_service, custom
                 "(cửa hàng vừa gỡ sản phẩm này). "
                 "Vui lòng xoá sản phẩm đó khỏi giỏ hàng rồi bấm Đặt hàng lại.")}
 
-        # Ton kha dung = ton KiotViet - phan don online khac dang giu. KHONG cong ton clone:
-        # DatHang khong ban hang clone (khop _public_product), cong vao la nhan don qua so
-        # hang thuc su lay ra ban duoc.
+        # Ton kha dung = ton KiotViet + ton clone - phan don online khac dang giu
+        # (khop _public_product / _deduct_reserved). Ton clone doc FRESH nhu OnHand.
         # FE co the doc IndexedDB cu nen phai chan o server, khong tin so luong client thay.
         name = server.get("FullName") or server.get("Name") or pid
         available = _to_float(server.get("OnHand"))
+        try:
+            available += product_service.read_clone_stock_fresh(pid)
+        except Exception as e:
+            print(f"[public] clone stock error pid={pid}: {type(e).__name__}: {e}")
         if reserved_map:
             available -= _to_float(reserved_map.get(str(pid)))
         if qty > available:
@@ -532,6 +545,14 @@ def create_firebase_public_bp(
             print(f"[public] reserved map error: {type(e).__name__}: {e}")
             return {}
 
+    def _clone_map() -> dict:
+        """Ton clone theo original Id. Loi -> coi nhu khong co clone (chi hien ton KiotViet)."""
+        try:
+            return product_service.get_public_clone_stock_map()
+        except Exception as e:
+            print(f"[public] clone stock map error: {type(e).__name__}: {e}")
+            return {}
+
     def _reserve_stock_for_order(order: dict) -> None:
         """Giu hang cho don vua tao. Loi giu hang KHONG duoc lam hong don da luu:
         don van hop le, chi la khong giu duoc cho -> log de xu ly tay."""
@@ -582,7 +603,7 @@ def create_firebase_public_bp(
     @handle_api_errors
     def public_featured():
         products = product_service.get_featured_products()
-        page, total, offset = _paginate_public_products(products, _reserved_map())
+        page, total, offset = _paginate_public_products(products, _reserved_map(), _clone_map())
         return jsonify({
             "products": page,
             "count": len(page),
@@ -637,7 +658,7 @@ def create_firebase_public_bp(
     @handle_api_errors
     def public_by_category(category_id: int):
         products = product_service.read_products_by_category(category_id)
-        page, total, offset = _paginate_public_products(products, _reserved_map())
+        page, total, offset = _paginate_public_products(products, _reserved_map(), _clone_map())
         return jsonify({
             "products": page,
             "count": len(page),
@@ -658,7 +679,7 @@ def create_firebase_public_bp(
             limit = 80
         limit = min(max(limit, 1), 200)
         products = product_service.search_products(query, limit=limit)
-        cleaned = _serialize_public_products(products, _reserved_map())
+        cleaned = _serialize_public_products(products, _reserved_map(), _clone_map())
         return jsonify({"products": cleaned, "count": len(cleaned), "query": query})
 
     @bp.route("/promotions/active", methods=["GET"])
@@ -686,13 +707,10 @@ def create_firebase_public_bp(
 
         raw_products = product_service.read_products_bulk(needed)
         reserved = _reserved_map()
+        clone_map = _clone_map()
         product_cache = {}
         for k, v in raw_products.items():
-            pub = _public_product(v)
-            held = _to_float(reserved.get(str(pub.get("Id"))))
-            if held > 0:
-                pub["OnHand"] = max(0.0, _to_float(pub.get("OnHand")) - held)
-            product_cache[k] = pub
+            product_cache[k] = _deduct_reserved(_public_product(v, clone_map), reserved)
 
         result = []
         for pr, entries in zip(promos, gift_entries_by_promo):

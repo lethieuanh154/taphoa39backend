@@ -236,6 +236,16 @@ def broadcast_products_onhand_updated(socketio, updates: Iterable[Dict[str, Any]
     print(f"📡 [WebSocket] Broadcast {len(products_data)} products updated at {timestamp}")
 
 
+def broadcast_clone_stock_updated(socketio, items: Iterable[Dict[str, Any]]):
+    """[{Id: original_id, CloneOnHandNV: tong ton clone}] cho DatHang.
+    Event rieng (khong tron vao products_updated) de BanHang/Management khong ghi field la vao IndexedDB."""
+    items_list = list(items)
+    if not socketio or not items_list:
+        return
+    socketio.emit('clone_stock_updated', {'products': items_list}, namespace='/api/websocket/products')
+    print(f"📡 [WebSocket] Broadcast clone_stock_updated: {len(items_list)} SP original")
+
+
 def broadcast_products_added(socketio, products: Iterable[Dict[str, Any]]):
     """
     Broadcast newly added products via WebSocket for realtime sync.

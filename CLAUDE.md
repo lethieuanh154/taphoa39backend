@@ -33,5 +33,6 @@ Flask REST API backend. Tech: Flask 3.1.0, Firebase Firestore, Flask-SocketIO, G
 - **Truoc khi deploy PHAI chay `python -m scripts.smoke_boot`** (exit 0 moi duoc deploy). No dung app that voi Firestore gia, bat duoc ten undefined va loi import — nhung thu `py_compile`/`ast.parse` khong thay, va chi lo ra khi container khoi dong, luc do ca he thong da 502. Da tung xay ra: xoa nham `db = init_firestore(...)` khi don code khien backend sap hoan toan.
 
 ## Docs
-`docs/`: PROJECT-STRUCTURE, EMPLOYEE-API, FIRESTORE-SCHEMA, INVOICE-XML-FORMATS, PUBLIC-API, INVOICE-PUBLIC-PAGE, GIFT-NOTES
+`docs/`: PROJECT-STRUCTURE, EMPLOYEE-API, FIRESTORE-SCHEMA, INVOICE-XML-FORMATS, PUBLIC-API, INVOICE-PUBLIC-PAGE, GIFT-NOTES, FIRESTORE-PROJECT-MIGRATION (chuyen data Firestore sang project/tai khoan Firebase khac)
 `scripts/smoke_boot.py`: kiem tra khoi dong truoc khi deploy
+`scripts/migrate_hanghoa_to_product.py`: migrate collection giua 2 project Firebase → `docs/FIRESTORE-PROJECT-MIGRATION.md`

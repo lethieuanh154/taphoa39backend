@@ -6,6 +6,7 @@ from flask import Blueprint, jsonify, request
 from firebase.firebase_hanghoa.import_to_firestore import update_products_from_banhang_app_to_firestore
 from routes.shared import (
     apply_product_updates,
+    broadcast_clone_stock_updated,
     broadcast_products_added,
     broadcast_products_onhand_updated,
     create_simple_fetch_handler,
@@ -55,6 +56,9 @@ def create_firebase_products_bp(product_service, socketio) -> Blueprint:
             print(f"⏱️ [update_onhand_batch] patch cache: {(_time.time() - t_cache)*1000:.0f}ms "
                   f"| {patched} ban ghi")
             broadcast_products_onhand_updated(socketio, updates_for_broadcast)
+            broadcast_clone_stock_updated(
+                socketio, product_service.public_clone_stock_for(updates_for_broadcast)
+            )
 
         t_end = _time.time()
         print(f"⏱️ [update_onhand_batch] total: {(t_end - t_start)*1000:.0f}ms | updated: {len(updates_for_broadcast)}/{item_count}")

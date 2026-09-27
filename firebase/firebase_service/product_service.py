@@ -308,6 +308,7 @@ class FirestoreProductService:
         self.cache.invalidate("all_products:inactive=False:deleted=True")
         self.cache.invalidate("all_products:inactive=True:deleted=True")
         self.cache.invalidate("clone_stock_map")
+        self.cache.invalidate(self.PUBLIC_CLONE_STOCK_KEY)
         self.cache.invalidate_prefix("featured_products:")
         self.cache.invalidate_prefix("products_by_category:")
         return fresh
@@ -339,6 +340,80 @@ class FirestoreProductService:
         product = doc.to_dict()
         self.cache.set(key, product, ttl=CACHE_TTL)
         return product
+
+    PUBLIC_CLONE_STOCK_KEY = "public_clone_stock"
+
+    @staticmethod
+    def _clone_stock_entry(doc_id: str, data: Dict) -> Optional[tuple]:
+        """(source_id, OnHandNV) neu doc la clone hop le cua 1 SP original, nguoc lai None.
+        Hang noi bo (add-product-dialog) co CloneSourceId = chinh Id cua no -> bo qua."""
+        if data.get("isDeleted") or data.get("isActive") is False:
+            return None
+        source_id = str(data.get("CloneSourceId") or "")
+        if not source_id or source_id == str(doc_id):
+            return None
+        try:
+            nv = float(data.get("OnHandNV") or 0)
+        except (TypeError, ValueError):
+            nv = 0.0
+        return source_id, nv
+
+    def get_public_clone_stock_map(self) -> Dict[str, float]:
+        """{original_id: tong OnHandNV cac clone} cho /api/public/*.
+
+        KHONG dung read_all_products() (full scan -> 503 tren prod): chi query cac doc
+        isClone. Cache dang {clone_id: [source_id, nv]} de patch_stock_caches() cap nhat
+        tai cho khi BanHang ban hang clone, khong ton them read Firestore.
+        """
+        per_clone = self.cache.get(self.PUBLIC_CLONE_STOCK_KEY) if self.cache.has(self.PUBLIC_CLONE_STOCK_KEY) else None
+        if per_clone is None:
+            per_clone = {}
+            docs = self.products_ref.where("isClone", "in", [True, "true"]).select(
+                ["CloneSourceId", "OnHandNV", "isDeleted", "isActive"]
+            ).stream(retry=PRODUCT_PAGE_RETRY, timeout=PRODUCT_PAGE_TIMEOUT)
+            for doc in docs:
+                entry = self._clone_stock_entry(doc.id, doc.to_dict() or {})
+                if entry:
+                    per_clone[str(doc.id)] = [entry[0], entry[1]]
+            self.cache.set(self.PUBLIC_CLONE_STOCK_KEY, per_clone, ttl=600)
+
+        stock: Dict[str, float] = {}
+        for source_id, nv in per_clone.values():
+            if nv > 0:
+                stock[source_id] = stock.get(source_id, 0.0) + nv
+        return stock
+
+    def public_clone_stock_for(self, updates) -> List[Dict]:
+        """Sau patch_stock_caches(): [{Id: original_id, CloneOnHandNV: tong}] cho cac original
+        co clone vua doi OnHandNV. Chi doc cache (0 read Firestore); cache nguoi -> []."""
+        if not self.cache.has(self.PUBLIC_CLONE_STOCK_KEY):
+            return []
+        per_clone = self.cache.get(self.PUBLIC_CLONE_STOCK_KEY) or {}
+        sources = set()
+        for u in updates or []:
+            entry = per_clone.get(str(u.get("Id")))
+            if entry and u.get("OnHandNV") is not None:
+                sources.add(entry[0])
+        if not sources:
+            return []
+        totals = {s: 0.0 for s in sources}
+        for source_id, nv in per_clone.values():
+            if source_id in totals and nv > 0:
+                totals[source_id] += nv
+        return [{"Id": s, "CloneOnHandNV": t} for s, t in totals.items()]
+
+    def read_clone_stock_fresh(self, source_id) -> float:
+        """Tong OnHandNV cac clone cua 1 SP original, doc thang Firestore (validate don online)."""
+        total = 0.0
+        docs = self.products_ref.where("CloneSourceId", "==", str(source_id)).stream()
+        for doc in docs:
+            data = doc.to_dict() or {}
+            if not self._coerce_bool(data.get("isClone"), False):
+                continue
+            entry = self._clone_stock_entry(doc.id, data)
+            if entry and entry[1] > 0:
+                total += entry[1]
+        return total
 
     def read_products_bulk(self, product_ids) -> Dict[str, Dict]:
         """Doc nhieu san pham 1 luot bang Firestore get_all thay vi N lan document().get().
@@ -712,6 +787,7 @@ class FirestoreProductService:
         # Invalidate category and featured caches (batch update may affect multiple categories)
         self.cache.invalidate_prefix("products_by_category:")
         self.cache.invalidate("clone_stock_map")
+        self.cache.invalidate(self.PUBLIC_CLONE_STOCK_KEY)
         if removed:
             self.cache.invalidate_prefix("featured_products:")
             for rid in removed:
@@ -1717,6 +1793,7 @@ class FirestoreProductService:
             "all_products:inactive=False:deleted=True",
             "all_products:inactive=True:deleted=True",
             "clone_stock_map",
+            self.PUBLIC_CLONE_STOCK_KEY,
         ]
 
         for key in cache_keys_to_invalidate:
@@ -1764,6 +1841,15 @@ class FirestoreProductService:
         for pid in updates_by_id:
             self.cache.invalidate(pid)
 
+        if self.cache.has(self.PUBLIC_CLONE_STOCK_KEY):
+            per_clone = self.cache.get(self.PUBLIC_CLONE_STOCK_KEY) or {}
+            for pid, fields in updates_by_id.items():
+                if pid in per_clone and "OnHandNV" in fields:
+                    try:
+                        per_clone[pid][1] = float(fields["OnHandNV"] or 0)
+                    except (TypeError, ValueError):
+                        pass
+
         patched = self.cache.bulk_update_items_in_lists("all_products", "Id", updates_by_id)
         patched += self.cache.bulk_update_items_in_lists("products_by_category:", "Id", updates_by_id)
         self.cache.invalidate_prefix("featured_products:")
@@ -1802,6 +1888,8 @@ class FirestoreProductService:
         # 4. Clone stock map chỉ invalidate khi stock thay đổi
         if affects_stock:
             self.cache.invalidate("clone_stock_map")
+        if affects_stock or is_delete:
+            self.cache.invalidate(self.PUBLIC_CLONE_STOCK_KEY)
 
         # 5. Featured products chỉ invalidate khi add/delete (thay đổi danh sách)
         if is_delete:

@@ -9,11 +9,12 @@
 Vì vậy số giữ hàng nằm ở collection riêng:
 
 ```
-Tồn hiển thị cho khách = OnHand − Reserved
-                         └ KiotViet ┘  └ của mình ┘
+Tồn hiển thị cho khách = OnHand + CloneOnHandNV − Reserved
+                         └ KiotViet ┘ └ clone nội bộ ┘ └ của mình ┘
 ```
 
-> **Đổi 18/09/2026:** công thức cũ có cộng `CloneOnHandNV`. Đã bỏ — DatHang không bán hàng clone, cộng vào thì SP hết hàng trên KiotViet vẫn hiện còn.
+> **Đổi lại 27/09/2026:** cộng lại `CloneOnHandNV` (user chốt: original hết/không đủ thì bán tiếp bằng tồn clone). `_deduct_reserved()` trừ Reserved vào `OnHand` trước, phần dư trừ tiếp vào `CloneOnHandNV`. (18/09–27/09 từng bỏ cộng clone.)
+> BanHang chặn thanh toán theo cùng công thức (original + clone − reserved, quy đơn vị gốc) — xem `TapHoa39BanHang/docs/RESERVED-PRODUCTS.md`.
 
 Tiền lệ: `OnHandNV` và `ImageVariant` cũng là field tự tạo và sống sót qua sync nhờ `batch.set(..., merge=True)`.
 
@@ -66,12 +67,12 @@ active ──[hủy đơn]──────────> released (canceled)
 `_recompute_order_economics()` nay kiểm tra tồn khả dụng cho từng dòng hàng:
 
 ```
-available = OnHand − reserved          ← OnHand đọc FRESH, KHÔNG qua cache
+available = OnHand + clone − reserved  ← cả hai đọc FRESH, KHÔNG qua cache
 qty > available  →  400 "San pham 'X' chi con N, khong du M"
 available <= 0   →  400 "San pham 'X' da het hang"
 ```
 
-`OnHand` lấy bằng `read_product_fresh()` (bỏ qua cache doc-lẻ TTL 3600s) — dùng `read_product()` thì lớp chặn này so với số cũ tới 1 tiếng. `clone_stock` đã bỏ khỏi công thức (18/09/2026), cho khớp đúng con số khách nhìn thấy.
+`OnHand` lấy bằng `read_product_fresh()` (bỏ qua cache doc-lẻ TTL 3600s) — dùng `read_product()` thì lớp chặn này so với số cũ tới 1 tiếng. Tồn clone lấy bằng `read_clone_stock_fresh(pid)` (query `CloneSourceId == pid`); lỗi → coi như 0 (chỉ tính KiotViet).
 
 Trước đây `_is_orderable()` chỉ lọc active/deleted/clone/danh mục ẩn, **không hề kiểm tra tồn** — server nhận đơn cả khi hàng đã hết, chặn oversell chỉ nằm ở FE dựa trên IndexedDB có thể cũ.
 
