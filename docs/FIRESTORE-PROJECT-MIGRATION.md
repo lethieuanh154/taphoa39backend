@@ -125,3 +125,18 @@ grep -rn "<old-project-id>" --include=*.ts --include=*.py --include=.env* \
 
 Dùng `migrate_hoadon_to_output_invoice.py` làm mẫu: đổi `SOURCE_ACCOUNT`/`TARGET_ACCOUNT` thành tên biến env trong `firebase/.env`. Cách này không phải viết key vào file.
 Danh sách env service account hiện có trong `firebase/.env`: `CUSTOMER`, `HOADON`, `NHANVIEN`, `SUPPLIES_INVOICES`, `PRODUCT`, `OUTPUT_INVOICE`, `GMAIL`, `DATHANG` (tiền tố `FIREBASE_SERVICE_ACCOUNT_`).
+
+## 6. Khôi phục dữ liệu ghi nhầm vào project cũ sau khi migrate
+
+Sự cố 28–29/09/2026: BE local ở cửa hàng chưa đổi `.env`, nên vẫn ghi vào `products-d8de3` tới tối 29/09. Script khôi phục: `scripts/recover_products_from_old_project.py`.
+
+- Lấy các doc `products` ở project cũ có `ModifiedDate` trong khoảng `--from-date` → `--to-date` (giờ VN; mặc định từ 27/09 13:00, ngay sau snapshot migrate, tới 29/09 18:41, lúc đổi env), rồi phân loại:
+  - Hàng KiotViet gốc: bỏ qua.
+  - `CREATE`: tạo mới.
+  - `SKIP_RECLONED`: đã clone lại ở project mới nên bỏ qua.
+  - `OVERWRITE`: project mới chưa sửa doc, merge từ bản cũ.
+  - `CONFLICT_*`: sửa ở cả hai bên. Tồn đề xuất = cũ + (mới − base), base lấy từ `product_history`. Chỉ ghi khi chạy `--apply-conflicts` và trạng thái là `AUTO`/`AUTO_CHILD`.
+- Gộp `product_history` (hợp các record, giữ 100 record mới nhất).
+- Mặc định là dry-run và xuất CSV vào `scripts/recover_reports/`. `--apply` mới ghi thật: có backup trước khi ghi, và transaction chặn ghi đè nếu doc vừa bị đổi. Các doc được ghi sẽ có `ModifiedDate` = thời điểm khôi phục.
+- Sau khi ghi: restart BE, rồi full reload BanHang trên mọi máy.
+- **Bài học:** lúc chụp dữ liệu để migrate phải đổi env và restart **mọi** BE (cả local ở cửa hàng lẫn VPS) cùng một lúc.
