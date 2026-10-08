@@ -734,6 +734,10 @@ class FirestoreProductService:
         if "OnHandNV" in updates:
             print(f"   ✅ OnHandNV will be updated to: {updates['OnHandNV']}")
 
+        # ✅ Cập nhật NormalizedCode nếu Code thay đổi
+        if updates.get("Code"):
+            updates["NormalizedCode"] = self._normalize_string(str(updates["Code"]))
+
         # Luôn cập nhật ModifiedDate để đảm bảo các client có thể đồng bộ thay đổi
         updates["ModifiedDate"] = datetime.utcnow().isoformat()
 
@@ -773,6 +777,10 @@ class FirestoreProductService:
                 self.cache.invalidate(product_id)
                 continue
             
+            # ✅ Cập nhật NormalizedCode nếu Code thay đổi (mutate in place để broadcast WS cũng mang giá trị mới)
+            if prod.get("Code"):
+                prod["NormalizedCode"] = self._normalize_string(str(prod["Code"]))
+
             # ✅ Enforce inventory field rules
             prod = self._sanitize_inventory_fields(prod)
 
